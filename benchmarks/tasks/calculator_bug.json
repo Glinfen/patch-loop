@@ -1,0 +1,8 @@
+{
+  "id": "calculator-bug-001",
+  "difficulty": "easy",
+  "repository": "benchmarks/fixtures/calculator_bug",
+  "goal": "修复 divide 对不能整除的两个整数返回错误结果的问题，并确保现有测试通过。",
+  "test_command": ["python", "-m", "pytest", "-q"],
+  "expected_changed_files": ["calculator.py"]
+}

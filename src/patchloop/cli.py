@@ -8,10 +8,12 @@ from typing import Annotated
 
 import typer
 
-from patchloop.domain import Task, TaskBudget, TaskStatus
+from patchloop.domain import Task, TaskBudget, TaskExecutionConfig, TaskStatus
 from patchloop.events import EventLogger
+from patchloop.persistence import SQLiteStore
 from patchloop.providers import DeepSeekProvider
-from patchloop.storage import ArtifactStore, JsonTaskStore, TaskNotFoundError
+from patchloop.runtime import AgentRuntime
+from patchloop.storage import ArtifactStore, TaskNotFoundError
 from patchloop.tools import (
     ApplyPatchTool,
     CreateFileTool,
@@ -39,6 +41,10 @@ def _state_dir(repository: Path) -> Path:
     return repository.resolve() / ".patchloop"
 
 
+def _sqlite_store(repository: Path) -> SQLiteStore:
+    return SQLiteStore(_state_dir(repository) / "patchloop.db")
+
+
 def _all_tools() -> list[Tool]:
     return [
         ListFilesTool(),
@@ -63,7 +69,7 @@ def create_task(
     ] = Path("."),
 ) -> None:
     task = Task(goal=goal, repository=str(repo.resolve()))
-    JsonTaskStore(_state_dir(repo) / "tasks").save(task)
+    _sqlite_store(repo).save_task(task)
     typer.echo(task.model_dump_json(indent=2))
 
 
@@ -76,7 +82,7 @@ def show_task(
     ] = Path("."),
 ) -> None:
     try:
-        task = JsonTaskStore(_state_dir(repo) / "tasks").get(task_id)
+        task = _sqlite_store(repo).get_task(task_id)
     except TaskNotFoundError:
         typer.echo(f"task not found: {task_id}", err=True)
         raise typer.Exit(code=1) from None
@@ -110,6 +116,65 @@ def show_trace(
         typer.echo(event.model_dump_json())
 
 
+@app.command("status")
+def task_status(
+    task_id: Annotated[str, typer.Argument()],
+    repo: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+) -> None:
+    try:
+        task = _sqlite_store(repo).get_task(task_id)
+    except TaskNotFoundError:
+        typer.echo(f"task not found: {task_id}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(task.model_dump_json(indent=2))
+
+
+@app.command("cancel")
+def cancel_task(
+    task_id: Annotated[str, typer.Argument()],
+    repo: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+) -> None:
+    try:
+        task = _sqlite_store(repo).cancel_task(task_id)
+    except TaskNotFoundError:
+        typer.echo(f"task not found: {task_id}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(task.model_dump_json(indent=2))
+
+
+@app.command("diff")
+def task_diff(
+    task_id: Annotated[str, typer.Argument()],
+    repo: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+) -> None:
+    store = _sqlite_store(repo)
+    try:
+        task = store.get_task(task_id)
+    except TaskNotFoundError:
+        typer.echo(f"task not found: {task_id}", err=True)
+        raise typer.Exit(code=1) from None
+    if task.report is not None:
+        typer.echo(task.report.diff or "No changes.")
+        return
+    try:
+        checkpoint = store.get_checkpoint(task_id)
+    except TaskNotFoundError:
+        typer.echo("No changes.")
+        return
+    context = ToolContext(repo)
+    context.changes.restore(checkpoint.change_snapshot)
+    typer.echo(context.changes.diff() or "No changes.")
+
+
 @app.command("run")
 def run_task(
     goal: Annotated[str, typer.Argument(help="Natural-language development goal.")],
@@ -130,6 +195,10 @@ def run_task(
     max_output_tokens: Annotated[int, typer.Option(min=1)] = 100_000,
     max_cost_usd: Annotated[float, typer.Option(min=0.0001)] = 5.0,
     max_tool_failures: Annotated[int, typer.Option(min=0, max=1_000)] = 10,
+    non_interactive: Annotated[
+        bool,
+        typer.Option(help="Run without approval prompts; suitable for CI."),
+    ] = True,
 ) -> None:
     try:
         provider = DeepSeekProvider.from_env()
@@ -138,6 +207,11 @@ def run_task(
         raise typer.Exit(code=2) from None
 
     repository = repo.resolve()
+    permissions = {PermissionLevel.READ}
+    if allow_write:
+        permissions.add(PermissionLevel.WRITE)
+    if allow_execute:
+        permissions.add(PermissionLevel.EXECUTE)
     task = Task(
         goal=goal,
         repository=str(repository),
@@ -148,16 +222,15 @@ def run_task(
             max_cost_usd=max_cost_usd,
             max_tool_failures=max_tool_failures,
         ),
+        execution=TaskExecutionConfig(
+            allowed_permissions=sorted(permission.value for permission in permissions),
+            non_interactive=non_interactive,
+        ),
     )
     state = _state_dir(repository)
-    store = JsonTaskStore(state / "tasks")
-    store.save(task)
+    store = _sqlite_store(repository)
+    store.save_task(task)
     trace = EventLogger(state / "traces" / f"{task.id}.jsonl")
-    permissions = {PermissionLevel.READ}
-    if allow_write:
-        permissions.add(PermissionLevel.WRITE)
-    if allow_execute:
-        permissions.add(PermissionLevel.EXECUTE)
     context = ToolContext(repository)
     gateway = ToolGateway(
         context,
@@ -165,15 +238,62 @@ def run_task(
         trace,
         ToolPolicy(frozenset(permissions)),
     )
-    from patchloop.runtime import AgentRuntime
-
-    result = AgentRuntime(provider, gateway, trace).run(task)
-    store.save(result)
-    ArtifactStore(state / "artifacts").save_report(result)
+    result = AgentRuntime(provider, gateway, trace, store).run(task)
+    paths = ArtifactStore(state / "artifacts").save_report(result)
+    for path in paths:
+        store.record_artifact(task.id, path)
     typer.echo(result.model_dump_json(indent=2))
     diff = context.changes.diff()
     if diff:
         typer.echo("\n--- diff ---\n")
         typer.echo(diff)
+    if result.status is not TaskStatus.COMPLETED:
+        raise typer.Exit(code=1)
+
+
+@app.command("resume")
+def resume_task(
+    task_id: Annotated[str, typer.Argument()],
+    repo: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+) -> None:
+    try:
+        provider = DeepSeekProvider.from_env()
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    repository = repo.resolve()
+    store = _sqlite_store(repository)
+    try:
+        task = store.get_task(task_id)
+        checkpoint = store.get_checkpoint(task_id)
+    except TaskNotFoundError:
+        typer.echo(f"task or checkpoint not found: {task_id}", err=True)
+        raise typer.Exit(code=1) from None
+    if task.status is not TaskStatus.RUNNING:
+        typer.echo(f"task cannot resume from status: {task.status}", err=True)
+        raise typer.Exit(code=1)
+    try:
+        permissions = frozenset(
+            PermissionLevel(value) for value in task.execution.allowed_permissions
+        )
+    except ValueError:
+        typer.echo("task contains an invalid permission checkpoint", err=True)
+        raise typer.Exit(code=1) from None
+    trace = EventLogger(_state_dir(repository) / "traces" / f"{task.id}.jsonl")
+    context = ToolContext(repository)
+    gateway = ToolGateway(
+        context,
+        _all_tools(),
+        trace,
+        ToolPolicy(permissions),
+    )
+    result = AgentRuntime(provider, gateway, trace, store).resume(task, checkpoint)
+    paths = ArtifactStore(_state_dir(repository) / "artifacts").save_report(result)
+    for path in paths:
+        store.record_artifact(task.id, path)
+    typer.echo(result.model_dump_json(indent=2))
     if result.status is not TaskStatus.COMPLETED:
         raise typer.Exit(code=1)

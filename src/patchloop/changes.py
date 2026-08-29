@@ -40,6 +40,23 @@ class FileChangeTracker:
             )
         return "".join(sections)
 
+    def snapshot(self) -> dict[str, str | None]:
+        return {
+            path.relative_to(self.repository).as_posix(): content
+            for path, content in self._original.items()
+        }
+
+    def restore(self, snapshot: dict[str, str | None]) -> None:
+        restored: dict[Path, str | None] = {}
+        for relative, content in snapshot.items():
+            path = (self.repository / relative).resolve(strict=False)
+            try:
+                path.relative_to(self.repository)
+            except ValueError as exc:
+                raise ValueError(f"change snapshot escapes repository: {relative}") from exc
+            restored[path] = content
+        self._original = restored
+
     @staticmethod
     def _current(path: Path) -> str | None:
         return path.read_text(encoding="utf-8") if path.exists() else None

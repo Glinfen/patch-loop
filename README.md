@@ -17,6 +17,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [Week 1 验收记录](docs/milestones/WEEK_01_ACCEPTANCE.md)：安装、CLI、测试、类型检查和覆盖率证据。
 - [Week 2 验收记录](docs/milestones/WEEK_02_ACCEPTANCE.md)：Plan-Execute、补丁、测试、diff 和最终报告证据。
 - [Week 3 验收记录](docs/milestones/WEEK_03_ACCEPTANCE.md)：错误分类、失败恢复、重规划和预算控制证据。
+- [Week 4 验收记录](docs/milestones/WEEK_04_ACCEPTANCE.md)：SQLite 持久化、检查点恢复和完整 CLI 生命周期证据。
 
 ## 推荐项目周期
 
@@ -54,9 +55,11 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - 默认只读的权限策略，以及仓库路径和符号链接边界检查。
 - 有步骤、时间、Token、费用、工具失败和重规划预算的 Agent 执行循环。
 - 测试/语法/命令失败分类，失败后强制重新规划和重复错误检测。
-- JSONL 事件轨迹和本地任务存储。
+- SQLite 任务、步骤、工具调用、检查点和产物存储，以及 JSONL 事件轨迹。
+- 完成步骤边界检查点、工作区变更快照和中断后恢复，不重复已确认的写操作。
 - 包含变更、验证、工具统计和 Token 用量的最终报告与持久化产物。
-- `task create`、`task show`、`tools`、`trace` CLI 命令。
+- `run`、`status`、`resume`、`cancel`、`diff`、`trace` 等任务生命周期命令。
+- 默认非交互运行，并把权限集合随任务持久化，恢复时沿用原权限边界。
 
 ## 本地开发
 
@@ -76,6 +79,11 @@ pytest
 patchloop task create "修复分页边界错误" --repo /path/to/repository
 patchloop task show <task-id> --repo /path/to/repository
 patchloop tools --repo /path/to/repository
+patchloop status <task-id> --repo /path/to/repository
+patchloop diff <task-id> --repo /path/to/repository
+patchloop trace <task-id> --repo /path/to/repository
+patchloop resume <task-id> --repo /path/to/repository
+patchloop cancel <task-id> --repo /path/to/repository
 ```
 
 运行 DeepSeek V4 Flash Agent：
@@ -91,6 +99,6 @@ patchloop run "修复分页边界错误并运行回归测试" `
 
 密钥只从进程环境变量读取，不会保存在任务、轨迹或仓库文件中。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。
 
-当前版本已完成“读取 → 修改 → 测试 → diff → 汇报”的确定性端到端闭环，并接入 DeepSeek V4 Flash。SQLite 检查点、Docker 沙箱和流式输出属于后续阶段。
+当前版本已完成“读取 → 修改 → 测试 → diff → 汇报”的确定性端到端闭环，并接入 DeepSeek V4 Flash、SQLite 检查点和任务恢复。Docker 沙箱和流式输出属于后续阶段。
 
 `benchmarks/fixtures/calculator_bug` 提供了第一个固定缺陷仓库，后续写入闭环以 `benchmarks/tasks/calculator_bug.json` 作为自动验收任务。

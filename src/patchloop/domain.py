@@ -104,6 +104,11 @@ class TaskBudget(BaseModel):
     max_cost_usd: float = Field(default=5.0, gt=0)
 
 
+class TaskExecutionConfig(BaseModel):
+    allowed_permissions: list[str] = Field(default_factory=lambda: ["read"])
+    non_interactive: bool = True
+
+
 class Task(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
@@ -115,6 +120,7 @@ class Task(BaseModel):
     repository: str
     status: TaskStatus = TaskStatus.CREATED
     budget: TaskBudget = Field(default_factory=TaskBudget)
+    execution: TaskExecutionConfig = Field(default_factory=TaskExecutionConfig)
     plan: Plan | None = None
     report: TaskReport | None = None
     result: str | None = None

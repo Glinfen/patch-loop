@@ -136,12 +136,14 @@ Tool Gateway ─── 文件 / 搜索 / 补丁 / Shell / Test / Git
 
 任务：
 
-- 使用 SQLite 持久化任务、步骤、调用和产物。
-- 在关键步骤创建检查点，支持任务恢复。
-- 完成 `run`、`status`、`resume`、`cancel`、`diff`、`trace` 等命令。
-- 增加非交互模式，便于 CI 和批量评测。
+- [x] 使用 SQLite 持久化任务、步骤、调用和产物。
+- [x] 在关键步骤创建检查点，支持任务恢复。
+- [x] 完成 `run`、`status`、`resume`、`cancel`、`diff`、`trace` 等命令。
+- [x] 增加非交互模式，便于 CI 和批量评测。
 
 退出标准：强制终止进程后可以从检查点继续，且不会重复已确认的写操作。
+
+第四周任务已于 2026-08-29 全部完成，自动化证据见 [Week 4 验收记录](milestones/WEEK_04_ACCEPTANCE.md)。
 
 ### 第 5 周：Repository Intelligence
 

@@ -358,7 +358,7 @@ patch-loop/
 
 ## 13. 第一周可直接执行的任务清单
 
-- [ ] 初始化 Git 仓库和 Python 项目。
+- [x] 初始化 Git 仓库和 Python 项目。
 - [x] 配置 `pyproject.toml`、Ruff、mypy、pytest 和 pre-commit。
 - [x] 创建推荐目录结构。
 - [x] 定义 `Task`、`AgentStep`、`ToolCall`、`ToolResult` 数据模型。
@@ -370,3 +370,5 @@ patch-loop/
 - [x] 在 CI 中运行 lint、type check 和 test。
 
 完成上述清单后，再进入写文件、执行命令和自主修复闭环，避免在基础协议尚未稳定时堆叠功能。
+
+第一周清单已于 2026-08-29 全部完成，自动化证据见 [Week 1 验收记录](milestones/WEEK_01_ACCEPTANCE.md)。

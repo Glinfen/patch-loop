@@ -17,5 +17,4 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
-      - run: pytest
-
+      - run: pytest --cov=patchloop --cov-branch --cov-report=term-missing --cov-fail-under=85

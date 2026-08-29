@@ -14,6 +14,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 
 - [项目目标](docs/PROJECT_GOALS.md)：项目定位、目标用户、核心能力、成功指标与边界。
 - [实施计划](docs/IMPLEMENTATION_PLAN.md)：技术方案、阶段里程碑、验收标准、风险与交付物。
+- [Week 1 验收记录](docs/milestones/WEEK_01_ACCEPTANCE.md)：安装、CLI、测试、类型检查和覆盖率证据。
 
 ## 推荐项目周期
 

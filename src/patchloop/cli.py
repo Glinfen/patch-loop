@@ -11,6 +11,12 @@ import typer
 
 from patchloop.context import ContextDebug
 from patchloop.domain import Task, TaskBudget, TaskExecutionConfig, TaskStatus
+from patchloop.evaluation import (
+    EvaluationRunner,
+    EvaluationVariant,
+    RetrievalBaseline,
+    load_evaluation_manifest,
+)
 from patchloop.events import EventLogger
 from patchloop.intelligence import (
     RepositoryIndexer,
@@ -223,6 +229,44 @@ def benchmark_repository_search(
         output_path = Path(output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    typer.echo(report.model_dump_json(indent=2))
+
+
+@app.command("benchmark")
+def benchmark_evaluation(
+    manifest: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/evaluation_manifest.json"),
+    root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/results/week08_evaluation.json"),
+    variant: Annotated[
+        str,
+        typer.Option(help="single_shot, no_plan, text_only, patchloop, or all."),
+    ] = "all",
+    jobs: Annotated[int, typer.Option(min=1, max=64)] = 4,
+    retries: Annotated[int, typer.Option(min=0, max=10)] = 1,
+) -> None:
+    try:
+        task_manifest = load_evaluation_manifest(manifest)
+        variants: list[EvaluationVariant] = (
+            list(EvaluationVariant) if variant == "all" else [EvaluationVariant(variant)]
+        )
+        report = EvaluationRunner(root, jobs=jobs, retries=retries).run_suite(
+            task_manifest,
+            [RetrievalBaseline(item) for item in variants],
+        )
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     typer.echo(report.model_dump_json(indent=2))
 
 

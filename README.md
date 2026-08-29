@@ -21,6 +21,8 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [Week 5 验收记录](docs/milestones/WEEK_05_ACCEPTANCE.md)：Python AST 索引、可解释混合检索和 Recall@1 对比证据。
 - [Week 6 验收记录](docs/milestones/WEEK_06_ACCEPTANCE.md)：上下文预算、结构化任务记忆和长任务证据保留验收。
 - [Week 7 验收记录](docs/milestones/WEEK_07_ACCEPTANCE.md)：Docker 沙箱、风险审批、敏感信息脱敏和任务回放验收。
+- [Week 8 验收记录](docs/milestones/WEEK_08_ACCEPTANCE.md)：固定 30 任务集、并发重试和四变体机器可读评测验收。
+- [评测协议](docs/EVALUATION.md)：清单格式、仓库指纹、成功判定、基线定义和运行方式。
 
 ## 推荐项目周期
 
@@ -75,6 +77,9 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - Tool Gateway 对读、写、执行和危险动作进行低、中、高、严重四级风险判断；交互模式逐次审批，非交互模式只接受显式权限预授权。
 - 凭据脱敏统一覆盖 Provider 上下文、JSONL Trace、SQLite 检查点和任务产物。
 - Trace 具有稳定事件 ID、任务 Trace ID 和连续序号；`metrics` 与 `replay` 可定位失败步骤、审批结果、工具耗时、Token 和费用。
+- 版本化评测清单以仓库树 SHA-256 锁定环境，30 个任务覆盖 bugfix、feature、test、documentation，easy/medium/hard 各 10 个。
+- `benchmark` 支持 1～64 个并发 worker、失败重试、确定性结果排序，以及 single-shot、no-plan、text-only、PatchLoop 四变体对比。
+- 第八周固定代码定位切片中，四变体成功率分别为 70%、80%、80% 和 100%；完整任务级结果保存在机器可读 JSON 中。
 
 ## 本地开发
 
@@ -105,6 +110,9 @@ patchloop cancel <task-id> --repo /path/to/repository
 patchloop index --repo /path/to/repository
 patchloop search "分页边界实现" --repo /path/to/repository --limit 5
 patchloop benchmark-search --tasks benchmarks/retrieval_tasks.json --root .
+patchloop benchmark --manifest benchmarks/evaluation_manifest.json --root . \
+  --variant all --jobs 4 --retries 1 \
+  --output benchmarks/results/week08_evaluation.json
 ```
 
 运行 DeepSeek V4 Flash Agent：

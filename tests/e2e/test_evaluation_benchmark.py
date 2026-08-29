@@ -1,0 +1,48 @@
+import json
+from pathlib import Path
+
+from typer.testing import CliRunner
+
+from patchloop.cli import app
+
+
+def test_one_command_runs_fixed_evaluation_suite(tmp_path: Path) -> None:
+    root = Path(__file__).parents[2]
+    output = tmp_path / "evaluation.json"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "benchmark",
+            "--manifest",
+            str(root / "benchmarks" / "evaluation_manifest.json"),
+            "--root",
+            str(root),
+            "--output",
+            str(output),
+            "--variant",
+            "all",
+            "--jobs",
+            "4",
+            "--retries",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    report = json.loads(output.read_text(encoding="utf-8"))
+    summary = {
+        item["variant"]: {
+            "passed": item["aggregate"]["passed"],
+            "total": item["aggregate"]["total"],
+            "success_rate": item["aggregate"]["success_rate"],
+        }
+        for item in report["reports"]
+    }
+    assert summary == {
+        "single_shot": {"passed": 21, "total": 30, "success_rate": 0.7},
+        "no_plan": {"passed": 24, "total": 30, "success_rate": 0.8},
+        "text_only": {"passed": 24, "total": 30, "success_rate": 0.8},
+        "patchloop": {"passed": 30, "total": 30, "success_rate": 1.0},
+    }
+    assert json.loads(result.output)["suite_revision"] == "week08-v1"

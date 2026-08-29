@@ -1,0 +1,316 @@
+{
+  "schema_version": "1.0",
+  "suite_id": "patchloop-week08",
+  "revision": "week08-v1",
+  "repositories": {
+    "service-fixture": {
+      "path": "benchmarks/fixtures/eval_suite",
+      "revision": "eval-suite-v1",
+      "tree_sha256": "b0af98c1cb99e93bed116f06b470ae4f647e729db5cf8291198142b3f2a5aa07",
+      "setup_command": [],
+      "test_command": ["python", "-m", "pytest", "-q"]
+    }
+  },
+  "tasks": [
+    {
+      "id": "bugfix-auth-token",
+      "repository": "service-fixture",
+      "goal": "Locate bearer credential verification before fixing empty tokens.",
+      "query": "bearer credential verification empty token",
+      "task_type": "bugfix",
+      "difficulty": "easy",
+      "k": 3,
+      "criteria": {"expected_paths": ["auth.py"]}
+    },
+    {
+      "id": "bugfix-billing-tax",
+      "repository": "service-fixture",
+      "goal": "Locate tax-inclusive invoice calculation before correcting totals.",
+      "query": "tax inclusive invoice total calculation",
+      "task_type": "bugfix",
+      "difficulty": "easy",
+      "k": 3,
+      "criteria": {"expected_paths": ["billing.py"]}
+    },
+    {
+      "id": "bugfix-pagination-page",
+      "repository": "service-fixture",
+      "goal": "Locate one-based page slicing before repairing a boundary error.",
+      "query": "one based page slicing boundary",
+      "task_type": "bugfix",
+      "difficulty": "medium",
+      "k": 3,
+      "criteria": {"expected_paths": ["pagination.py"]}
+    },
+    {
+      "id": "bugfix-cache-expiry",
+      "repository": "service-fixture",
+      "goal": "Locate cache expiry comparison before fixing TTL behavior.",
+      "query": "cache entry exceeded TTL expiry check",
+      "task_type": "bugfix",
+      "difficulty": "medium",
+      "k": 3,
+      "criteria": {"expected_paths": ["cache.py"]}
+    },
+    {
+      "id": "bugfix-notification-urgent",
+      "repository": "service-fixture",
+      "goal": "Locate urgent notification channel selection.",
+      "query": "urgent notification SMS delivery channel",
+      "task_type": "bugfix",
+      "difficulty": "easy",
+      "k": 3,
+      "criteria": {"expected_paths": ["notifications.py"]}
+    },
+    {
+      "id": "bugfix-inventory-reserve",
+      "repository": "service-fixture",
+      "goal": "Locate insufficient stock reservation handling.",
+      "query": "insufficient stock reservation remaining inventory",
+      "task_type": "bugfix",
+      "difficulty": "hard",
+      "k": 3,
+      "criteria": {"expected_paths": ["inventory.py"]}
+    },
+    {
+      "id": "bugfix-user-email",
+      "repository": "service-fixture",
+      "goal": "Locate profile email casing normalization.",
+      "query": "normalize email casing whitespace profile",
+      "task_type": "bugfix",
+      "difficulty": "easy",
+      "k": 3,
+      "criteria": {"expected_paths": ["users.py"]}
+    },
+    {
+      "id": "bugfix-scheduler-backoff",
+      "repository": "service-fixture",
+      "goal": "Locate exponential retry delay calculation.",
+      "query": "exponential retry backoff attempt delay",
+      "task_type": "bugfix",
+      "difficulty": "hard",
+      "k": 3,
+      "criteria": {"expected_paths": ["scheduler.py"]}
+    },
+    {
+      "id": "feature-auth-password",
+      "repository": "service-fixture",
+      "goal": "Locate the password digest extension point.",
+      "query": "deterministic demo password digest",
+      "task_type": "feature",
+      "difficulty": "medium",
+      "k": 3,
+      "criteria": {"expected_paths": ["auth.py"]}
+    },
+    {
+      "id": "feature-billing-discount",
+      "repository": "service-fixture",
+      "goal": "Locate percentage discount behavior for a new promotion.",
+      "query": "apply percentage discount amount",
+      "task_type": "feature",
+      "difficulty": "easy",
+      "k": 3,
+      "criteria": {"expected_paths": ["billing.py"]}
+    },
+    {
+      "id": "feature-pagination-cursor",
+      "repository": "service-fixture",
+      "goal": "Locate the next offset cursor extension point.",
+      "query": "next offset cursor more records",
+      "task_type": "feature",
+      "difficulty": "medium",
+      "k": 3,
+      "criteria": {"expected_paths": ["pagination.py"]}
+    },
+    {
+      "id": "feature-cache-key",
+      "repository": "service-fixture",
+      "goal": "Locate namespaced cache key construction.",
+      "query": "build namespaced cache key identifier",
+      "task_type": "feature",
+      "difficulty": "easy",
+      "k": 3,
+      "criteria": {"expected_paths": ["cache.py"]}
+    },
+    {
+      "id": "feature-notification-email",
+      "repository": "service-fixture",
+      "goal": "Locate email envelope formatting for a new header.",
+      "query": "email envelope recipient subject formatting",
+      "task_type": "feature",
+      "difficulty": "medium",
+      "k": 3,
+      "criteria": {"expected_paths": ["notifications.py"]}
+    },
+    {
+      "id": "feature-inventory-release",
+      "repository": "service-fixture",
+      "goal": "Locate reservation release stock behavior.",
+      "query": "release reservation stock available quantity",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "k": 3,
+      "criteria": {"expected_paths": ["inventory.py"]}
+    },
+    {
+      "id": "feature-report-csv",
+      "repository": "service-fixture",
+      "goal": "Locate single-row CSV report export.",
+      "query": "export report headers row CSV",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "k": 3,
+      "criteria": {"expected_paths": ["reports.py"]}
+    },
+    {
+      "id": "feature-validation-slug",
+      "repository": "service-fixture",
+      "goal": "Locate lowercase hyphenated slug validation.",
+      "query": "lowercase hyphenated slug acceptance",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "k": 3,
+      "criteria": {"expected_paths": ["validation.py"]}
+    },
+    {
+      "id": "test-auth-coverage",
+      "repository": "service-fixture",
+      "goal": "Locate regression tests for token and password helpers.",
+      "query": "test auth token password helpers",
+      "task_type": "test",
+      "difficulty": "easy",
+      "k": 3,
+      "criteria": {"expected_paths": ["tests/test_auth.py"]}
+    },
+    {
+      "id": "test-billing-coverage",
+      "repository": "service-fixture",
+      "goal": "Locate invoice and discount regression tests.",
+      "query": "test billing invoice discount helpers",
+      "task_type": "test",
+      "difficulty": "easy",
+      "k": 3,
+      "criteria": {"expected_paths": ["tests/test_billing.py"]}
+    },
+    {
+      "id": "test-pagination-coverage",
+      "repository": "service-fixture",
+      "goal": "Locate page slicing and cursor tests.",
+      "query": "test pagination page cursor helpers",
+      "task_type": "test",
+      "difficulty": "medium",
+      "k": 3,
+      "criteria": {"expected_paths": ["tests/test_pagination.py"]}
+    },
+    {
+      "id": "test-cache-coverage",
+      "repository": "service-fixture",
+      "goal": "Locate cache key and TTL tests.",
+      "query": "test cache key TTL expiry helpers",
+      "task_type": "test",
+      "difficulty": "medium",
+      "k": 3,
+      "criteria": {"expected_paths": ["tests/test_cache.py"]}
+    },
+    {
+      "id": "test-inventory-coverage",
+      "repository": "service-fixture",
+      "goal": "Locate stock reservation error tests.",
+      "query": "test inventory reserve release insufficient stock",
+      "task_type": "test",
+      "difficulty": "hard",
+      "k": 3,
+      "criteria": {"expected_paths": ["tests/test_inventory.py"]}
+    },
+    {
+      "id": "test-users-coverage",
+      "repository": "service-fixture",
+      "goal": "Locate user profile helper tests.",
+      "query": "test user normalize email display name",
+      "task_type": "test",
+      "difficulty": "medium",
+      "k": 3,
+      "criteria": {"expected_paths": ["tests/test_users.py"]}
+    },
+    {
+      "id": "test-reports-coverage",
+      "repository": "service-fixture",
+      "goal": "Locate summary and CSV export tests.",
+      "query": "test report summary CSV export",
+      "task_type": "test",
+      "difficulty": "hard",
+      "k": 3,
+      "criteria": {"expected_paths": ["tests/test_reports.py"]}
+    },
+    {
+      "id": "test-validation-coverage",
+      "repository": "service-fixture",
+      "goal": "Locate slug and quantity validation tests.",
+      "query": "test validation slug positive quantity",
+      "task_type": "test",
+      "difficulty": "hard",
+      "k": 3,
+      "criteria": {"expected_paths": ["tests/test_validation.py"]}
+    },
+    {
+      "id": "docs-auth-concern",
+      "repository": "service-fixture",
+      "goal": "Locate documentation describing authentication concerns.",
+      "query": "documentation authentication bearer token password hashing",
+      "task_type": "documentation",
+      "difficulty": "easy",
+      "k": 3,
+      "criteria": {"expected_paths": ["README.md"]}
+    },
+    {
+      "id": "docs-billing-concern",
+      "repository": "service-fixture",
+      "goal": "Locate documentation describing billing concerns.",
+      "query": "documentation billing tax invoice percentage discounts",
+      "task_type": "documentation",
+      "difficulty": "easy",
+      "k": 3,
+      "criteria": {"expected_paths": ["README.md"]}
+    },
+    {
+      "id": "docs-pagination-concern",
+      "repository": "service-fixture",
+      "goal": "Locate documentation describing pagination concerns.",
+      "query": "documentation pagination page slicing offset cursors",
+      "task_type": "documentation",
+      "difficulty": "medium",
+      "k": 3,
+      "criteria": {"expected_paths": ["README.md"]}
+    },
+    {
+      "id": "docs-inventory-concern",
+      "repository": "service-fixture",
+      "goal": "Locate documentation describing inventory concerns.",
+      "query": "documentation inventory stock reservations release",
+      "task_type": "documentation",
+      "difficulty": "medium",
+      "k": 3,
+      "criteria": {"expected_paths": ["README.md"]}
+    },
+    {
+      "id": "docs-scheduler-concern",
+      "repository": "service-fixture",
+      "goal": "Locate documentation describing scheduler concerns.",
+      "query": "documentation scheduler timestamps exponential retry backoff",
+      "task_type": "documentation",
+      "difficulty": "hard",
+      "k": 3,
+      "criteria": {"expected_paths": ["README.md"]}
+    },
+    {
+      "id": "docs-validation-concern",
+      "repository": "service-fixture",
+      "goal": "Locate documentation describing validation concerns.",
+      "query": "documentation validation lowercase slugs positive quantities",
+      "task_type": "documentation",
+      "difficulty": "hard",
+      "k": 3,
+      "criteria": {"expected_paths": ["README.md"]}
+    }
+  ]
+}

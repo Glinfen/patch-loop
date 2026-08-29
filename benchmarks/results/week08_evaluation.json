@@ -1,0 +1,2814 @@
+{
+  "suite_id": "patchloop-week08",
+  "suite_revision": "week08-v1",
+  "reports": [
+    {
+      "suite_id": "patchloop-week08",
+      "suite_revision": "week08-v1",
+      "variant": "single_shot",
+      "repository_revisions": {
+        "service-fixture": "eval-suite-v1"
+      },
+      "aggregate": {
+        "total": 30,
+        "passed": 21,
+        "success_rate": 0.7,
+        "total_attempts": 39,
+        "by_difficulty": {
+          "easy": 0.8,
+          "hard": 0.7,
+          "medium": 0.6
+        },
+        "by_task_type": {
+          "bugfix": 1.0,
+          "documentation": 0.0,
+          "feature": 1.0,
+          "test": 0.625
+        }
+      },
+      "results": [
+        {
+          "task_id": "bugfix-auth-token",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 201.4305000193417,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-billing-tax",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "billing.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 81.3286998309195,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-pagination-page",
+          "task_type": "bugfix",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "pagination.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 269.75159998983145,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-cache-expiry",
+          "task_type": "bugfix",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "cache.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 121.882300125435,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-notification-urgent",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "notifications.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.827300017699599,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-inventory-reserve",
+          "task_type": "bugfix",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "inventory.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.55910007096827,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-user-email",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "users.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.577499978244305,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-scheduler-backoff",
+          "task_type": "bugfix",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "scheduler.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.123100010678172,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-auth-password",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 6.489699939265847,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-billing-discount",
+          "task_type": "feature",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "billing.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.079200025647879,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-pagination-cursor",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "pagination.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.085199838504195,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-cache-key",
+          "task_type": "feature",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "cache.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 22.94839988462627,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-notification-email",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "notifications.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.102100083604455,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-inventory-release",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "inventory.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.074100103229284,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-report-csv",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "reports.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 4.934600088745356,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-validation-slug",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "validation.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 36.90209984779358,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-auth-coverage",
+          "task_type": "test",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 4.85659996047616,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-billing-coverage",
+          "task_type": "test",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_billing.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 4.796299850568175,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-pagination-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "pagination.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.258499877527356,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "pagination.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 4.7647999599576,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-cache-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "cache.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 4.738399991765618,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "cache.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 84.68480012379587,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-inventory-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "inventory.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 4.857699852436781,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "inventory.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.047899903729558,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-users-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_users.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 4.9177000764757395,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-reports-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_reports.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 4.712499910965562,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-validation-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_validation.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 4.666500026360154,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-auth-concern",
+          "task_type": "documentation",
+          "difficulty": "easy",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 22.333200089633465,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.085200071334839,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-billing-concern",
+          "task_type": "documentation",
+          "difficulty": "easy",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "billing.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.392499966546893,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "billing.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.2143000066280365,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-pagination-concern",
+          "task_type": "documentation",
+          "difficulty": "medium",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "pagination.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 21.46809990517795,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "pagination.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.195500096306205,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-inventory-concern",
+          "task_type": "documentation",
+          "difficulty": "medium",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "inventory.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.119499983265996,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "inventory.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 36.87849990092218,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-scheduler-concern",
+          "task_type": "documentation",
+          "difficulty": "hard",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "scheduler.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.260600009933114,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "scheduler.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 26.089500170201063,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-validation-concern",
+          "task_type": "documentation",
+          "difficulty": "hard",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "validation.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.306399893015623,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "validation.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.211899988353252,
+              "error": null
+            }
+          ]
+        }
+      ],
+      "generated_at": "2026-08-29T13:10:38.619929Z"
+    },
+    {
+      "suite_id": "patchloop-week08",
+      "suite_revision": "week08-v1",
+      "variant": "no_plan",
+      "repository_revisions": {
+        "service-fixture": "eval-suite-v1"
+      },
+      "aggregate": {
+        "total": 30,
+        "passed": 24,
+        "success_rate": 0.8,
+        "total_attempts": 36,
+        "by_difficulty": {
+          "easy": 0.8,
+          "hard": 0.8,
+          "medium": 0.8
+        },
+        "by_task_type": {
+          "bugfix": 1.0,
+          "documentation": 0.0,
+          "feature": 1.0,
+          "test": 1.0
+        }
+      },
+      "results": [
+        {
+          "task_id": "bugfix-auth-token",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "auth.py",
+                "tests/test_auth.py",
+                "billing.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 207.66820013523102,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-billing-tax",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "billing.py",
+                "tests/test_billing.py",
+                "reports.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 174.82890002429485,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-pagination-page",
+          "task_type": "bugfix",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "pagination.py",
+                "reports.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 72.73830007761717,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-cache-expiry",
+          "task_type": "bugfix",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "cache.py",
+                "tests/test_cache.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 238.58040012419224,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-notification-urgent",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "notifications.py",
+                "tests/test_notifications.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.802599946036935,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-inventory-reserve",
+          "task_type": "bugfix",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "inventory.py",
+                "tests/test_inventory.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.784700158983469,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-user-email",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "users.py",
+                "notifications.py",
+                "tests/test_users.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 6.1525998171418905,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-scheduler-backoff",
+          "task_type": "bugfix",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "scheduler.py",
+                "tests/test_scheduler.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.630800034850836,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-auth-password",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "auth.py",
+                "tests/test_auth.py",
+                "billing.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 6.39350013807416,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-billing-discount",
+          "task_type": "feature",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "billing.py",
+                "tests/test_billing.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.285199964419007,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-pagination-cursor",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "pagination.py",
+                "scheduler.py",
+                "tests/test_pagination.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 6.357899866998196,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-cache-key",
+          "task_type": "feature",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "cache.py",
+                "tests/test_cache.py",
+                "reports.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.586100043728948,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-notification-email",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "notifications.py",
+                "users.py",
+                "tests/test_notifications.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.335800116881728,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-inventory-release",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "inventory.py",
+                "tests/test_inventory.py",
+                "validation.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.961700109764934,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-report-csv",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "reports.py",
+                "tests/test_reports.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.5102999322116375,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-validation-slug",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "validation.py",
+                "tests/test_validation.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.129700060933828,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-auth-coverage",
+          "task_type": "test",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_auth.py",
+                "auth.py",
+                "tests/test_notifications.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.75190014205873,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-billing-coverage",
+          "task_type": "test",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_billing.py",
+                "tests/test_notifications.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.2853000815957785,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-pagination-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_pagination.py",
+                "tests/test_notifications.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.140599794685841,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-cache-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_cache.py",
+                "cache.py",
+                "tests/test_notifications.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.970299942418933,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-inventory-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_inventory.py",
+                "inventory.py",
+                "tests/test_notifications.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.338199902325869,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-users-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_users.py",
+                "users.py",
+                "tests/test_notifications.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 21.68490015901625,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-reports-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_reports.py",
+                "reports.py",
+                "tests/test_notifications.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.233099916949868,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-validation-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_validation.py",
+                "validation.py",
+                "tests/test_notifications.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.1639999728649855,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-auth-concern",
+          "task_type": "documentation",
+          "difficulty": "easy",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "auth.py",
+                "tests/test_auth.py",
+                "billing.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 54.37829997390509,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "auth.py",
+                "tests/test_auth.py",
+                "billing.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.536000011488795,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-billing-concern",
+          "task_type": "documentation",
+          "difficulty": "easy",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "billing.py",
+                "tests/test_billing.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.39419986307621,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "billing.py",
+                "tests/test_billing.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.265599815174937,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-pagination-concern",
+          "task_type": "documentation",
+          "difficulty": "medium",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "pagination.py",
+                "tests/test_pagination.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 21.194000029936433,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "pagination.py",
+                "tests/test_pagination.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.746999988332391,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-inventory-concern",
+          "task_type": "documentation",
+          "difficulty": "medium",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "inventory.py",
+                "tests/test_inventory.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.835599964484572,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "inventory.py",
+                "tests/test_inventory.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.64019987359643,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-scheduler-concern",
+          "task_type": "documentation",
+          "difficulty": "hard",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "scheduler.py",
+                "tests/test_scheduler.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 28.75489997677505,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "scheduler.py",
+                "tests/test_scheduler.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.295600043609738,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-validation-concern",
+          "task_type": "documentation",
+          "difficulty": "hard",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "validation.py",
+                "tests/test_validation.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 5.680999951437116,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "validation.py",
+                "tests/test_validation.py",
+                "auth.py"
+              ],
+              "plan_steps": 0,
+              "duration_ms": 20.676700165495276,
+              "error": null
+            }
+          ]
+        }
+      ],
+      "generated_at": "2026-08-29T13:10:38.882300Z"
+    },
+    {
+      "suite_id": "patchloop-week08",
+      "suite_revision": "week08-v1",
+      "variant": "text_only",
+      "repository_revisions": {
+        "service-fixture": "eval-suite-v1"
+      },
+      "aggregate": {
+        "total": 30,
+        "passed": 24,
+        "success_rate": 0.8,
+        "total_attempts": 36,
+        "by_difficulty": {
+          "easy": 0.8,
+          "hard": 0.8,
+          "medium": 0.8
+        },
+        "by_task_type": {
+          "bugfix": 1.0,
+          "documentation": 0.0,
+          "feature": 1.0,
+          "test": 1.0
+        }
+      },
+      "results": [
+        {
+          "task_id": "bugfix-auth-token",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "auth.py",
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 278.81100005470216,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-billing-tax",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "billing.py",
+                "tests/test_billing.py",
+                "pagination.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 118.23259992524981,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-pagination-page",
+          "task_type": "bugfix",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "pagination.py",
+                "reports.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 86.92270005121827,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-cache-expiry",
+          "task_type": "bugfix",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "cache.py",
+                "tests/test_cache.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 278.6300000734627,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-notification-urgent",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "notifications.py",
+                "tests/test_notifications.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 6.410700036212802,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-inventory-reserve",
+          "task_type": "bugfix",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "inventory.py",
+                "tests/test_inventory.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 7.189400028437376,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-user-email",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "users.py",
+                "tests/test_users.py",
+                "notifications.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 6.278300192207098,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-scheduler-backoff",
+          "task_type": "bugfix",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "scheduler.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.57100004516542,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-auth-password",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "auth.py",
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 115.99130020476878,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-billing-discount",
+          "task_type": "feature",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "billing.py",
+                "tests/test_billing.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.535800009965897,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-pagination-cursor",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "pagination.py",
+                "tests/test_pagination.py",
+                "scheduler.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.4912997875362635,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-cache-key",
+          "task_type": "feature",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "cache.py",
+                "tests/test_cache.py",
+                "reports.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 6.070700008422136,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-notification-email",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "notifications.py",
+                "tests/test_notifications.py",
+                "tests/test_users.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 6.786199985072017,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-inventory-release",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "inventory.py",
+                "tests/test_inventory.py",
+                "tests/test_validation.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 6.077500060200691,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-report-csv",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "reports.py",
+                "tests/test_reports.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 6.932700052857399,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-validation-slug",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "validation.py",
+                "tests/test_validation.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.369800142943859,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-auth-coverage",
+          "task_type": "test",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_auth.py",
+                "auth.py",
+                "tests/test_billing.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.7218000292778015,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-billing-coverage",
+          "task_type": "test",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_billing.py",
+                "billing.py",
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.440599983558059,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-pagination-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "pagination.py",
+                "tests/test_pagination.py",
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.537899909541011,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-cache-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "cache.py",
+                "tests/test_cache.py",
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.472900113090873,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-inventory-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "inventory.py",
+                "tests/test_inventory.py",
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.131299840286374,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-users-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_users.py",
+                "users.py",
+                "tests/test_cache.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.300000077113509,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-reports-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_reports.py",
+                "reports.py",
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.523300031200051,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-validation-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_validation.py",
+                "validation.py",
+                "auth.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.519400117918849,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-auth-concern",
+          "task_type": "documentation",
+          "difficulty": "easy",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "auth.py",
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.678100045770407,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "auth.py",
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.992299877107143,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-billing-concern",
+          "task_type": "documentation",
+          "difficulty": "easy",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "billing.py",
+                "tests/test_billing.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.575899966061115,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "billing.py",
+                "tests/test_billing.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.551700014621019,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-pagination-concern",
+          "task_type": "documentation",
+          "difficulty": "medium",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "pagination.py",
+                "tests/test_pagination.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 38.8677001465112,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "pagination.py",
+                "tests/test_pagination.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.633600056171417,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-inventory-concern",
+          "task_type": "documentation",
+          "difficulty": "medium",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "inventory.py",
+                "tests/test_inventory.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 7.387799909338355,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "inventory.py",
+                "tests/test_inventory.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.766100017353892,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-scheduler-concern",
+          "task_type": "documentation",
+          "difficulty": "hard",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "scheduler.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 6.526899989694357,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "scheduler.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.426600109785795,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-validation-concern",
+          "task_type": "documentation",
+          "difficulty": "hard",
+          "passed": false,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "validation.py",
+                "auth.py",
+                "tests/test_validation.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 5.4830999579280615,
+              "error": null
+            },
+            {
+              "attempt": 2,
+              "passed": false,
+              "path_recall": 0.0,
+              "selected_paths": [
+                "validation.py",
+                "auth.py",
+                "tests/test_validation.py"
+              ],
+              "plan_steps": 1,
+              "duration_ms": 18.456999910995364,
+              "error": null
+            }
+          ]
+        }
+      ],
+      "generated_at": "2026-08-29T13:10:39.169193Z"
+    },
+    {
+      "suite_id": "patchloop-week08",
+      "suite_revision": "week08-v1",
+      "variant": "patchloop",
+      "repository_revisions": {
+        "service-fixture": "eval-suite-v1"
+      },
+      "aggregate": {
+        "total": 30,
+        "passed": 30,
+        "success_rate": 1.0,
+        "total_attempts": 30,
+        "by_difficulty": {
+          "easy": 1.0,
+          "hard": 1.0,
+          "medium": 1.0
+        },
+        "by_task_type": {
+          "bugfix": 1.0,
+          "documentation": 1.0,
+          "feature": 1.0,
+          "test": 1.0
+        }
+      },
+      "results": [
+        {
+          "task_id": "bugfix-auth-token",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "auth.py",
+                "billing.py",
+                "cache.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 85.83800005726516,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-billing-tax",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "billing.py",
+                "reports.py",
+                "pagination.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 206.7807000130415,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-pagination-page",
+          "task_type": "bugfix",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "pagination.py",
+                "reports.py",
+                "auth.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 132.89840007200837,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-cache-expiry",
+          "task_type": "bugfix",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "cache.py",
+                "auth.py",
+                "billing.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 222.99579996615648,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-notification-urgent",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "notifications.py",
+                "auth.py",
+                "billing.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 6.010300014168024,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-inventory-reserve",
+          "task_type": "bugfix",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "inventory.py",
+                "auth.py",
+                "billing.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.822199862450361,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-user-email",
+          "task_type": "bugfix",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "users.py",
+                "notifications.py",
+                "auth.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.989000201225281,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "bugfix-scheduler-backoff",
+          "task_type": "bugfix",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "scheduler.py",
+                "auth.py",
+                "billing.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.441300105303526,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-auth-password",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "auth.py",
+                "billing.py",
+                "cache.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 6.079999962821603,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-billing-discount",
+          "task_type": "feature",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "billing.py",
+                "auth.py",
+                "cache.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 6.000899942591786,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-pagination-cursor",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "pagination.py",
+                "scheduler.py",
+                "auth.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.6986999697983265,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-cache-key",
+          "task_type": "feature",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "cache.py",
+                "reports.py",
+                "auth.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 22.24910003133118,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-notification-email",
+          "task_type": "feature",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "notifications.py",
+                "users.py",
+                "auth.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.793299991637468,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-inventory-release",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "inventory.py",
+                "validation.py",
+                "auth.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.992399994283915,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-report-csv",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "reports.py",
+                "auth.py",
+                "billing.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 21.99740009382367,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "feature-validation-slug",
+          "task_type": "feature",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "validation.py",
+                "auth.py",
+                "billing.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.747500108554959,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-auth-coverage",
+          "task_type": "test",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_auth.py",
+                "tests/test_notifications.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.530199967324734,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-billing-coverage",
+          "task_type": "test",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_billing.py",
+                "tests/test_notifications.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 24.153999984264374,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-pagination-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_pagination.py",
+                "tests/test_notifications.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.4929000325500965,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-cache-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_cache.py",
+                "tests/test_notifications.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.689800018444657,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-inventory-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_inventory.py",
+                "tests/test_notifications.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 22.213000105693936,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-users-coverage",
+          "task_type": "test",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_users.py",
+                "tests/test_notifications.py",
+                "tests/test_reports.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.364699987694621,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-reports-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_reports.py",
+                "tests/test_notifications.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 5.1685001235455275,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "test-validation-coverage",
+          "task_type": "test",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "tests/test_validation.py",
+                "tests/test_notifications.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 22.078799782320857,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-auth-concern",
+          "task_type": "documentation",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "README.md",
+                "auth.py",
+                "tests/test_auth.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 38.09050004929304,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-billing-concern",
+          "task_type": "documentation",
+          "difficulty": "easy",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "README.md",
+                "billing.py",
+                "tests/test_billing.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 46.83010000735521,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-pagination-concern",
+          "task_type": "documentation",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "README.md",
+                "pagination.py",
+                "tests/test_pagination.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 35.91089998371899,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-inventory-concern",
+          "task_type": "documentation",
+          "difficulty": "medium",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "README.md",
+                "inventory.py",
+                "tests/test_inventory.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 22.47019996866584,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-scheduler-concern",
+          "task_type": "documentation",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "README.md",
+                "scheduler.py",
+                "tests/test_scheduler.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 17.93510001152754,
+              "error": null
+            }
+          ]
+        },
+        {
+          "task_id": "docs-validation-concern",
+          "task_type": "documentation",
+          "difficulty": "hard",
+          "passed": true,
+          "attempts": [
+            {
+              "attempt": 1,
+              "passed": true,
+              "path_recall": 1.0,
+              "selected_paths": [
+                "README.md",
+                "validation.py",
+                "tests/test_validation.py"
+              ],
+              "plan_steps": 2,
+              "duration_ms": 10.84230002015829,
+              "error": null
+            }
+          ]
+        }
+      ],
+      "generated_at": "2026-08-29T13:10:39.432919Z"
+    }
+  ],
+  "generated_at": "2026-08-29T13:10:39.432992Z"
+}

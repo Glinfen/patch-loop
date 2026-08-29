@@ -18,6 +18,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [Week 2 验收记录](docs/milestones/WEEK_02_ACCEPTANCE.md)：Plan-Execute、补丁、测试、diff 和最终报告证据。
 - [Week 3 验收记录](docs/milestones/WEEK_03_ACCEPTANCE.md)：错误分类、失败恢复、重规划和预算控制证据。
 - [Week 4 验收记录](docs/milestones/WEEK_04_ACCEPTANCE.md)：SQLite 持久化、检查点恢复和完整 CLI 生命周期证据。
+- [Week 5 验收记录](docs/milestones/WEEK_05_ACCEPTANCE.md)：Python AST 索引、可解释混合检索和 Recall@1 对比证据。
 
 ## 推荐项目周期
 
@@ -60,6 +61,10 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - 包含变更、验证、工具统计和 Token 用量的最终报告与持久化产物。
 - `run`、`status`、`resume`、`cancel`、`diff`、`trace` 等任务生命周期命令。
 - 默认非交互运行，并把权限集合随任务持久化，恢复时沿用原权限边界。
+- Python AST 仓库索引，可提取模块、类、函数、方法、引用和源码—测试映射。
+- `search_code` 混合检索工具，融合关键词、符号、轻量语义、符号距离、文件类型、最近访问和测试关联特征。
+- 每条代码定位结果包含文件、行号、符号、片段、来源、特征分数和排序理由。
+- 可复现的 `benchmark-search` 对比命令；第五周固定 4 任务集上 Recall@1 从 0.25 提升至 1.00。
 
 ## 本地开发
 
@@ -84,6 +89,9 @@ patchloop diff <task-id> --repo /path/to/repository
 patchloop trace <task-id> --repo /path/to/repository
 patchloop resume <task-id> --repo /path/to/repository
 patchloop cancel <task-id> --repo /path/to/repository
+patchloop index --repo /path/to/repository
+patchloop search "分页边界实现" --repo /path/to/repository --limit 5
+patchloop benchmark-search --tasks benchmarks/retrieval_tasks.json --root .
 ```
 
 运行 DeepSeek V4 Flash Agent：
@@ -99,6 +107,6 @@ patchloop run "修复分页边界错误并运行回归测试" `
 
 密钥只从进程环境变量读取，不会保存在任务、轨迹或仓库文件中。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。
 
-当前版本已完成“读取 → 修改 → 测试 → diff → 汇报”的确定性端到端闭环，并接入 DeepSeek V4 Flash、SQLite 检查点和任务恢复。Docker 沙箱和流式输出属于后续阶段。
+当前版本已完成“检索 → 规划 → 修改 → 测试 → diff → 汇报”的确定性端到端闭环，并接入 DeepSeek V4 Flash、SQLite 检查点、任务恢复和可解释 Repository Intelligence。上下文压缩、Docker 沙箱和流式输出属于后续阶段。
 
 `benchmarks/fixtures/calculator_bug` 提供了第一个固定缺陷仓库，后续写入闭环以 `benchmarks/tasks/calculator_bug.json` 作为自动验收任务。

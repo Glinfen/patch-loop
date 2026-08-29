@@ -1,8 +1,10 @@
+import json
 from pathlib import Path
 
 import pytest
 
 from patchloop.domain import ErrorKind, ToolCall
+from patchloop.intelligence import RepositoryIndexer
 from patchloop.tools import (
     ApplyPatchTool,
     CreateFileTool,
@@ -13,6 +15,7 @@ from patchloop.tools import (
     ReplaceTextTool,
     RunCommandTool,
     RunTestsTool,
+    SearchCodeTool,
     SearchTextTool,
     ToolContext,
     ToolGateway,
@@ -42,6 +45,11 @@ def make_gateway(repository: Path) -> ToolGateway:
 
 def test_read_only_tools_return_repository_evidence(tmp_path: Path) -> None:
     repository = make_repository(tmp_path)
+    (repository / ".patchloop").mkdir()
+    (repository / ".patchloop" / "repository-index.json").write_text(
+        "internal state",
+        encoding="utf-8",
+    )
     gateway = make_gateway(repository)
 
     listed = gateway.execute("task-1", ToolCall(name="list_files", arguments={}))
@@ -55,8 +63,38 @@ def test_read_only_tools_return_repository_evidence(tmp_path: Path) -> None:
     )
 
     assert listed.success and "src/calculator.py" in listed.output
+    assert ".patchloop" not in listed.output
     assert read.success and "2:     return left + right" in read.output
     assert searched.success and "src/calculator.py:2" in searched.output
+
+
+def test_search_code_returns_ranked_provenance_and_uses_recent_access(tmp_path: Path) -> None:
+    repository = make_repository(tmp_path)
+    index_path = repository / ".patchloop" / "repository-index.json"
+    RepositoryIndexer(repository).build().save(index_path)
+    original_index = index_path.read_text(encoding="utf-8")
+    context = ToolContext(repository)
+    gateway = ToolGateway(context, [ReadFileTool(), SearchCodeTool()])
+    gateway.execute(
+        "task-1",
+        ToolCall(name="read_file", arguments={"path": "src/calculator.py"}),
+    )
+
+    result = gateway.execute(
+        "task-1",
+        ToolCall(
+            name="search_code",
+            arguments={"query": "calculation function", "max_results": 2},
+        ),
+    )
+
+    payload = json.loads(result.output)
+    assert result.success
+    assert payload[0]["path"] == "src/calculator.py"
+    assert payload[0]["source"].startswith("ast+text+")
+    assert payload[0]["features"]["recent_access"] == 1.0
+    assert payload[0]["reasons"]
+    assert index_path.read_text(encoding="utf-8") == original_index
 
 
 def test_gateway_rejects_repository_escape(tmp_path: Path) -> None:

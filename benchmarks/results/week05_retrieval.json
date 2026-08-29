@@ -1,0 +1,45 @@
+{
+  "task_count": 4,
+  "baseline_recall_at_k": 0.25,
+  "hybrid_recall_at_k": 1.0,
+  "improvement": 0.75,
+  "results": [
+    {
+      "task_id": "calculator-division-implementation",
+      "query": "division implementation",
+      "expected_paths": ["calculator.py"],
+      "baseline_paths": [],
+      "hybrid_paths": ["calculator.py"],
+      "baseline_hit": false,
+      "hybrid_hit": true
+    },
+    {
+      "task_id": "calculator-regression-test",
+      "query": "fractional division regression",
+      "expected_paths": ["test_calculator.py"],
+      "baseline_paths": ["test_calculator.py"],
+      "hybrid_paths": ["test_calculator.py"],
+      "baseline_hit": true,
+      "hybrid_hit": true
+    },
+    {
+      "task_id": "checkpoint-persistence",
+      "query": "checkpoint database persistence",
+      "expected_paths": ["src/patchloop/persistence.py"],
+      "baseline_paths": ["src/patchloop/intelligence/search.py"],
+      "hybrid_paths": ["src/patchloop/persistence.py"],
+      "baseline_hit": false,
+      "hybrid_hit": true
+    },
+    {
+      "task_id": "repository-ranking",
+      "query": "repository search ranking regression test",
+      "expected_paths": ["tests/unit/test_intelligence.py"],
+      "baseline_paths": ["src/patchloop/intelligence/search.py"],
+      "hybrid_paths": ["tests/unit/test_intelligence.py"],
+      "baseline_hit": false,
+      "hybrid_hit": true
+    }
+  ],
+  "generated_at": "2026-08-29T12:03:44.349341Z"
+}

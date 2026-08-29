@@ -1,0 +1,30 @@
+[
+  {
+    "id": "calculator-division-implementation",
+    "repository": "benchmarks/fixtures/calculator_bug",
+    "query": "division implementation",
+    "expected_paths": ["calculator.py"],
+    "k": 1
+  },
+  {
+    "id": "calculator-regression-test",
+    "repository": "benchmarks/fixtures/calculator_bug",
+    "query": "fractional division regression",
+    "expected_paths": ["test_calculator.py"],
+    "k": 1
+  },
+  {
+    "id": "checkpoint-persistence",
+    "repository": ".",
+    "query": "checkpoint database persistence",
+    "expected_paths": ["src/patchloop/persistence.py"],
+    "k": 1
+  },
+  {
+    "id": "repository-ranking",
+    "repository": ".",
+    "query": "repository search ranking regression test",
+    "expected_paths": ["tests/unit/test_intelligence.py"],
+    "k": 1
+  }
+]

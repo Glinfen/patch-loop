@@ -96,3 +96,57 @@ def test_cli_resumes_running_task(tmp_path: Path, monkeypatch: object) -> None:
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["status"] == "completed"
     assert store.get_task(task.id).status is TaskStatus.COMPLETED
+
+
+def test_cli_indexes_searches_and_benchmarks_repository(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "math_service.py").write_text(
+        "def divide(left: int, right: int) -> float:\n"
+        '    """Return the quotient."""\n'
+        "    return left / right\n",
+        encoding="utf-8",
+    )
+    tasks = tmp_path / "retrieval.json"
+    tasks.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "locate-division",
+                    "repository": "repository",
+                    "query": "division implementation",
+                    "expected_paths": ["math_service.py"],
+                    "k": 1,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "report.json"
+
+    indexed = runner.invoke(app, ["index", "--repo", str(repository)])
+    searched = runner.invoke(
+        app,
+        ["search", "division implementation", "--repo", str(repository), "--limit", "1"],
+    )
+    benchmarked = runner.invoke(
+        app,
+        [
+            "benchmark-search",
+            "--tasks",
+            str(tasks),
+            "--root",
+            str(tmp_path),
+            "--output",
+            str(report_path),
+        ],
+    )
+
+    assert indexed.exit_code == 0, indexed.output
+    assert json.loads(indexed.output)["symbols"] == 2
+    assert (repository / ".patchloop" / "repository-index.json").is_file()
+    assert searched.exit_code == 0, searched.output
+    assert json.loads(searched.output)["results"][0]["path"] == "math_service.py"
+    assert benchmarked.exit_code == 0, benchmarked.output
+    assert json.loads(benchmarked.output)["hybrid_recall_at_k"] == 1.0
+    assert report_path.is_file()

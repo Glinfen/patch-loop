@@ -9,7 +9,17 @@ from pydantic import BaseModel, Field
 
 from patchloop.tools.base import Tool, ToolContext, ToolInputModel
 
-IGNORED_DIRECTORIES = {".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv"}
+IGNORED_DIRECTORIES = {
+    ".git",
+    ".mypy_cache",
+    ".patchloop",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+}
 
 
 def _files_under(root: Path, context: ToolContext) -> list[Path]:
@@ -71,6 +81,7 @@ class ReadFileTool(Tool):
         path = context.resolve_path(request.path)
         if not path.is_file():
             raise ValueError(f"not a file: {request.path}")
+        context.remember_access(path)
         if request.end_line is not None and request.end_line < request.start_line:
             raise ValueError("end_line must be greater than or equal to start_line")
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -113,6 +124,7 @@ class SearchTextTool(Tool):
                 candidate = line if request.case_sensitive else line.casefold()
                 if query in candidate:
                     relative = path.relative_to(context.repository).as_posix()
+                    context.remember_access(path)
                     matches.append(f"{relative}:{line_number}:{line.strip()}")
                     if len(matches) >= request.max_results:
                         matches.append(f"... truncated after {request.max_results} results")

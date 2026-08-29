@@ -41,6 +41,7 @@ class ToolContext:
         self.plan: Plan | None = None
         self.requires_replan = False
         self.replan_count = 0
+        self.recent_paths: list[str] = []
 
     def resolve_path(self, relative_path: str, *, must_exist: bool = True) -> Path:
         candidate = (self.repository / relative_path).resolve(strict=must_exist)
@@ -49,6 +50,12 @@ class ToolContext:
         except ValueError as exc:
             raise PathDeniedError(f"path escapes repository: {relative_path}") from exc
         return candidate
+
+    def remember_access(self, path: Path) -> None:
+        relative = path.relative_to(self.repository).as_posix()
+        self.recent_paths = [relative, *[item for item in self.recent_paths if item != relative]][
+            :20
+        ]
 
 
 class Tool(ABC):

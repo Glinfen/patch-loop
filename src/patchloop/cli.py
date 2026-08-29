@@ -10,6 +10,13 @@ import typer
 
 from patchloop.domain import Task, TaskBudget, TaskExecutionConfig, TaskStatus
 from patchloop.events import EventLogger
+from patchloop.intelligence import (
+    RepositoryIndexer,
+    RepositorySearch,
+    RepositorySnapshot,
+    evaluate_retrieval,
+    load_retrieval_tasks,
+)
 from patchloop.persistence import SQLiteStore
 from patchloop.providers import DeepSeekProvider
 from patchloop.runtime import AgentRuntime
@@ -24,6 +31,7 @@ from patchloop.tools import (
     ReplaceTextTool,
     RunCommandTool,
     RunTestsTool,
+    SearchCodeTool,
     SearchTextTool,
     ToolContext,
     ToolGateway,
@@ -50,6 +58,7 @@ def _all_tools() -> list[Tool]:
         ListFilesTool(),
         ReadFileTool(),
         SearchTextTool(),
+        SearchCodeTool(),
         UpdatePlanTool(),
         CreateFileTool(),
         ApplyPatchTool(),
@@ -101,6 +110,91 @@ def list_tools(
         _all_tools(),
     )
     typer.echo(json.dumps([item.model_dump() for item in gateway.specifications()], indent=2))
+
+
+def _index_path(repository: Path) -> Path:
+    return _state_dir(repository) / "repository-index.json"
+
+
+def _load_or_build_index(repository: Path) -> tuple[RepositorySnapshot, bool]:
+    indexer = RepositoryIndexer(repository)
+    path = _index_path(repository)
+    if path.is_file():
+        try:
+            snapshot = RepositorySnapshot.load(path)
+            if indexer.is_current(snapshot):
+                return snapshot, False
+        except (OSError, ValueError):
+            pass
+    snapshot = indexer.build()
+    snapshot.save(path)
+    return snapshot, True
+
+
+@app.command("index")
+def index_repository(
+    repo: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+) -> None:
+    snapshot = RepositoryIndexer(repo).build()
+    path = snapshot.save(_index_path(repo))
+    typer.echo(
+        json.dumps(
+            {
+                "path": str(path),
+                "files": len(snapshot.files),
+                "symbols": snapshot.symbol_count,
+                "references": snapshot.reference_count,
+                "test_mappings": len(snapshot.test_mappings),
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("search")
+def search_repository(
+    query: Annotated[str, typer.Argument(help="Natural-language code location query.")],
+    repo: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+    limit: Annotated[int, typer.Option(min=1, max=50)] = 10,
+) -> None:
+    snapshot, rebuilt = _load_or_build_index(repo)
+    hits = RepositorySearch(repo, snapshot).search(query, limit=limit)
+    typer.echo(
+        json.dumps(
+            {
+                "index_rebuilt": rebuilt,
+                "results": [hit.model_dump(mode="json") for hit in hits],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+@app.command("benchmark-search")
+def benchmark_repository_search(
+    tasks: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/retrieval_tasks.json"),
+    root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+    output: Annotated[str, typer.Option(help="Optional JSON report path.")] = "",
+) -> None:
+    report = evaluate_retrieval(load_retrieval_tasks(tasks), root)
+    if output:
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    typer.echo(report.model_dump_json(indent=2))
 
 
 @app.command("trace")

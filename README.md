@@ -23,6 +23,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [Week 7 验收记录](docs/milestones/WEEK_07_ACCEPTANCE.md)：Docker 沙箱、风险审批、敏感信息脱敏和任务回放验收。
 - [Week 8 验收记录](docs/milestones/WEEK_08_ACCEPTANCE.md)：固定 30 任务集、并发重试和四变体机器可读评测验收。
 - [评测协议](docs/EVALUATION.md)：清单格式、仓库指纹、成功判定、基线定义和运行方式。
+- [Week 9 验收记录](docs/milestones/WEEK_09_ACCEPTANCE.md)：失败分类、组件消融、两阶段优化及 5 轮稳定性证据。
 
 ## 推荐项目周期
 
@@ -80,6 +81,8 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - 版本化评测清单以仓库树 SHA-256 锁定环境，30 个任务覆盖 bugfix、feature、test、documentation，easy/medium/hard 各 10 个。
 - `benchmark` 支持 1～64 个并发 worker、失败重试、确定性结果排序，以及 single-shot、no-plan、text-only、PatchLoop 四变体对比。
 - 第八周固定代码定位切片中，四变体成功率分别为 70%、80%、80% 和 100%；完整任务级结果保存在机器可读 JSON 中。
+- `experiment` 一条命令运行规划、检索、反思消融，自动归类失败、比较优化阶段，并以结果指纹、最小/最大成功率和标准差检查重复稳定性。
+- 第九周 5 轮实验中完整系统稳定为 100%；去规划为 100%、去检索为 50%、去反思为 80%，所有变体结果标准差为 0，离线模型费用为 0 美元。
 
 ## 本地开发
 
@@ -113,6 +116,9 @@ patchloop benchmark-search --tasks benchmarks/retrieval_tasks.json --root .
 patchloop benchmark --manifest benchmarks/evaluation_manifest.json --root . \
   --variant all --jobs 4 --retries 1 \
   --output benchmarks/results/week08_evaluation.json
+patchloop experiment --manifest benchmarks/evaluation_manifest.json --root . \
+  --repeats 5 --jobs 4 \
+  --output benchmarks/results/week09_experiments.json
 ```
 
 运行 DeepSeek V4 Flash Agent：

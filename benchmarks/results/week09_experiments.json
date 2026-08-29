@@ -1,0 +1,597 @@
+{
+  "suite_id": "patchloop-week08",
+  "suite_revision": "week08-v1",
+  "repeats": 5,
+  "jobs": 4,
+  "variants": [
+    {
+      "name": "single-shot-baseline",
+      "role": "optimization_baseline",
+      "features": {
+        "planning": false,
+        "retrieval": true,
+        "hybrid_retrieval": false,
+        "reflection": false,
+        "task_routing": false,
+        "top_k": 1
+      },
+      "runs": [
+        {
+          "repeat": 1,
+          "passed": 21,
+          "total": 30,
+          "success_rate": 0.7,
+          "mean_task_latency_ms": 28.346446653207142,
+          "run_elapsed_ms": 222.41739998571575,
+          "input_tokens": 421,
+          "output_tokens": 138,
+          "cost_usd": 0.0,
+          "result_fingerprint": "f5b3e2d88ee2e1fd31a761af4b0c9ad6d87035aa65d5bf8e0d1bb4ec01386268"
+        },
+        {
+          "repeat": 2,
+          "passed": 21,
+          "total": 30,
+          "success_rate": 0.7,
+          "mean_task_latency_ms": 27.12206330616027,
+          "run_elapsed_ms": 210.60570003464818,
+          "input_tokens": 421,
+          "output_tokens": 138,
+          "cost_usd": 0.0,
+          "result_fingerprint": "f5b3e2d88ee2e1fd31a761af4b0c9ad6d87035aa65d5bf8e0d1bb4ec01386268"
+        },
+        {
+          "repeat": 3,
+          "passed": 21,
+          "total": 30,
+          "success_rate": 0.7,
+          "mean_task_latency_ms": 25.94638333345453,
+          "run_elapsed_ms": 203.8004999049008,
+          "input_tokens": 421,
+          "output_tokens": 138,
+          "cost_usd": 0.0,
+          "result_fingerprint": "f5b3e2d88ee2e1fd31a761af4b0c9ad6d87035aa65d5bf8e0d1bb4ec01386268"
+        },
+        {
+          "repeat": 4,
+          "passed": 21,
+          "total": 30,
+          "success_rate": 0.7,
+          "mean_task_latency_ms": 26.402863355663914,
+          "run_elapsed_ms": 205.96269983798265,
+          "input_tokens": 421,
+          "output_tokens": 138,
+          "cost_usd": 0.0,
+          "result_fingerprint": "f5b3e2d88ee2e1fd31a761af4b0c9ad6d87035aa65d5bf8e0d1bb4ec01386268"
+        },
+        {
+          "repeat": 5,
+          "passed": 21,
+          "total": 30,
+          "success_rate": 0.7,
+          "mean_task_latency_ms": 25.214856637952227,
+          "run_elapsed_ms": 195.96699997782707,
+          "input_tokens": 421,
+          "output_tokens": 138,
+          "cost_usd": 0.0,
+          "result_fingerprint": "f5b3e2d88ee2e1fd31a761af4b0c9ad6d87035aa65d5bf8e0d1bb4ec01386268"
+        }
+      ],
+      "mean_success_rate": 0.7,
+      "min_success_rate": 0.7,
+      "max_success_rate": 0.7,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": -0.3,
+      "mean_task_latency_ms": 26.606522657287616,
+      "mean_run_elapsed_ms": 207.7506599482149,
+      "total_cost_usd": 0.0,
+      "failures": {
+        "documentation_not_retrieved": 6,
+        "test_source_confusion": 3
+      },
+      "failure_examples": {
+        "documentation_not_retrieved": [
+          "docs-auth-concern",
+          "docs-billing-concern",
+          "docs-pagination-concern",
+          "docs-inventory-concern",
+          "docs-scheduler-concern"
+        ],
+        "test_source_confusion": [
+          "test-pagination-coverage",
+          "test-cache-coverage",
+          "test-inventory-coverage"
+        ]
+      }
+    },
+    {
+      "name": "routed-text",
+      "role": "optimization_stage",
+      "features": {
+        "planning": false,
+        "retrieval": true,
+        "hybrid_retrieval": false,
+        "reflection": false,
+        "task_routing": true,
+        "top_k": null
+      },
+      "runs": [
+        {
+          "repeat": 1,
+          "passed": 24,
+          "total": 30,
+          "success_rate": 0.8,
+          "mean_task_latency_ms": 25.16114000075807,
+          "run_elapsed_ms": 195.71660016663373,
+          "input_tokens": 421,
+          "output_tokens": 445,
+          "cost_usd": 0.0,
+          "result_fingerprint": "6952d5d6ab3b3917b5042c09962484708551d19f2cf430c982932d9719bd55e1"
+        },
+        {
+          "repeat": 2,
+          "passed": 24,
+          "total": 30,
+          "success_rate": 0.8,
+          "mean_task_latency_ms": 25.29068000925084,
+          "run_elapsed_ms": 198.356700129807,
+          "input_tokens": 421,
+          "output_tokens": 445,
+          "cost_usd": 0.0,
+          "result_fingerprint": "6952d5d6ab3b3917b5042c09962484708551d19f2cf430c982932d9719bd55e1"
+        },
+        {
+          "repeat": 3,
+          "passed": 24,
+          "total": 30,
+          "success_rate": 0.8,
+          "mean_task_latency_ms": 25.432790016445022,
+          "run_elapsed_ms": 201.2251999694854,
+          "input_tokens": 421,
+          "output_tokens": 445,
+          "cost_usd": 0.0,
+          "result_fingerprint": "6952d5d6ab3b3917b5042c09962484708551d19f2cf430c982932d9719bd55e1"
+        },
+        {
+          "repeat": 4,
+          "passed": 24,
+          "total": 30,
+          "success_rate": 0.8,
+          "mean_task_latency_ms": 26.308769988827407,
+          "run_elapsed_ms": 205.1963999401778,
+          "input_tokens": 421,
+          "output_tokens": 445,
+          "cost_usd": 0.0,
+          "result_fingerprint": "6952d5d6ab3b3917b5042c09962484708551d19f2cf430c982932d9719bd55e1"
+        },
+        {
+          "repeat": 5,
+          "passed": 24,
+          "total": 30,
+          "success_rate": 0.8,
+          "mean_task_latency_ms": 26.12748999769489,
+          "run_elapsed_ms": 202.63010007329285,
+          "input_tokens": 421,
+          "output_tokens": 445,
+          "cost_usd": 0.0,
+          "result_fingerprint": "6952d5d6ab3b3917b5042c09962484708551d19f2cf430c982932d9719bd55e1"
+        }
+      ],
+      "mean_success_rate": 0.8,
+      "min_success_rate": 0.8,
+      "max_success_rate": 0.8,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": -0.2,
+      "mean_task_latency_ms": 25.664174002595246,
+      "mean_run_elapsed_ms": 200.62500005587935,
+      "total_cost_usd": 0.0,
+      "failures": {
+        "documentation_not_retrieved": 6
+      },
+      "failure_examples": {
+        "documentation_not_retrieved": [
+          "docs-auth-concern",
+          "docs-billing-concern",
+          "docs-pagination-concern",
+          "docs-inventory-concern",
+          "docs-scheduler-concern"
+        ]
+      }
+    },
+    {
+      "name": "full",
+      "role": "system",
+      "features": {
+        "planning": true,
+        "retrieval": true,
+        "hybrid_retrieval": true,
+        "reflection": true,
+        "task_routing": true,
+        "top_k": null
+      },
+      "runs": [
+        {
+          "repeat": 1,
+          "passed": 30,
+          "total": 30,
+          "success_rate": 1.0,
+          "mean_task_latency_ms": 28.30634665830682,
+          "run_elapsed_ms": 219.57840002141893,
+          "input_tokens": 421,
+          "output_tokens": 1040,
+          "cost_usd": 0.0,
+          "result_fingerprint": "018fcee962636f6554a8a1d2af0f425b60a5231c54e1635fcfa367a2bd24a2fa"
+        },
+        {
+          "repeat": 2,
+          "passed": 30,
+          "total": 30,
+          "success_rate": 1.0,
+          "mean_task_latency_ms": 29.424179966251057,
+          "run_elapsed_ms": 228.467799955979,
+          "input_tokens": 421,
+          "output_tokens": 1040,
+          "cost_usd": 0.0,
+          "result_fingerprint": "018fcee962636f6554a8a1d2af0f425b60a5231c54e1635fcfa367a2bd24a2fa"
+        },
+        {
+          "repeat": 3,
+          "passed": 30,
+          "total": 30,
+          "success_rate": 1.0,
+          "mean_task_latency_ms": 32.116173300892115,
+          "run_elapsed_ms": 248.52210003882647,
+          "input_tokens": 421,
+          "output_tokens": 1040,
+          "cost_usd": 0.0,
+          "result_fingerprint": "018fcee962636f6554a8a1d2af0f425b60a5231c54e1635fcfa367a2bd24a2fa"
+        },
+        {
+          "repeat": 4,
+          "passed": 30,
+          "total": 30,
+          "success_rate": 1.0,
+          "mean_task_latency_ms": 30.285726689423125,
+          "run_elapsed_ms": 234.5803000498563,
+          "input_tokens": 421,
+          "output_tokens": 1040,
+          "cost_usd": 0.0,
+          "result_fingerprint": "018fcee962636f6554a8a1d2af0f425b60a5231c54e1635fcfa367a2bd24a2fa"
+        },
+        {
+          "repeat": 5,
+          "passed": 30,
+          "total": 30,
+          "success_rate": 1.0,
+          "mean_task_latency_ms": 30.568223314670224,
+          "run_elapsed_ms": 236.33349989540875,
+          "input_tokens": 421,
+          "output_tokens": 1040,
+          "cost_usd": 0.0,
+          "result_fingerprint": "018fcee962636f6554a8a1d2af0f425b60a5231c54e1635fcfa367a2bd24a2fa"
+        }
+      ],
+      "mean_success_rate": 1.0,
+      "min_success_rate": 1.0,
+      "max_success_rate": 1.0,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": 0.0,
+      "mean_task_latency_ms": 30.14012998590867,
+      "mean_run_elapsed_ms": 233.4964199922979,
+      "total_cost_usd": 0.0,
+      "failures": {},
+      "failure_examples": {}
+    },
+    {
+      "name": "no-planning",
+      "role": "ablation",
+      "features": {
+        "planning": false,
+        "retrieval": true,
+        "hybrid_retrieval": true,
+        "reflection": true,
+        "task_routing": true,
+        "top_k": null
+      },
+      "runs": [
+        {
+          "repeat": 1,
+          "passed": 30,
+          "total": 30,
+          "success_rate": 1.0,
+          "mean_task_latency_ms": 30.062790013228852,
+          "run_elapsed_ms": 233.2929999101907,
+          "input_tokens": 421,
+          "output_tokens": 457,
+          "cost_usd": 0.0,
+          "result_fingerprint": "018fcee962636f6554a8a1d2af0f425b60a5231c54e1635fcfa367a2bd24a2fa"
+        },
+        {
+          "repeat": 2,
+          "passed": 30,
+          "total": 30,
+          "success_rate": 1.0,
+          "mean_task_latency_ms": 31.762483320198953,
+          "run_elapsed_ms": 245.99969992414117,
+          "input_tokens": 421,
+          "output_tokens": 457,
+          "cost_usd": 0.0,
+          "result_fingerprint": "018fcee962636f6554a8a1d2af0f425b60a5231c54e1635fcfa367a2bd24a2fa"
+        },
+        {
+          "repeat": 3,
+          "passed": 30,
+          "total": 30,
+          "success_rate": 1.0,
+          "mean_task_latency_ms": 32.34674331421653,
+          "run_elapsed_ms": 251.20329996570945,
+          "input_tokens": 421,
+          "output_tokens": 457,
+          "cost_usd": 0.0,
+          "result_fingerprint": "018fcee962636f6554a8a1d2af0f425b60a5231c54e1635fcfa367a2bd24a2fa"
+        },
+        {
+          "repeat": 4,
+          "passed": 30,
+          "total": 30,
+          "success_rate": 1.0,
+          "mean_task_latency_ms": 29.758233344182372,
+          "run_elapsed_ms": 230.617499910295,
+          "input_tokens": 421,
+          "output_tokens": 457,
+          "cost_usd": 0.0,
+          "result_fingerprint": "018fcee962636f6554a8a1d2af0f425b60a5231c54e1635fcfa367a2bd24a2fa"
+        },
+        {
+          "repeat": 5,
+          "passed": 30,
+          "total": 30,
+          "success_rate": 1.0,
+          "mean_task_latency_ms": 28.805619998214144,
+          "run_elapsed_ms": 223.1966000981629,
+          "input_tokens": 421,
+          "output_tokens": 457,
+          "cost_usd": 0.0,
+          "result_fingerprint": "018fcee962636f6554a8a1d2af0f425b60a5231c54e1635fcfa367a2bd24a2fa"
+        }
+      ],
+      "mean_success_rate": 1.0,
+      "min_success_rate": 1.0,
+      "max_success_rate": 1.0,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": 0.0,
+      "mean_task_latency_ms": 30.54717399800817,
+      "mean_run_elapsed_ms": 236.86201996169984,
+      "total_cost_usd": 0.0,
+      "failures": {},
+      "failure_examples": {}
+    },
+    {
+      "name": "no-retrieval",
+      "role": "ablation",
+      "features": {
+        "planning": true,
+        "retrieval": false,
+        "hybrid_retrieval": true,
+        "reflection": true,
+        "task_routing": true,
+        "top_k": null
+      },
+      "runs": [
+        {
+          "repeat": 1,
+          "passed": 15,
+          "total": 30,
+          "success_rate": 0.5,
+          "mean_task_latency_ms": 8.88652999419719,
+          "run_elapsed_ms": 76.60960010252893,
+          "input_tokens": 421,
+          "output_tokens": 958,
+          "cost_usd": 0.0,
+          "result_fingerprint": "3351e3a3e5d679faaa6e0b93e7dcf13dbb1a12c93d0826c19422e76c09b66d49"
+        },
+        {
+          "repeat": 2,
+          "passed": 15,
+          "total": 30,
+          "success_rate": 0.5,
+          "mean_task_latency_ms": 8.95862999993066,
+          "run_elapsed_ms": 76.51080004870892,
+          "input_tokens": 421,
+          "output_tokens": 958,
+          "cost_usd": 0.0,
+          "result_fingerprint": "3351e3a3e5d679faaa6e0b93e7dcf13dbb1a12c93d0826c19422e76c09b66d49"
+        },
+        {
+          "repeat": 3,
+          "passed": 15,
+          "total": 30,
+          "success_rate": 0.5,
+          "mean_task_latency_ms": 10.130636642376581,
+          "run_elapsed_ms": 85.91999998316169,
+          "input_tokens": 421,
+          "output_tokens": 958,
+          "cost_usd": 0.0,
+          "result_fingerprint": "3351e3a3e5d679faaa6e0b93e7dcf13dbb1a12c93d0826c19422e76c09b66d49"
+        },
+        {
+          "repeat": 4,
+          "passed": 15,
+          "total": 30,
+          "success_rate": 0.5,
+          "mean_task_latency_ms": 9.313183347694576,
+          "run_elapsed_ms": 79.62319999933243,
+          "input_tokens": 421,
+          "output_tokens": 958,
+          "cost_usd": 0.0,
+          "result_fingerprint": "3351e3a3e5d679faaa6e0b93e7dcf13dbb1a12c93d0826c19422e76c09b66d49"
+        },
+        {
+          "repeat": 5,
+          "passed": 15,
+          "total": 30,
+          "success_rate": 0.5,
+          "mean_task_latency_ms": 8.419986659040054,
+          "run_elapsed_ms": 73.05410015396774,
+          "input_tokens": 421,
+          "output_tokens": 958,
+          "cost_usd": 0.0,
+          "result_fingerprint": "3351e3a3e5d679faaa6e0b93e7dcf13dbb1a12c93d0826c19422e76c09b66d49"
+        }
+      ],
+      "mean_success_rate": 0.5,
+      "min_success_rate": 0.5,
+      "max_success_rate": 0.5,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": -0.5,
+      "mean_task_latency_ms": 9.141793328647813,
+      "mean_run_elapsed_ms": 78.34354005753994,
+      "total_cost_usd": 0.0,
+      "failures": {
+        "expected_path_not_retrieved": 15
+      },
+      "failure_examples": {
+        "expected_path_not_retrieved": [
+          "bugfix-pagination-page",
+          "bugfix-notification-urgent",
+          "bugfix-inventory-reserve",
+          "bugfix-user-email",
+          "bugfix-scheduler-backoff"
+        ]
+      }
+    },
+    {
+      "name": "no-reflection",
+      "role": "ablation",
+      "features": {
+        "planning": true,
+        "retrieval": true,
+        "hybrid_retrieval": true,
+        "reflection": false,
+        "task_routing": true,
+        "top_k": null
+      },
+      "runs": [
+        {
+          "repeat": 1,
+          "passed": 24,
+          "total": 30,
+          "success_rate": 0.8,
+          "mean_task_latency_ms": 28.99449999288966,
+          "run_elapsed_ms": 226.92260006442666,
+          "input_tokens": 421,
+          "output_tokens": 1035,
+          "cost_usd": 0.0,
+          "result_fingerprint": "4ab6cc82ad5e960841a2ab5692184b4309f1e959eb9e22341120f951f09302c1"
+        },
+        {
+          "repeat": 2,
+          "passed": 24,
+          "total": 30,
+          "success_rate": 0.8,
+          "mean_task_latency_ms": 28.43768666498363,
+          "run_elapsed_ms": 221.72549995593727,
+          "input_tokens": 421,
+          "output_tokens": 1035,
+          "cost_usd": 0.0,
+          "result_fingerprint": "4ab6cc82ad5e960841a2ab5692184b4309f1e959eb9e22341120f951f09302c1"
+        },
+        {
+          "repeat": 3,
+          "passed": 24,
+          "total": 30,
+          "success_rate": 0.8,
+          "mean_task_latency_ms": 27.734573332903285,
+          "run_elapsed_ms": 217.07449993118644,
+          "input_tokens": 421,
+          "output_tokens": 1035,
+          "cost_usd": 0.0,
+          "result_fingerprint": "4ab6cc82ad5e960841a2ab5692184b4309f1e959eb9e22341120f951f09302c1"
+        },
+        {
+          "repeat": 4,
+          "passed": 24,
+          "total": 30,
+          "success_rate": 0.8,
+          "mean_task_latency_ms": 28.56331666310628,
+          "run_elapsed_ms": 222.74240013211966,
+          "input_tokens": 421,
+          "output_tokens": 1035,
+          "cost_usd": 0.0,
+          "result_fingerprint": "4ab6cc82ad5e960841a2ab5692184b4309f1e959eb9e22341120f951f09302c1"
+        },
+        {
+          "repeat": 5,
+          "passed": 24,
+          "total": 30,
+          "success_rate": 0.8,
+          "mean_task_latency_ms": 26.969593320973217,
+          "run_elapsed_ms": 211.640200112015,
+          "input_tokens": 421,
+          "output_tokens": 1035,
+          "cost_usd": 0.0,
+          "result_fingerprint": "4ab6cc82ad5e960841a2ab5692184b4309f1e959eb9e22341120f951f09302c1"
+        }
+      ],
+      "mean_success_rate": 0.8,
+      "min_success_rate": 0.8,
+      "max_success_rate": 0.8,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": -0.2,
+      "mean_task_latency_ms": 28.139933994971216,
+      "mean_run_elapsed_ms": 220.021040039137,
+      "total_cost_usd": 0.0,
+      "failures": {
+        "documentation_not_retrieved": 6
+      },
+      "failure_examples": {
+        "documentation_not_retrieved": [
+          "docs-auth-concern",
+          "docs-billing-concern",
+          "docs-pagination-concern",
+          "docs-inventory-concern",
+          "docs-scheduler-concern"
+        ]
+      }
+    }
+  ],
+  "optimization_stages": [
+    {
+      "name": "single-shot-baseline",
+      "passed": 21,
+      "total": 30,
+      "success_rate": 0.7,
+      "improvement_vs_baseline": 0.0
+    },
+    {
+      "name": "routed-text",
+      "passed": 24,
+      "total": 30,
+      "success_rate": 0.8,
+      "improvement_vs_baseline": 0.1
+    },
+    {
+      "name": "full",
+      "passed": 30,
+      "total": 30,
+      "success_rate": 1.0,
+      "improvement_vs_baseline": 0.3
+    }
+  ],
+  "largest_baseline_failures": {
+    "documentation_not_retrieved": 6,
+    "test_source_confusion": 3
+  },
+  "conclusions": [
+    "Planning changed localization success by +0.000.",
+    "Removing retrieval changed localization success by -0.500.",
+    "Removing reflection changed localization success by -0.200.",
+    "All repeated variants produced stable task-result fingerprints."
+  ]
+}

@@ -14,6 +14,7 @@ from patchloop.domain import Task, TaskBudget, TaskExecutionConfig, TaskStatus
 from patchloop.evaluation import (
     EvaluationRunner,
     EvaluationVariant,
+    ExperimentRunner,
     RetrievalBaseline,
     load_evaluation_manifest,
 )
@@ -262,6 +263,40 @@ def benchmark_evaluation(
             task_manifest,
             [RetrievalBaseline(item) for item in variants],
         )
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    typer.echo(report.model_dump_json(indent=2))
+
+
+@app.command("experiment")
+def run_evaluation_experiments(
+    manifest: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/evaluation_manifest.json"),
+    root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/results/week09_experiments.json"),
+    repeats: Annotated[int, typer.Option(min=1, max=20)] = 5,
+    jobs: Annotated[int, typer.Option(min=1, max=64)] = 4,
+    retries: Annotated[int, typer.Option(min=0, max=10)] = 0,
+) -> None:
+    try:
+        task_manifest = load_evaluation_manifest(manifest)
+        report = ExperimentRunner(
+            root,
+            jobs=jobs,
+            retries=retries,
+            repeats=repeats,
+        ).run(task_manifest)
     except (OSError, ValueError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None

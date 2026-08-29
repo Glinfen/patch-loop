@@ -132,6 +132,9 @@ class EvaluationRunner:
                     selected_paths=candidate.selected_paths,
                     plan_steps=len(candidate.plan_steps),
                     duration_ms=(perf_counter() - started) * 1_000,
+                    input_tokens=candidate.input_tokens,
+                    output_tokens=candidate.output_tokens,
+                    cost_usd=candidate.cost_usd,
                     error=error,
                 )
             )
@@ -153,11 +156,19 @@ def _aggregate(results: list[EvaluationTaskResult]) -> EvaluationAggregate:
     for result in results:
         difficulty_groups[result.difficulty].append(result.passed)
         type_groups[result.task_type].append(result.passed)
+    attempts = [attempt for result in results for attempt in result.attempts]
+    latencies = sorted(attempt.duration_ms for attempt in attempts)
+    p95_index = max(0, min(len(latencies) - 1, int(len(latencies) * 0.95)))
     return EvaluationAggregate(
         total=len(results),
         passed=passed,
         success_rate=passed / len(results) if results else 0.0,
         total_attempts=sum(len(result.attempts) for result in results),
+        mean_latency_ms=(sum(latencies) / len(latencies) if latencies else 0.0),
+        p95_latency_ms=latencies[p95_index] if latencies else 0.0,
+        input_tokens=sum(attempt.input_tokens for attempt in attempts),
+        output_tokens=sum(attempt.output_tokens for attempt in attempts),
+        total_cost_usd=sum(attempt.cost_usd for attempt in attempts),
         by_difficulty={
             difficulty.value: sum(values) / len(values)
             for difficulty, values in sorted(difficulty_groups.items())

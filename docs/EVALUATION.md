@@ -51,3 +51,22 @@ patchloop benchmark \
 ```
 
 报告包含每个变体的总体成功率、尝试次数、按难度和类型的成功率，以及每个任务的候选路径、Recall、计划步数、耗时和错误。
+
+## 消融、优化与稳定性
+
+第九周在相同 30 任务和仓库指纹上增加实验命令：
+
+```bash
+patchloop experiment \
+  --manifest benchmarks/evaluation_manifest.json \
+  --root . \
+  --repeats 5 \
+  --jobs 4 \
+  --output benchmarks/results/week09_experiments.json
+```
+
+实验定义 6 个变体：单次基线、加入任务类型路由的文本检索、完整系统，以及去规划、去检索、去反思三个消融。这里“反思”的操作定义是：第一轮候选不覆盖文档任务类型时，触发通用文档二次检索；它不是额外的远程模型调用。
+
+失败分类使用固定 taxonomy：`documentation_not_retrieved`、`test_source_confusion`、`expected_path_not_retrieved`、`no_candidates` 和 `executor_error`。优化仅针对单次基线中数量最大的两类失败，并把每阶段的成功率独立记录。
+
+每轮保存成功率、任务平均时延、整轮时延、Token 估算、费用和排除时延后的任务结果 SHA-256。稳定性报告提供最小值、最大值、总体标准差和指纹一致性。离线执行器不调用 Provider，因此费用严格为 0 美元；Token 是确定性估算，不应与供应商计费 Token 混用。

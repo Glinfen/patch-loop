@@ -79,6 +79,9 @@ class EvaluationCandidate(BaseModel):
     selected_paths: list[str] = Field(default_factory=list)
     plan_steps: list[str] = Field(default_factory=list)
     notes: str = ""
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0.0)
 
 
 class EvaluationAttempt(BaseModel):
@@ -88,6 +91,9 @@ class EvaluationAttempt(BaseModel):
     selected_paths: list[str] = Field(default_factory=list)
     plan_steps: int = Field(default=0, ge=0)
     duration_ms: float = Field(default=0.0, ge=0.0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0.0)
     error: str | None = None
 
 
@@ -104,6 +110,11 @@ class EvaluationAggregate(BaseModel):
     passed: int = Field(ge=0)
     success_rate: float = Field(ge=0.0, le=1.0)
     total_attempts: int = Field(ge=0)
+    mean_latency_ms: float = Field(default=0.0, ge=0.0)
+    p95_latency_ms: float = Field(default=0.0, ge=0.0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_cost_usd: float = Field(default=0.0, ge=0.0)
     by_difficulty: dict[str, float] = Field(default_factory=dict)
     by_task_type: dict[str, float] = Field(default_factory=dict)
 

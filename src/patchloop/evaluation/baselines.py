@@ -48,6 +48,8 @@ class RetrievalBaseline:
             selected_paths=selected_paths,
             plan_steps=plan,
             notes=f"{self.variant} used {mode} retrieval",
+            input_tokens=_estimate_tokens(task.query),
+            output_tokens=_estimate_tokens("\n".join([*selected_paths, *plan])),
         )
 
     def _searcher(self, repository: Path) -> RepositorySearch:
@@ -82,3 +84,7 @@ def _documentation_paths(repository: Path, query: str) -> list[str]:
         content_tokens = set(tokenize(path.read_text(encoding="utf-8", errors="replace")))
         ranked.append((len(query_tokens & content_tokens), relative))
     return [path for score, path in sorted(ranked, key=lambda item: (-item[0], item[1])) if score]
+
+
+def _estimate_tokens(value: str) -> int:
+    return (len(value.encode("utf-8")) + 2) // 3

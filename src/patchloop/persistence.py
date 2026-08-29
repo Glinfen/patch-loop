@@ -32,6 +32,10 @@ class RuntimeCheckpoint(BaseModel):
     output_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0)
     elapsed_seconds: float = Field(default=0.0, ge=0)
+    context_windows: int = Field(default=0, ge=0)
+    context_compactions: int = Field(default=0, ge=0)
+    max_context_tokens_used: int = Field(default=0, ge=0)
+    truncated_tool_outputs: int = Field(default=0, ge=0)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

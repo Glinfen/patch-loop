@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from time import monotonic
 
+from patchloop.context import ContextBudgetError, ContextEngine
 from patchloop.domain import (
     AgentStep,
     ErrorKind,
@@ -36,14 +37,20 @@ class AgentRuntime:
         gateway: ToolGateway,
         event_logger: EventLogger | None = None,
         state_store: SQLiteStore | None = None,
+        context_engine: ContextEngine | None = None,
     ) -> None:
         self.provider = provider
         self.gateway = gateway
         self.event_logger = event_logger
         self.state_store = state_store
+        self.context_engine = context_engine
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
+        self._context_windows = 0
+        self._context_compactions = 0
+        self._max_context_tokens_used = 0
+        self._truncated_tool_outputs = 0
 
     def run(self, task: Task) -> Task:
         task.transition(TaskStatus.RUNNING)
@@ -51,6 +58,10 @@ class AgentRuntime:
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
+        self._context_windows = 0
+        self._context_compactions = 0
+        self._max_context_tokens_used = 0
+        self._truncated_tool_outputs = 0
         messages = [
             ModelMessage(role="system", content=SYSTEM_PROMPT),
             ModelMessage(role="user", content=task.goal),
@@ -79,6 +90,10 @@ class AgentRuntime:
         self._input_tokens = checkpoint.input_tokens
         self._output_tokens = checkpoint.output_tokens
         self._cost_usd = checkpoint.cost_usd
+        self._context_windows = checkpoint.context_windows
+        self._context_compactions = checkpoint.context_compactions
+        self._max_context_tokens_used = checkpoint.max_context_tokens_used
+        self._truncated_tool_outputs = checkpoint.truncated_tool_outputs
         self._emit(
             "task.resumed",
             task,
@@ -93,6 +108,11 @@ class AgentRuntime:
         repeated_errors = dict(state.repeated_errors)
         tool_failures = state.tool_failures
         elapsed_before = state.elapsed_seconds
+        context_engine = self.context_engine or ContextEngine(
+            max_tokens=task.budget.max_context_tokens,
+            max_tool_output_chars=task.budget.max_tool_output_chars,
+            recent_steps=task.budget.context_recent_steps,
+        )
         started = monotonic()
         try:
             for step_index in range(state.next_step_index, task.budget.max_steps):
@@ -114,7 +134,35 @@ class AgentRuntime:
                 )
                 self._record_step(step)
                 self._emit("step.started", task, {"step": step_index})
-                response = self.provider.complete(messages, self.gateway.specifications())
+                specifications = self.gateway.specifications()
+                try:
+                    window = context_engine.build(
+                        messages,
+                        specifications,
+                        self.gateway.context.plan,
+                    )
+                except ContextBudgetError as exc:
+                    return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
+                self._context_windows += 1
+                self._context_compactions += int(bool(window.debug.dropped_steps))
+                self._max_context_tokens_used = max(
+                    self._max_context_tokens_used,
+                    window.debug.estimated_tokens,
+                )
+                self._emit(
+                    "context.built",
+                    task,
+                    {
+                        "step": step_index,
+                        "debug": window.debug.model_dump(mode="json"),
+                        "memory": (
+                            window.memory.model_dump(mode="json")
+                            if window.memory is not None
+                            else None
+                        ),
+                    },
+                )
+                response = self.provider.complete(window.messages, specifications)
                 self._input_tokens += response.usage.input_tokens
                 self._output_tokens += response.usage.output_tokens
                 self._cost_usd += response.usage.cost_usd
@@ -188,10 +236,12 @@ class AgentRuntime:
                 for call in response.tool_calls:
                     result = self._execute_or_replay(task, call)
                     step.tool_results.append(result)
+                    observation, truncated = context_engine.compact_tool_result(result)
+                    self._truncated_tool_outputs += int(truncated)
                     messages.append(
                         ModelMessage(
                             role="tool",
-                            content=result.model_dump_json(),
+                            content=observation,
                             tool_call_id=call.id,
                         )
                     )
@@ -343,6 +393,10 @@ class AgentRuntime:
             input_tokens=self._input_tokens,
             output_tokens=self._output_tokens,
             cost_usd=self._cost_usd,
+            context_windows=self._context_windows,
+            context_compactions=self._context_compactions,
+            max_context_tokens_used=self._max_context_tokens_used,
+            truncated_tool_outputs=self._truncated_tool_outputs,
         )
 
     def _model_budget_error(self, task: Task) -> str | None:
@@ -382,6 +436,10 @@ class AgentRuntime:
             output_tokens=self._output_tokens,
             cost_usd=self._cost_usd,
             elapsed_seconds=elapsed_seconds,
+            context_windows=self._context_windows,
+            context_compactions=self._context_compactions,
+            max_context_tokens_used=self._max_context_tokens_used,
+            truncated_tool_outputs=self._truncated_tool_outputs,
         )
 
     def _persist_task(self, task: Task) -> None:

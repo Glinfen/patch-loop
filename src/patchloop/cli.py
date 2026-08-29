@@ -8,6 +8,7 @@ from typing import Annotated
 
 import typer
 
+from patchloop.context import ContextDebug
 from patchloop.domain import Task, TaskBudget, TaskExecutionConfig, TaskStatus
 from patchloop.events import EventLogger
 from patchloop.intelligence import (
@@ -210,6 +211,27 @@ def show_trace(
         typer.echo(event.model_dump_json())
 
 
+@app.command("context")
+def show_context_debug(
+    task_id: Annotated[str, typer.Argument()],
+    repo: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+) -> None:
+    logger = EventLogger(_state_dir(repo) / "traces" / f"{task_id}.jsonl")
+    event = next(
+        (item for item in reversed(logger.read()) if item.type == "context.built"),
+        None,
+    )
+    if event is None:
+        typer.echo(f"context trace not found: {task_id}", err=True)
+        raise typer.Exit(code=1)
+    debug = ContextDebug.model_validate(event.data["debug"])
+    typer.echo(debug.render())
+    typer.echo(debug.model_dump_json(indent=2))
+
+
 @app.command("status")
 def task_status(
     task_id: Annotated[str, typer.Argument()],
@@ -287,6 +309,9 @@ def run_task(
     max_steps: Annotated[int, typer.Option(min=1, max=1_000)] = 20,
     max_input_tokens: Annotated[int, typer.Option(min=1)] = 500_000,
     max_output_tokens: Annotated[int, typer.Option(min=1)] = 100_000,
+    max_context_tokens: Annotated[int, typer.Option(min=256)] = 32_000,
+    max_tool_output_chars: Annotated[int, typer.Option(min=128)] = 8_000,
+    context_recent_steps: Annotated[int, typer.Option(min=1, max=100)] = 4,
     max_cost_usd: Annotated[float, typer.Option(min=0.0001)] = 5.0,
     max_tool_failures: Annotated[int, typer.Option(min=0, max=1_000)] = 10,
     non_interactive: Annotated[
@@ -313,6 +338,9 @@ def run_task(
             max_steps=max_steps,
             max_input_tokens=max_input_tokens,
             max_output_tokens=max_output_tokens,
+            max_context_tokens=max_context_tokens,
+            max_tool_output_chars=max_tool_output_chars,
+            context_recent_steps=context_recent_steps,
             max_cost_usd=max_cost_usd,
             max_tool_failures=max_tool_failures,
         ),

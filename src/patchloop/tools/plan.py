@@ -27,6 +27,8 @@ class UpdatePlanTool(Tool):
     def run(self, arguments: BaseModel, context: ToolContext) -> str:
         request = UpdatePlanInput.model_validate(arguments)
         revision = 1 if context.plan is None else context.plan.revision + 1
+        if context.requires_replan:
+            context.replan_count += 1
         context.plan = Plan(
             items=[
                 PlanItem(
@@ -38,4 +40,5 @@ class UpdatePlanTool(Tool):
             ],
             revision=revision,
         )
+        context.requires_replan = False
         return context.plan.model_dump_json()

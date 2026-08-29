@@ -11,6 +11,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from patchloop.domain import ErrorKind
 from patchloop.tools.base import (
     PermissionLevel,
     Tool,
@@ -63,6 +64,20 @@ class RunTestsTool(Tool):
             {"exit_code": completed.returncode, "output": output},
             ensure_ascii=False,
         )
+
+    def classify_output(self, output: str) -> ErrorKind | None:
+        try:
+            payload = json.loads(output)
+        except json.JSONDecodeError:
+            return ErrorKind.TEST_FAILURE
+        if not isinstance(payload, dict) or payload.get("exit_code") != 0:
+            details = payload.get("output", "") if isinstance(payload, dict) else output
+            if isinstance(details, str) and (
+                "SyntaxError" in details or "IndentationError" in details
+            ):
+                return ErrorKind.SYNTAX_ERROR
+            return ErrorKind.TEST_FAILURE
+        return None
 
     @staticmethod
     def _normalize_command(command: list[str], context: ToolContext) -> list[str]:
@@ -147,6 +162,15 @@ class RunCommandTool(Tool):
             {"exit_code": completed.returncode, "output": output},
             ensure_ascii=False,
         )
+
+    def classify_output(self, output: str) -> ErrorKind | None:
+        try:
+            payload = json.loads(output)
+        except json.JSONDecodeError:
+            return ErrorKind.COMMAND_FAILURE
+        if not isinstance(payload, dict) or payload.get("exit_code") != 0:
+            return ErrorKind.COMMAND_FAILURE
+        return None
 
     @classmethod
     def _normalize_command(cls, command: list[str]) -> list[str]:

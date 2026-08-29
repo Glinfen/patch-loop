@@ -16,6 +16,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [实施计划](docs/IMPLEMENTATION_PLAN.md)：技术方案、阶段里程碑、验收标准、风险与交付物。
 - [Week 1 验收记录](docs/milestones/WEEK_01_ACCEPTANCE.md)：安装、CLI、测试、类型检查和覆盖率证据。
 - [Week 2 验收记录](docs/milestones/WEEK_02_ACCEPTANCE.md)：Plan-Execute、补丁、测试、diff 和最终报告证据。
+- [Week 3 验收记录](docs/milestones/WEEK_03_ACCEPTANCE.md)：错误分类、失败恢复、重规划和预算控制证据。
 
 ## 推荐项目周期
 
@@ -51,7 +52,8 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - 原子 `create_file`、结构化 `apply_patch`、精确 `replace_text` 工具。
 - 受限 `run_command`、`run_tests` 和 `get_diff` 工具。
 - 默认只读的权限策略，以及仓库路径和符号链接边界检查。
-- 有步骤、时间预算和重复动作检测的 Agent 执行循环。
+- 有步骤、时间、Token、费用、工具失败和重规划预算的 Agent 执行循环。
+- 测试/语法/命令失败分类，失败后强制重新规划和重复错误检测。
 - JSONL 事件轨迹和本地任务存储。
 - 包含变更、验证、工具统计和 Token 用量的最终报告与持久化产物。
 - `task create`、`task show`、`tools`、`trace` CLI 命令。
@@ -83,7 +85,8 @@ $env:DEEPSEEK_API_KEY = Read-Host "DeepSeek API key" -MaskInput
 patchloop run "修复分页边界错误并运行回归测试" `
   --repo C:\path\to\repository `
   --allow-write `
-  --allow-execute
+  --allow-execute `
+  --max-cost-usd 1.0
 ```
 
 密钥只从进程环境变量读取，不会保存在任务、轨迹或仓库文件中。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。

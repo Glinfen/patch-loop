@@ -88,6 +88,19 @@ class ToolGateway:
                 output=f"an execution plan is required before using {call.name}",
             )
             return self._finish(task_id, call, result, started)
+        if (
+            self.policy.require_plan_for_mutations
+            and tool.permission in {PermissionLevel.WRITE, PermissionLevel.EXECUTE}
+            and self.context.requires_replan
+        ):
+            result = ToolResult(
+                call_id=call.id,
+                tool_name=call.name,
+                success=False,
+                error_kind=ErrorKind.PERMISSION_DENIED,
+                output=f"update_plan is required after the previous failure before {call.name}",
+            )
+            return self._finish(task_id, call, result, started)
         if call.arguments_error is not None:
             result = ToolResult(
                 call_id=call.id,
@@ -100,11 +113,13 @@ class ToolGateway:
         try:
             arguments = tool.input_model.model_validate(call.arguments)
             output = tool.run(arguments, self.context)
+            output_error = tool.classify_output(output)
             result = ToolResult(
                 call_id=call.id,
                 tool_name=call.name,
-                success=True,
+                success=output_error is None,
                 output=output,
+                error_kind=output_error,
             )
         except ValidationError as exc:
             result = ToolResult(
@@ -138,6 +153,11 @@ class ToolGateway:
                 error_kind=ErrorKind.EXECUTION_ERROR,
                 output=str(exc),
             )
+        if not result.success and tool.permission in {
+            PermissionLevel.WRITE,
+            PermissionLevel.EXECUTE,
+        }:
+            self.context.requires_replan = True
         return self._finish(task_id, call, result, started)
 
     def _finish(

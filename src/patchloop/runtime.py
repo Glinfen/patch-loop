@@ -28,12 +28,14 @@ class AgentRuntime:
         self.event_logger = event_logger
         self._input_tokens = 0
         self._output_tokens = 0
+        self._cost_usd = 0.0
 
     def run(self, task: Task) -> Task:
         task.transition(TaskStatus.RUNNING)
         self.gateway.context.plan = task.plan
         self._input_tokens = 0
         self._output_tokens = 0
+        self._cost_usd = 0.0
         self._emit("task.started", task, {"provider": self.provider.name})
         messages = [
             ModelMessage(role="system", content=SYSTEM_PROMPT),
@@ -42,6 +44,8 @@ class AgentRuntime:
         started = monotonic()
         previous_fingerprint: str | None = None
         repeated_actions = 0
+        repeated_errors: dict[str, int] = {}
+        tool_failures = 0
         try:
             for step_index in range(task.budget.max_steps):
                 if monotonic() - started > task.budget.max_seconds:
@@ -54,6 +58,10 @@ class AgentRuntime:
                 response = self.provider.complete(messages, self.gateway.specifications())
                 self._input_tokens += response.usage.input_tokens
                 self._output_tokens += response.usage.output_tokens
+                self._cost_usd += response.usage.cost_usd
+                budget_error = self._model_budget_error(task)
+                if budget_error is not None:
+                    return self._fail(task, ErrorKind.BUDGET_EXCEEDED, budget_error)
                 self._emit(
                     "model.completed",
                     task,
@@ -122,6 +130,38 @@ class AgentRuntime:
                             tool_call_id=call.id,
                         )
                     )
+                    if not result.success:
+                        tool_failures += 1
+                        error_fingerprint = json.dumps(
+                            {
+                                "tool": result.tool_name,
+                                "kind": result.error_kind,
+                                "output": result.output[:1_000],
+                            },
+                            sort_keys=True,
+                        )
+                        repeated_errors[error_fingerprint] = (
+                            repeated_errors.get(error_fingerprint, 0) + 1
+                        )
+                        if repeated_errors[error_fingerprint] >= task.budget.max_repeated_errors:
+                            return self._fail(
+                                task,
+                                ErrorKind.NO_PROGRESS,
+                                "the same tool error repeated "
+                                f"{repeated_errors[error_fingerprint]} times",
+                            )
+                        if tool_failures > task.budget.max_tool_failures:
+                            return self._fail(
+                                task,
+                                ErrorKind.BUDGET_EXCEEDED,
+                                f"tool failure budget exceeded ({task.budget.max_tool_failures})",
+                            )
+                if self.gateway.context.replan_count > task.budget.max_replans:
+                    return self._fail(
+                        task,
+                        ErrorKind.BUDGET_EXCEEDED,
+                        f"replan budget exceeded ({task.budget.max_replans})",
+                    )
                 self._emit(
                     "step.completed",
                     task,
@@ -172,6 +212,7 @@ class AgentRuntime:
                 ValidationRecord(
                     tool_name=result.tool_name,
                     passed=result.success and exit_code == 0,
+                    error_kind=result.error_kind,
                     exit_code=exit_code,
                     details=details,
                 )
@@ -185,9 +226,20 @@ class AgentRuntime:
             tool_calls=len(self.gateway.history),
             successful_tool_calls=successful_calls,
             failed_tool_calls=len(self.gateway.history) - successful_calls,
+            replans=self.gateway.context.replan_count,
             input_tokens=self._input_tokens,
             output_tokens=self._output_tokens,
+            cost_usd=self._cost_usd,
         )
+
+    def _model_budget_error(self, task: Task) -> str | None:
+        if self._input_tokens > task.budget.max_input_tokens:
+            return f"input token budget exceeded ({task.budget.max_input_tokens})"
+        if self._output_tokens > task.budget.max_output_tokens:
+            return f"output token budget exceeded ({task.budget.max_output_tokens})"
+        if self._cost_usd > task.budget.max_cost_usd:
+            return f"cost budget exceeded (${task.budget.max_cost_usd:.4f})"
+        return None
 
     def _emit(self, event_type: str, task: Task, data: dict[str, object]) -> None:
         if self.event_logger is not None:

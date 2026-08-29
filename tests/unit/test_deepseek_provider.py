@@ -69,6 +69,7 @@ def test_provider_maps_messages_tools_and_usage() -> None:
     assert response.tool_calls[0].arguments == {"path": "app.py"}
     assert response.usage.input_tokens == 12
     assert response.usage.output_tokens == 5
+    assert response.usage.cost_usd == pytest.approx((12 * 0.14 + 5 * 0.28) / 1_000_000)
     url, headers, payload, _ = transport.requests[0]
     assert url == "https://api.deepseek.com/chat/completions"
     assert headers["Authorization"] == "Bearer test-secret"

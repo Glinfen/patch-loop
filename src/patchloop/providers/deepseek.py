@@ -33,6 +33,9 @@ class DeepSeekConfig(BaseModel):
     max_tokens: int = Field(default=16_384, ge=1, le=384_000)
     timeout_seconds: float = Field(default=120.0, gt=0, le=600)
     max_retries: int = Field(default=2, ge=0, le=10)
+    cache_hit_cost_per_million: float = Field(default=0.0028, ge=0)
+    cache_miss_cost_per_million: float = Field(default=0.14, ge=0)
+    output_cost_per_million: float = Field(default=0.28, ge=0)
 
     @classmethod
     def from_env(cls) -> DeepSeekConfig:
@@ -187,8 +190,7 @@ class DeepSeekProvider:
             },
         }
 
-    @staticmethod
-    def _parse_response(response: dict[str, Any]) -> ModelResponse:
+    def _parse_response(self, response: dict[str, Any]) -> ModelResponse:
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
             raise RuntimeError("DeepSeek response does not contain a valid choice")
@@ -219,12 +221,24 @@ class DeepSeekProvider:
                 )
         raw_usage = response.get("usage")
         usage = raw_usage if isinstance(raw_usage, dict) else {}
+        input_tokens = self._integer(usage.get("prompt_tokens"))
+        output_tokens = self._integer(usage.get("completion_tokens"))
+        cache_hit_tokens = self._integer(usage.get("prompt_cache_hit_tokens"))
+        cache_miss_tokens = self._integer(usage.get("prompt_cache_miss_tokens"))
+        if cache_hit_tokens + cache_miss_tokens == 0:
+            cache_miss_tokens = input_tokens
+        estimated_cost = (
+            cache_hit_tokens * self.config.cache_hit_cost_per_million
+            + cache_miss_tokens * self.config.cache_miss_cost_per_million
+            + output_tokens * self.config.output_cost_per_million
+        ) / 1_000_000
         return ModelResponse(
             content=content,
             tool_calls=calls,
             usage=ModelUsage(
-                input_tokens=DeepSeekProvider._integer(usage.get("prompt_tokens")),
-                output_tokens=DeepSeekProvider._integer(usage.get("completion_tokens")),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=estimated_cost,
             ),
         )
 

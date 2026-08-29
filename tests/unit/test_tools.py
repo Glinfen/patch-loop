@@ -249,6 +249,14 @@ def test_run_tests_rejects_external_config_path(tmp_path: Path) -> None:
     assert result.error_kind is ErrorKind.EXECUTION_ERROR
 
 
+def test_run_tests_classifies_syntax_failure() -> None:
+    result = RunTestsTool().classify_output(
+        '{"exit_code": 1, "output": "SyntaxError: invalid syntax"}'
+    )
+
+    assert result is ErrorKind.SYNTAX_ERROR
+
+
 def test_file_enumeration_does_not_follow_external_symlink(tmp_path: Path) -> None:
     repository = make_repository(tmp_path)
     secret = tmp_path / "secret.txt"

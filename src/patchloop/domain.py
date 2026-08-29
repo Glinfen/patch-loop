@@ -52,9 +52,25 @@ class Plan(BaseModel):
         return self
 
 
+class ErrorKind(StrEnum):
+    UNKNOWN_TOOL = "unknown_tool"
+    INVALID_ARGUMENTS = "invalid_arguments"
+    PATH_DENIED = "path_denied"
+    EXECUTION_ERROR = "execution_error"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    PROVIDER_ERROR = "provider_error"
+    PERMISSION_DENIED = "permission_denied"
+    TIMEOUT = "timeout"
+    NO_PROGRESS = "no_progress"
+    TEST_FAILURE = "test_failure"
+    SYNTAX_ERROR = "syntax_error"
+    COMMAND_FAILURE = "command_failure"
+
+
 class ValidationRecord(BaseModel):
     tool_name: str
     passed: bool
+    error_kind: ErrorKind | None = None
     exit_code: int | None = None
     details: str = ""
 
@@ -67,21 +83,11 @@ class TaskReport(BaseModel):
     tool_calls: int = Field(default=0, ge=0)
     successful_tool_calls: int = Field(default=0, ge=0)
     failed_tool_calls: int = Field(default=0, ge=0)
+    replans: int = Field(default=0, ge=0)
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0)
     generated_at: datetime = Field(default_factory=utc_now)
-
-
-class ErrorKind(StrEnum):
-    UNKNOWN_TOOL = "unknown_tool"
-    INVALID_ARGUMENTS = "invalid_arguments"
-    PATH_DENIED = "path_denied"
-    EXECUTION_ERROR = "execution_error"
-    BUDGET_EXCEEDED = "budget_exceeded"
-    PROVIDER_ERROR = "provider_error"
-    PERMISSION_DENIED = "permission_denied"
-    TIMEOUT = "timeout"
-    NO_PROGRESS = "no_progress"
 
 
 class TaskBudget(BaseModel):
@@ -90,6 +96,12 @@ class TaskBudget(BaseModel):
     max_steps: int = Field(default=20, ge=1, le=1_000)
     max_seconds: float = Field(default=300.0, gt=0)
     max_repeated_actions: int = Field(default=3, ge=2, le=20)
+    max_repeated_errors: int = Field(default=3, ge=2, le=20)
+    max_tool_failures: int = Field(default=10, ge=0, le=1_000)
+    max_replans: int = Field(default=5, ge=0, le=100)
+    max_input_tokens: int = Field(default=500_000, ge=1)
+    max_output_tokens: int = Field(default=100_000, ge=1)
+    max_cost_usd: float = Field(default=5.0, gt=0)
 
 
 class Task(BaseModel):

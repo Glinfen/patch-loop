@@ -1,10 +1,19 @@
 from pathlib import Path
 
+import pytest
+
 from patchloop.domain import Task, TaskBudget, TaskStatus, ToolCall
 from patchloop.events import EventLogger
-from patchloop.providers import FakeProvider, ModelResponse
+from patchloop.providers import FakeProvider, ModelResponse, ModelUsage
 from patchloop.runtime import AgentRuntime
-from patchloop.tools import ListFilesTool, ReadFileTool, SearchTextTool, ToolContext, ToolGateway
+from patchloop.tools import (
+    ListFilesTool,
+    ReadFileTool,
+    SearchTextTool,
+    ToolContext,
+    ToolGateway,
+    UpdatePlanTool,
+)
 
 
 def test_runtime_executes_multiple_tools_and_records_trace(tmp_path: Path) -> None:
@@ -108,3 +117,112 @@ def test_runtime_recovers_after_invalid_tool_call(tmp_path: Path) -> None:
     first_result = tool_events[0].data["result"]
     assert isinstance(first_result, dict)
     assert first_result["error_kind"] == "invalid_arguments"
+
+
+@pytest.mark.parametrize(
+    ("usage", "budget", "expected_error"),
+    [
+        (
+            ModelUsage(input_tokens=51),
+            TaskBudget(max_input_tokens=50),
+            "input token budget exceeded (50)",
+        ),
+        (
+            ModelUsage(output_tokens=21),
+            TaskBudget(max_output_tokens=20),
+            "output token budget exceeded (20)",
+        ),
+        (
+            ModelUsage(cost_usd=0.11),
+            TaskBudget(max_cost_usd=0.1),
+            "cost budget exceeded ($0.1000)",
+        ),
+    ],
+)
+def test_runtime_enforces_model_budgets(
+    tmp_path: Path,
+    usage: ModelUsage,
+    budget: TaskBudget,
+    expected_error: str,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    gateway = ToolGateway(ToolContext(repository), [ListFilesTool()])
+    provider = FakeProvider([ModelResponse(content="Done", usage=usage)])
+
+    result = AgentRuntime(provider, gateway).run(
+        Task(goal="Budget test", repository=str(repository), budget=budget)
+    )
+
+    assert result.status is TaskStatus.FAILED
+    assert result.error == expected_error
+    assert result.report is not None
+
+
+def test_runtime_stops_repeated_tool_error(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    gateway = ToolGateway(ToolContext(repository), [ListFilesTool()])
+    provider = FakeProvider(
+        [
+            ModelResponse(tool_calls=[ToolCall(name="missing", arguments={"attempt": 1})]),
+            ModelResponse(tool_calls=[ToolCall(name="missing", arguments={"attempt": 2})]),
+        ]
+    )
+    budget = TaskBudget(max_repeated_actions=10, max_repeated_errors=2)
+
+    result = AgentRuntime(provider, gateway).run(
+        Task(goal="Repeat errors", repository=str(repository), budget=budget)
+    )
+
+    assert result.status is TaskStatus.FAILED
+    assert result.error == "the same tool error repeated 2 times"
+
+
+def test_runtime_enforces_tool_failure_budget(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    gateway = ToolGateway(ToolContext(repository), [ListFilesTool()])
+    provider = FakeProvider([ModelResponse(tool_calls=[ToolCall(name="missing")])])
+
+    result = AgentRuntime(provider, gateway).run(
+        Task(
+            goal="Failure budget",
+            repository=str(repository),
+            budget=TaskBudget(max_tool_failures=0),
+        )
+    )
+
+    assert result.status is TaskStatus.FAILED
+    assert result.error == "tool failure budget exceeded (0)"
+
+
+def test_runtime_enforces_replan_budget(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    context = ToolContext(repository)
+    context.requires_replan = True
+    gateway = ToolGateway(context, [UpdatePlanTool()])
+    provider = FakeProvider(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        name="update_plan",
+                        arguments={"items": [{"description": "Recover", "status": "running"}]},
+                    )
+                ]
+            )
+        ]
+    )
+
+    result = AgentRuntime(provider, gateway).run(
+        Task(
+            goal="Replan budget",
+            repository=str(repository),
+            budget=TaskBudget(max_replans=0),
+        )
+    )
+
+    assert result.status is TaskStatus.FAILED
+    assert result.error == "replan budget exceeded (0)"

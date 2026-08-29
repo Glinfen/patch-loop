@@ -126,6 +126,10 @@ def run_task(
         typer.Option(help="Allow restricted pytest or unittest execution."),
     ] = False,
     max_steps: Annotated[int, typer.Option(min=1, max=1_000)] = 20,
+    max_input_tokens: Annotated[int, typer.Option(min=1)] = 500_000,
+    max_output_tokens: Annotated[int, typer.Option(min=1)] = 100_000,
+    max_cost_usd: Annotated[float, typer.Option(min=0.0001)] = 5.0,
+    max_tool_failures: Annotated[int, typer.Option(min=0, max=1_000)] = 10,
 ) -> None:
     try:
         provider = DeepSeekProvider.from_env()
@@ -137,7 +141,13 @@ def run_task(
     task = Task(
         goal=goal,
         repository=str(repository),
-        budget=TaskBudget(max_steps=max_steps),
+        budget=TaskBudget(
+            max_steps=max_steps,
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
+            max_cost_usd=max_cost_usd,
+            max_tool_failures=max_tool_failures,
+        ),
     )
     state = _state_dir(repository)
     store = JsonTaskStore(state / "tasks")

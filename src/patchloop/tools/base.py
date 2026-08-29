@@ -5,13 +5,16 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
 from patchloop.changes import FileChangeTracker
 from patchloop.domain import ErrorKind, Plan
 from patchloop.providers.base import ToolSpec
+
+if TYPE_CHECKING:
+    from patchloop.sandbox import CommandSandbox
 
 
 class PathDeniedError(ValueError):
@@ -33,7 +36,7 @@ class ToolInputModel(BaseModel):
 
 
 class ToolContext:
-    def __init__(self, repository: Path) -> None:
+    def __init__(self, repository: Path, sandbox: CommandSandbox | None = None) -> None:
         self.repository = repository.resolve(strict=True)
         if not self.repository.is_dir():
             raise ValueError(f"repository is not a directory: {self.repository}")
@@ -42,6 +45,7 @@ class ToolContext:
         self.requires_replan = False
         self.replan_count = 0
         self.recent_paths: list[str] = []
+        self.sandbox = sandbox
 
     def resolve_path(self, relative_path: str, *, must_exist: bool = True) -> Path:
         candidate = (self.repository / relative_path).resolve(strict=must_exist)

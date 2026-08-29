@@ -1,9 +1,11 @@
 """Small local task store used before the SQLite milestone."""
 
+import json
 import re
 from pathlib import Path
 
 from patchloop.domain import Task
+from patchloop.security import SecretRedactor
 
 
 class TaskNotFoundError(LookupError):
@@ -34,8 +36,9 @@ class JsonTaskStore:
 
 
 class ArtifactStore:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, redactor: SecretRedactor | None = None) -> None:
         self.root = root
+        self.redactor = redactor or SecretRedactor()
 
     def save_report(self, task: Task) -> list[Path]:
         if task.report is None:
@@ -45,11 +48,18 @@ class ArtifactStore:
         task_root = self.root / task.id
         task_root.mkdir(parents=True, exist_ok=True)
         report_path = task_root / "report.json"
-        self._atomic_write(report_path, task.report.model_dump_json(indent=2))
+        self._atomic_write(
+            report_path,
+            json.dumps(
+                self.redactor.redact(task.report.model_dump(mode="json")),
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
         paths = [report_path]
         if task.report.diff:
             diff_path = task_root / "changes.diff"
-            self._atomic_write(diff_path, task.report.diff)
+            self._atomic_write(diff_path, self.redactor.redact_text(task.report.diff))
             paths.append(diff_path)
         return paths
 

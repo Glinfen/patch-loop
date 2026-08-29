@@ -18,6 +18,7 @@ from patchloop.context.models import (
 from patchloop.domain import Plan, StepStatus, ToolResult
 from patchloop.intelligence.search import tokenize
 from patchloop.providers.base import ModelMessage, ToolSpec
+from patchloop.security import SecretRedactor
 
 PATH_PATTERN = re.compile(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.py(?::\d+)?")
 MEMORY_PREFIX = (
@@ -56,6 +57,7 @@ class ContextEngine:
         max_tokens: int,
         max_tool_output_chars: int,
         recent_steps: int,
+        redactor: SecretRedactor | None = None,
     ) -> None:
         if max_tokens < 256:
             raise ValueError("context token budget must be at least 256")
@@ -66,10 +68,12 @@ class ContextEngine:
         self.max_tokens = max_tokens
         self.max_tool_output_chars = max_tool_output_chars
         self.recent_steps = recent_steps
+        self.redactor = redactor or SecretRedactor()
 
     def compact_tool_result(self, result: ToolResult) -> tuple[str, bool]:
-        output, truncated = _truncate_text(result.output, self.max_tool_output_chars)
-        payload = result.model_dump(mode="json")
+        payload = self.redactor.redact(result.model_dump(mode="json"))
+        redacted_output = str(payload["output"])
+        output, truncated = _truncate_text(redacted_output, self.max_tool_output_chars)
         payload["output"] = output
         payload["output_truncated"] = truncated
         payload["original_output_chars"] = len(result.output)
@@ -81,6 +85,10 @@ class ContextEngine:
         tools: list[ToolSpec],
         plan: Plan | None,
     ) -> ContextWindow:
+        messages = [
+            ModelMessage.model_validate(self.redactor.redact(message.model_dump(mode="json")))
+            for message in messages
+        ]
         if len(messages) < 2:
             raise ValueError("context requires system and user messages")
         normalized, truncated_messages = self._normalize_messages(messages)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -18,9 +19,12 @@ from patchloop.intelligence import (
     evaluate_retrieval,
     load_retrieval_tasks,
 )
+from patchloop.observability import TaskMetrics, TaskReplay
 from patchloop.persistence import SQLiteStore
 from patchloop.providers import DeepSeekProvider
 from patchloop.runtime import AgentRuntime
+from patchloop.sandbox import DockerSandbox, DockerSandboxConfig, LocalProcessSandbox
+from patchloop.security import ApprovalRequest, RiskLevel
 from patchloop.storage import ArtifactStore, TaskNotFoundError
 from patchloop.tools import (
     ApplyPatchTool,
@@ -68,6 +72,30 @@ def _all_tools() -> list[Tool]:
         RunTestsTool(),
         GetDiffTool(),
     ]
+
+
+def _create_sandbox(backend: str, image: str) -> DockerSandbox | LocalProcessSandbox:
+    if backend == "docker":
+        return DockerSandbox(DockerSandboxConfig(image=image))
+    if backend == "local":
+        return LocalProcessSandbox()
+    raise ValueError(f"unsupported sandbox backend: {backend}")
+
+
+def _approval_handler(
+    non_interactive: bool,
+) -> Callable[[ApprovalRequest], bool]:
+    if non_interactive:
+        return lambda request: True
+
+    def prompt(request: ApprovalRequest) -> bool:
+        arguments = json.dumps(request.arguments, ensure_ascii=False, sort_keys=True)
+        return typer.confirm(
+            f"Approve {request.risk} risk action {request.tool_name} with {arguments}?",
+            default=False,
+        )
+
+    return prompt
 
 
 @task_app.command("create")
@@ -211,6 +239,36 @@ def show_trace(
         typer.echo(event.model_dump_json())
 
 
+@app.command("metrics")
+def show_metrics(
+    task_id: Annotated[str, typer.Argument()],
+    repo: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+) -> None:
+    events = EventLogger(_state_dir(repo) / "traces" / f"{task_id}.jsonl").read()
+    if not events:
+        typer.echo(f"trace not found: {task_id}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(TaskMetrics.from_events(task_id, events).model_dump_json(indent=2))
+
+
+@app.command("replay")
+def replay_task(
+    task_id: Annotated[str, typer.Argument()],
+    repo: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+) -> None:
+    events = EventLogger(_state_dir(repo) / "traces" / f"{task_id}.jsonl").read()
+    if not events:
+        typer.echo(f"trace not found: {task_id}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(TaskReplay.from_events(task_id, events).model_dump_json(indent=2))
+
+
 @app.command("context")
 def show_context_debug(
     task_id: Annotated[str, typer.Argument()],
@@ -318,6 +376,14 @@ def run_task(
         bool,
         typer.Option(help="Run without approval prompts; suitable for CI."),
     ] = True,
+    sandbox: Annotated[
+        str,
+        typer.Option(help="Command sandbox backend: docker or local."),
+    ] = "docker",
+    sandbox_image: Annotated[
+        str,
+        typer.Option(help="Docker image used by the command sandbox."),
+    ] = "patchloop-sandbox:py313",
 ) -> None:
     try:
         provider = DeepSeekProvider.from_env()
@@ -331,6 +397,11 @@ def run_task(
         permissions.add(PermissionLevel.WRITE)
     if allow_execute:
         permissions.add(PermissionLevel.EXECUTE)
+    try:
+        command_sandbox = _create_sandbox(sandbox, sandbox_image)
+    except (ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
     task = Task(
         goal=goal,
         repository=str(repository),
@@ -347,18 +418,24 @@ def run_task(
         execution=TaskExecutionConfig(
             allowed_permissions=sorted(permission.value for permission in permissions),
             non_interactive=non_interactive,
+            sandbox_backend=sandbox,
+            sandbox_image=sandbox_image,
         ),
     )
     state = _state_dir(repository)
     store = _sqlite_store(repository)
     store.save_task(task)
     trace = EventLogger(state / "traces" / f"{task.id}.jsonl")
-    context = ToolContext(repository)
+    context = ToolContext(repository, command_sandbox)
     gateway = ToolGateway(
         context,
         _all_tools(),
         trace,
-        ToolPolicy(frozenset(permissions)),
+        ToolPolicy(
+            frozenset(permissions),
+            approval_threshold=RiskLevel.MEDIUM,
+            approval_handler=_approval_handler(non_interactive),
+        ),
     )
     result = AgentRuntime(provider, gateway, trace, store).run(task)
     paths = ArtifactStore(state / "artifacts").save_report(result)
@@ -405,12 +482,24 @@ def resume_task(
         typer.echo("task contains an invalid permission checkpoint", err=True)
         raise typer.Exit(code=1) from None
     trace = EventLogger(_state_dir(repository) / "traces" / f"{task.id}.jsonl")
-    context = ToolContext(repository)
+    try:
+        command_sandbox = _create_sandbox(
+            task.execution.sandbox_backend,
+            task.execution.sandbox_image,
+        )
+    except (ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    context = ToolContext(repository, command_sandbox)
     gateway = ToolGateway(
         context,
         _all_tools(),
         trace,
-        ToolPolicy(permissions),
+        ToolPolicy(
+            permissions,
+            approval_threshold=RiskLevel.MEDIUM,
+            approval_handler=_approval_handler(task.execution.non_interactive),
+        ),
     )
     result = AgentRuntime(provider, gateway, trace, store).resume(task, checkpoint)
     paths = ArtifactStore(_state_dir(repository) / "artifacts").save_report(result)

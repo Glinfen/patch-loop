@@ -1,0 +1,11 @@
+{
+  "scenario": "network-attempt-security-observability",
+  "blocked_network": true,
+  "risk": "critical",
+  "tool_error": "permission_denied",
+  "failed_step": 0,
+  "trace_sequence_contiguous": true,
+  "replay_located_failure": true,
+  "credentials_redacted": true,
+  "docker_network_default": "none"
+}

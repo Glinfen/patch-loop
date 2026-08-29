@@ -90,3 +90,17 @@ def test_context_engine_rejects_mandatory_content_over_budget() -> None:
 
     with pytest.raises(ContextBudgetError, match="mandatory context requires"):
         engine.build(messages, [], None)
+
+
+def test_context_redacts_credentials_before_provider_messages() -> None:
+    secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+    engine = ContextEngine(max_tokens=1_000, max_tool_output_chars=256, recent_steps=1)
+    messages = [
+        ModelMessage(role="system", content="system"),
+        ModelMessage(role="user", content=f"api_key={secret}"),
+    ]
+
+    window = engine.build(messages, [], None)
+
+    assert secret not in window.messages[1].content
+    assert "[REDACTED]" in window.messages[1].content

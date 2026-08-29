@@ -20,6 +20,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [Week 4 验收记录](docs/milestones/WEEK_04_ACCEPTANCE.md)：SQLite 持久化、检查点恢复和完整 CLI 生命周期证据。
 - [Week 5 验收记录](docs/milestones/WEEK_05_ACCEPTANCE.md)：Python AST 索引、可解释混合检索和 Recall@1 对比证据。
 - [Week 6 验收记录](docs/milestones/WEEK_06_ACCEPTANCE.md)：上下文预算、结构化任务记忆和长任务证据保留验收。
+- [Week 7 验收记录](docs/milestones/WEEK_07_ACCEPTANCE.md)：Docker 沙箱、风险审批、敏感信息脱敏和任务回放验收。
 
 ## 推荐项目周期
 
@@ -44,7 +45,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 
 ## 当前进度
 
-项目已完成首个运行时基础切片：
+项目已完成前七周运行时、安全与可观测性切片：
 
 - `Task`、`AgentStep`、`ToolCall`、`ToolResult` 等领域模型。
 - 模型无关的 Provider 协议和确定性 Fake Provider。
@@ -70,6 +71,10 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - 被裁剪步骤生成结构化任务记忆，保留未完成计划、关键证据、失败和历史决策。
 - 大型工具输出进入模型前保留头尾并附加截断元数据，完整结果仍用于报告和审计。
 - `context.built` 轨迹和 `context` CLI 展示预算占用、选择步骤、丢弃步骤和记忆大小。
+- Docker 命令沙箱默认关闭网络，并限制挂载目录、CPU、内存、进程数、Linux capabilities、根文件系统和运行时间。
+- Tool Gateway 对读、写、执行和危险动作进行低、中、高、严重四级风险判断；交互模式逐次审批，非交互模式只接受显式权限预授权。
+- 凭据脱敏统一覆盖 Provider 上下文、JSONL Trace、SQLite 检查点和任务产物。
+- Trace 具有稳定事件 ID、任务 Trace ID 和连续序号；`metrics` 与 `replay` 可定位失败步骤、审批结果、工具耗时、Token 和费用。
 
 ## 本地开发
 
@@ -93,6 +98,8 @@ patchloop status <task-id> --repo /path/to/repository
 patchloop diff <task-id> --repo /path/to/repository
 patchloop trace <task-id> --repo /path/to/repository
 patchloop context <task-id> --repo /path/to/repository
+patchloop metrics <task-id> --repo /path/to/repository
+patchloop replay <task-id> --repo /path/to/repository
 patchloop resume <task-id> --repo /path/to/repository
 patchloop cancel <task-id> --repo /path/to/repository
 patchloop index --repo /path/to/repository
@@ -102,19 +109,26 @@ patchloop benchmark-search --tasks benchmarks/retrieval_tasks.json --root .
 
 运行 DeepSeek V4 Flash Agent：
 
+首次使用执行工具前构建标准沙箱镜像：
+
+```bash
+docker build -f docker/sandbox.Dockerfile -t patchloop-sandbox:py313 .
+```
+
 ```powershell
 $env:DEEPSEEK_API_KEY = Read-Host "DeepSeek API key" -MaskInput
 patchloop run "修复分页边界错误并运行回归测试" `
   --repo C:\path\to\repository `
   --allow-write `
   --allow-execute `
+  --sandbox docker `
   --max-context-tokens 32000 `
   --max-tool-output-chars 8000 `
   --max-cost-usd 1.0
 ```
 
-密钥只从进程环境变量读取，不会保存在任务、轨迹或仓库文件中。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。
+密钥只从进程环境变量读取；Provider 上下文、任务、轨迹、SQLite 和产物会对 API Key、Bearer Token、密码及常见敏感字段统一脱敏。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。默认执行后端是无网络 Docker 沙箱；`--sandbox local` 仅用于受信任环境的兼容调试，不提供操作系统级隔离。
 
-当前版本已完成“检索 → 规划 → 修改 → 测试 → diff → 汇报”的确定性端到端闭环，并接入 DeepSeek V4 Flash、SQLite 检查点、任务恢复、可解释 Repository Intelligence 和预算化上下文记忆。Docker 沙箱和流式输出属于后续阶段。
+当前版本已完成“检索 → 规划 → 修改 → 沙箱测试 → diff → 汇报 → 回放”的确定性端到端闭环，并接入 DeepSeek V4 Flash、SQLite 检查点、任务恢复、可解释 Repository Intelligence、预算化上下文记忆、安全策略与可观测性。流式输出属于后续阶段。
 
 `benchmarks/fixtures/calculator_bug` 提供了第一个固定缺陷仓库，后续写入闭环以 `benchmarks/tasks/calculator_bug.json` 作为自动验收任务。

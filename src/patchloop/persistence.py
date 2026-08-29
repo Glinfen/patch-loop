@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from patchloop.domain import AgentStep, Plan, Task, TaskStatus, ToolCall, ToolResult
 from patchloop.providers.base import ModelMessage
+from patchloop.security import SecretRedactor
 from patchloop.storage import TaskNotFoundError
 
 
@@ -40,10 +42,15 @@ class RuntimeCheckpoint(BaseModel):
 
 
 class SQLiteStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, redactor: SecretRedactor | None = None) -> None:
         self.path = path
+        self.redactor = redactor or SecretRedactor()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+
+    def _redacted_json(self, model: BaseModel) -> str:
+        payload = self.redactor.redact(model.model_dump(mode="json"))
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -117,7 +124,7 @@ class SQLiteStore:
                 (
                     task.id,
                     task.status,
-                    task.model_dump_json(),
+                    self._redacted_json(task),
                     task.updated_at.isoformat(),
                 ),
             )
@@ -140,7 +147,7 @@ class SQLiteStore:
                 ON CONFLICT(task_id, step_index) DO UPDATE SET
                     payload_json = excluded.payload_json
                 """,
-                (step.task_id, step.index, step.model_dump_json()),
+                (step.task_id, step.index, self._redacted_json(step)),
             )
 
     def list_steps(self, task_id: str) -> list[AgentStep]:
@@ -166,8 +173,8 @@ class SQLiteStore:
                 (
                     call.id,
                     task_id,
-                    call.model_dump_json(),
-                    result.model_dump_json(),
+                    self._redacted_json(call),
+                    self._redacted_json(result),
                     datetime.now(UTC).isoformat(),
                 ),
             )
@@ -206,7 +213,7 @@ class SQLiteStore:
                 """,
                 (
                     checkpoint.task_id,
-                    checkpoint.model_dump_json(),
+                    self._redacted_json(checkpoint),
                     checkpoint.updated_at.isoformat(),
                 ),
             )

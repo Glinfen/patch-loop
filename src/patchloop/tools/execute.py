@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import ClassVar
@@ -12,6 +10,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from patchloop.domain import ErrorKind
+from patchloop.sandbox import LocalProcessSandbox, SandboxError, SandboxTimeoutError
 from patchloop.tools.base import (
     PermissionLevel,
     Tool,
@@ -36,32 +35,26 @@ class RunTestsTool(Tool):
     def run(self, arguments: BaseModel, context: ToolContext) -> str:
         request = RunTestsInput.model_validate(arguments)
         command = self._normalize_command(request.command, context)
-        environment = {
-            key: value
-            for key in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP")
-            if (value := os.environ.get(key)) is not None
-        }
-        environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"})
+        sandbox = context.sandbox or LocalProcessSandbox()
         try:
-            completed = subprocess.run(
+            completed = sandbox.execute(
                 command,
-                cwd=context.repository,
-                env=environment,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=request.timeout_seconds,
-                check=False,
-                shell=False,
+                context.repository,
+                timeout_seconds=request.timeout_seconds,
+                max_output_chars=request.max_output_chars,
             )
-        except subprocess.TimeoutExpired as exc:
+        except SandboxTimeoutError as exc:
             raise ToolTimeoutError(
                 f"test command timed out after {request.timeout_seconds:g} seconds"
             ) from exc
-        output = (completed.stdout + completed.stderr)[-request.max_output_chars :]
+        except SandboxError as exc:
+            raise ValueError(str(exc)) from exc
         return json.dumps(
-            {"exit_code": completed.returncode, "output": output},
+            {
+                "exit_code": completed.exit_code,
+                "output": completed.output,
+                "sandbox": completed.backend,
+            },
             ensure_ascii=False,
         )
 
@@ -134,32 +127,26 @@ class RunCommandTool(Tool):
     def run(self, arguments: BaseModel, context: ToolContext) -> str:
         request = RunCommandInput.model_validate(arguments)
         command = self._normalize_command(request.command)
-        environment = {
-            key: value
-            for key in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP")
-            if (value := os.environ.get(key)) is not None
-        }
-        environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"})
+        sandbox = context.sandbox or LocalProcessSandbox()
         try:
-            completed = subprocess.run(
+            completed = sandbox.execute(
                 command,
-                cwd=context.repository,
-                env=environment,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=request.timeout_seconds,
-                check=False,
-                shell=False,
+                context.repository,
+                timeout_seconds=request.timeout_seconds,
+                max_output_chars=request.max_output_chars,
             )
-        except subprocess.TimeoutExpired as exc:
+        except SandboxTimeoutError as exc:
             raise ToolTimeoutError(
                 f"command timed out after {request.timeout_seconds:g} seconds"
             ) from exc
-        output = (completed.stdout + completed.stderr)[-request.max_output_chars :]
+        except SandboxError as exc:
+            raise ValueError(str(exc)) from exc
         return json.dumps(
-            {"exit_code": completed.returncode, "output": output},
+            {
+                "exit_code": completed.exit_code,
+                "output": completed.output,
+                "sandbox": completed.backend,
+            },
             ensure_ascii=False,
         )
 

@@ -52,12 +52,18 @@ def test_run_uses_provider_and_persists_result(tmp_path: Path, monkeypatch: obje
     status = runner.invoke(app, ["status", payload["id"], "--repo", str(tmp_path)])
     diff = runner.invoke(app, ["diff", payload["id"], "--repo", str(tmp_path)])
     context = runner.invoke(app, ["context", payload["id"], "--repo", str(tmp_path)])
+    metrics = runner.invoke(app, ["metrics", payload["id"], "--repo", str(tmp_path)])
+    replay = runner.invoke(app, ["replay", payload["id"], "--repo", str(tmp_path)])
 
     assert status.exit_code == 0
     assert json.loads(status.output)["status"] == "completed"
     assert diff.exit_code == 0 and "No changes." in diff.output
     assert context.exit_code == 0
     assert "context [" in context.output
+    assert metrics.exit_code == 0
+    assert json.loads(metrics.output)["status"] == "completed"
+    assert replay.exit_code == 0
+    assert json.loads(replay.output)["frames"][-1]["type"] == "task.completed"
 
 
 def test_cli_cancels_created_task(tmp_path: Path) -> None:

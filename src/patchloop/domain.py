@@ -114,6 +114,11 @@ class TaskBudget(BaseModel):
 class TaskExecutionConfig(BaseModel):
     allowed_permissions: list[str] = Field(default_factory=lambda: ["read"])
     non_interactive: bool = True
+    sandbox_backend: str = Field(default="docker", pattern=r"^(docker|local)$")
+    sandbox_image: str = Field(
+        default="patchloop-sandbox:py313",
+        pattern=r"^[A-Za-z0-9._/:@-]+$",
+    )
 
 
 class Task(BaseModel):

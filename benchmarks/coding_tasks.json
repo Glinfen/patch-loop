@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "suite_id": "patchloop-coding-v1",
+  "revision": "2026-08-29",
+  "tasks": [
+    {
+      "id": "calculator-division",
+      "fixture": "benchmarks/fixtures/calculator_bug",
+      "fixture_sha256": "3e7e829f933318b7d06d65fc85f2a612d7c25dcf7924b05ff15b270f18645364",
+      "goal": "修复 calculator.py 中的除法实现，使现有测试全部通过。不要修改测试文件。",
+      "task_type": "bugfix",
+      "difficulty": "easy",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["calculator.py"],
+      "forbidden_changed_files": ["test_calculator.py"],
+      "max_steps": 16,
+      "max_cost_usd": 0.5
+    },
+    {
+      "id": "pagination-one-based",
+      "fixture": "benchmarks/fixtures/code_tasks/pagination",
+      "fixture_sha256": "f50faa6e4b265c51cbe6578e5f6d3b09be83865c1c9da3f98ec9767659354044",
+      "goal": "修复 pagination.py 的一页式分页边界错误，使现有测试全部通过。不要修改测试或配置。",
+      "task_type": "bugfix",
+      "difficulty": "easy",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["pagination.py"],
+      "forbidden_changed_files": ["test_pagination.py", "pytest.ini"],
+      "max_steps": 16,
+      "max_cost_usd": 0.5
+    },
+    {
+      "id": "cache-ttl-boundary",
+      "fixture": "benchmarks/fixtures/code_tasks/cache_ttl",
+      "fixture_sha256": "45731edc88b7b88ee71b00a18cf4e990fc1489cd66d7112f6ffac170ac3a4ca2",
+      "goal": "修复 cache.py 的 TTL 过期边界语义：达到过期时刻的条目必须失效。使现有测试全部通过，不要修改测试或配置。",
+      "task_type": "bugfix",
+      "difficulty": "easy",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["cache.py"],
+      "forbidden_changed_files": ["test_cache.py", "pytest.ini"],
+      "max_steps": 18,
+      "max_cost_usd": 0.6
+    },
+    {
+      "id": "slug-lowercase",
+      "fixture": "benchmarks/fixtures/code_tasks/slug_validation",
+      "fixture_sha256": "54822ccf12dfbe62595b2a0c146f7b5f43e337958a3ec7d004671401da26a790",
+      "goal": "收紧 validation.py 的 slug 校验：只接受小写 ASCII 字母、数字和单连字符，并保持已有有效输入行为。使现有测试全部通过，不要修改测试或配置。",
+      "task_type": "bugfix",
+      "difficulty": "medium",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["validation.py"],
+      "forbidden_changed_files": ["test_validation.py", "pytest.ini"],
+      "max_steps": 20,
+      "max_cost_usd": 0.75
+    },
+    {
+      "id": "retry-delay-cap",
+      "fixture": "benchmarks/fixtures/code_tasks/retry_cap",
+      "fixture_sha256": "4c5b063b88600e2d3d7e93bf05cde2c93c65502a20fe37dd7764b8913078aff7",
+      "goal": "为 retry.py 的 retry_delay 增加 maximum_seconds 上限参数，并按测试要求校验参数和截断指数退避。不要修改测试或配置。",
+      "task_type": "feature",
+      "difficulty": "medium",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["retry.py"],
+      "forbidden_changed_files": ["test_retry.py", "pytest.ini"],
+      "max_steps": 22,
+      "max_cost_usd": 0.9
+    },
+    {
+      "id": "csv-escaping",
+      "fixture": "benchmarks/fixtures/code_tasks/csv_escape",
+      "fixture_sha256": "ea572fb7992c60ffed812d353783bf2a2118b9c2ff0c4eaa11c169515a5edb21",
+      "goal": "修复 csv_export.py，使 export_row 按标准 CSV 规则转义逗号、双引号和换行，同时保留普通字段输出。不要修改测试或配置。",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["csv_export.py"],
+      "forbidden_changed_files": ["test_csv_export.py", "pytest.ini"],
+      "max_steps": 24,
+      "max_cost_usd": 1.0
+    }
+  ]
+}

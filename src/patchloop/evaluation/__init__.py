@@ -1,4 +1,12 @@
 from patchloop.evaluation.baselines import RetrievalBaseline
+from patchloop.evaluation.coding import (
+    CodingBenchmarkReport,
+    CodingBenchmarkRunner,
+    CodingTaskDefinition,
+    CodingTaskManifest,
+    CodingTaskResult,
+    load_coding_manifest,
+)
 from patchloop.evaluation.experiments import (
     DEFAULT_EXPERIMENTS,
     ExperimentConfig,
@@ -23,6 +31,11 @@ from patchloop.evaluation.runner import EvaluationExecutor, EvaluationRunner
 
 __all__ = [
     "DEFAULT_EXPERIMENTS",
+    "CodingBenchmarkReport",
+    "CodingBenchmarkRunner",
+    "CodingTaskDefinition",
+    "CodingTaskManifest",
+    "CodingTaskResult",
     "Difficulty",
     "EvaluationCandidate",
     "EvaluationExecutor",
@@ -40,6 +53,7 @@ __all__ = [
     "RetrievalBaseline",
     "SuccessCriteria",
     "TaskType",
+    "load_coding_manifest",
     "load_evaluation_manifest",
     "repository_tree_sha256",
 ]

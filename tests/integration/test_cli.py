@@ -33,6 +33,35 @@ def test_run_requires_environment_key(tmp_path: Path, monkeypatch: object) -> No
     assert "DEEPSEEK_API_KEY is not set" in result.output
 
 
+def test_code_benchmark_requires_environment_key_without_creating_run(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)  # type: ignore[attr-defined]
+    root = Path(__file__).parents[2]
+    work_root = tmp_path / "runs"
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark-code",
+            "--manifest",
+            str(root / "benchmarks" / "coding_tasks.json"),
+            "--root",
+            str(root),
+            "--work-root",
+            str(work_root),
+            "--output",
+            str(tmp_path / "report.json"),
+            "--sandbox",
+            "local",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "DEEPSEEK_API_KEY is not set" in result.output
+    assert not work_root.exists()
+
+
 def test_run_uses_provider_and_persists_result(tmp_path: Path, monkeypatch: object) -> None:
     provider = FakeProvider([ModelResponse(content="Repository inspected.")])
     monkeypatch.setattr(  # type: ignore[attr-defined]

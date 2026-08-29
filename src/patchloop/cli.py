@@ -12,10 +12,12 @@ import typer
 from patchloop.context import ContextDebug
 from patchloop.domain import Task, TaskBudget, TaskExecutionConfig, TaskStatus
 from patchloop.evaluation import (
+    CodingBenchmarkRunner,
     EvaluationRunner,
     EvaluationVariant,
     ExperimentRunner,
     RetrievalBaseline,
+    load_coding_manifest,
     load_evaluation_manifest,
 )
 from patchloop.events import EventLogger
@@ -263,6 +265,48 @@ def benchmark_evaluation(
             task_manifest,
             [RetrievalBaseline(item) for item in variants],
         )
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    typer.echo(report.model_dump_json(indent=2))
+
+
+@app.command("benchmark-code")
+def benchmark_code_tasks(
+    manifest: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/coding_tasks.json"),
+    root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+    work_root: Annotated[
+        Path,
+        typer.Option(file_okay=False, resolve_path=True),
+    ] = Path(".patchloop/code-benchmark"),
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/results/code_benchmark_latest.json"),
+    repeats: Annotated[int, typer.Option(min=1, max=20)] = 1,
+    sandbox: Annotated[str, typer.Option(help="docker or local")] = "docker",
+    sandbox_image: Annotated[
+        str,
+        typer.Option(help="Container image used by the Docker sandbox."),
+    ] = "python:3.12-slim",
+) -> None:
+    try:
+        task_manifest = load_coding_manifest(manifest)
+        report = CodingBenchmarkRunner(
+            root,
+            work_root,
+            DeepSeekProvider.from_env,
+            lambda: _create_sandbox(sandbox, sandbox_image),
+            repeats=repeats,
+        ).run(task_manifest)
     except (OSError, ValueError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None

@@ -188,7 +188,11 @@ class CodingBenchmarkRunner:
                 f"expected {definition.fixture_sha256}, got {actual_hash}"
             )
         workspace = run_root / f"{definition.id}-r{repeat}"
-        shutil.copytree(source, workspace)
+        shutil.copytree(
+            source,
+            workspace,
+            ignore=shutil.ignore_patterns(*IGNORED_PARTS),
+        )
         original_files = _workspace_file_hashes(workspace)
         state = workspace / ".patchloop"
         trace = EventLogger(state / "trace.jsonl")

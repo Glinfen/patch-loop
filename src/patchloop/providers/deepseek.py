@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
@@ -38,11 +39,63 @@ class DeepSeekConfig(BaseModel):
     output_cost_per_million: float = Field(default=0.28, ge=0)
 
     @classmethod
-    def from_env(cls) -> DeepSeekConfig:
-        api_key = os.environ.get("DEEPSEEK_API_KEY")
+    def from_env(cls, env_file: Path | None = None) -> DeepSeekConfig:
+        file_values = _load_env_file(env_file) if env_file is not None else {}
+        api_key = _configuration_value(
+            file_values,
+            "DEEPSEEK_API_KEY",
+            "LLM_API_KEY",
+        )
         if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY is not set")
-        return cls(api_key=SecretStr(api_key))
+            raise ValueError("DEEPSEEK_API_KEY or LLM_API_KEY is not set")
+        base_url = _configuration_value(
+            file_values,
+            "DEEPSEEK_BASE_URL",
+            "LLM_BASE_URL",
+        )
+        model = _configuration_value(
+            file_values,
+            "DEEPSEEK_MODEL",
+            "LLM_MODEL_ID",
+        )
+        return cls(
+            api_key=SecretStr(api_key),
+            base_url=base_url or "https://api.deepseek.com",
+            model=model or "deepseek-v4-flash",
+        )
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        name, separator, value = line.partition("=")
+        name = name.strip()
+        value = value.strip()
+        if not separator or not name.isidentifier():
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        values[name] = value
+    return values
+
+
+def _configuration_value(file_values: dict[str, str], *names: str) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    for name in names:
+        value = file_values.get(name)
+        if value:
+            return value
+    return None
 
 
 class ProviderRequestError(RuntimeError):
@@ -111,8 +164,8 @@ class DeepSeekProvider:
         self.sleeper = sleeper
 
     @classmethod
-    def from_env(cls) -> DeepSeekProvider:
-        return cls(DeepSeekConfig.from_env())
+    def from_env(cls, env_file: Path | None = None) -> DeepSeekProvider:
+        return cls(DeepSeekConfig.from_env(env_file))
 
     @property
     def name(self) -> str:

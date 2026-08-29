@@ -358,7 +358,7 @@ def test_mutating_tool_requires_explicit_plan(tmp_path: Path) -> None:
     assert gateway.context.plan.revision == 1
 
 
-def test_run_command_uses_exact_allowlist(tmp_path: Path) -> None:
+def test_run_command_allows_safe_diagnostic_variants(tmp_path: Path) -> None:
     repository = make_repository(tmp_path)
     gateway = ToolGateway(
         ToolContext(repository),
@@ -380,7 +380,18 @@ def test_run_command_uses_exact_allowlist(tmp_path: Path) -> None:
         "task-1",
         ToolCall(name="run_command", arguments={"command": ["python", "-c", "print(1)"]}),
     )
+    scoped_compile = gateway.execute(
+        "task-1",
+        ToolCall(
+            name="run_command",
+            arguments={"command": ["python", "-m", "compileall", "src/calculator.py"]},
+        ),
+    )
 
     assert allowed.success and '"exit_code": 0' in allowed.output
+    assert scoped_compile.success and '"exit_code": 0' in scoped_compile.output
+    assert RunCommandTool._normalize_command(["git", "status"]) == ["git", "status"]
     assert not denied.success
     assert denied.error_kind is ErrorKind.EXECUTION_ERROR
+    with pytest.raises(ValueError, match="escapes repository"):
+        RunCommandTool._normalize_command(["python", "-m", "compileall", "../outside.py"])

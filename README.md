@@ -25,6 +25,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [评测协议](docs/EVALUATION.md)：清单格式、仓库指纹、成功判定、基线定义和运行方式。
 - [Week 9 验收记录](docs/milestones/WEEK_09_ACCEPTANCE.md)：失败分类、组件消融、两阶段优化及 5 轮稳定性证据。
 - [端到端代码任务评测](docs/CODING_BENCHMARK.md)：真实修改、独立测试、变更范围约束和模型运行方式。
+- [DeepSeek V4 Flash 评测结果](docs/CODING_BENCHMARK_RESULTS.md)：6 个代码任务的优化前后成功率、成本、时延与限制。
 
 ## 推荐项目周期
 
@@ -146,7 +147,9 @@ patchloop run "修复分页边界错误并运行回归测试" `
   --max-cost-usd 1.0
 ```
 
-密钥只从进程环境变量读取；Provider 上下文、任务、轨迹、SQLite 和产物会对 API Key、Bearer Token、密码及常见敏感字段统一脱敏。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。默认执行后端是无网络 Docker 沙箱；`--sandbox local` 仅用于受信任环境的兼容调试，不提供操作系统级隔离。
+密钥默认从进程环境变量读取；`benchmark-code` 还可以显式读取评测根目录下已被 Git 忽略的 `.env`。Provider 上下文、任务、轨迹、SQLite 和产物会对 API Key、Bearer Token、密码及常见敏感字段统一脱敏。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。默认执行后端是无网络 Docker 沙箱；`--sandbox local` 仅用于受信任环境的兼容调试，不提供操作系统级隔离。
+
+`benchmark-code` 的 `.env` 支持 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL_ID` 以及对应的 `DEEPSEEK_*` 变量；显式进程环境变量优先。对任意目标仓库执行 `run` 或 `resume` 时不会自动信任仓库内的 `.env`。
 
 当前版本已完成“检索 → 规划 → 修改 → 沙箱测试 → diff → 汇报 → 回放”的确定性端到端闭环，并接入 DeepSeek V4 Flash、SQLite 检查点、任务恢复、可解释 Repository Intelligence、预算化上下文记忆、安全策略与可观测性。流式输出属于后续阶段。
 

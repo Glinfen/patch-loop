@@ -303,7 +303,7 @@ def benchmark_code_tasks(
         report = CodingBenchmarkRunner(
             root,
             work_root,
-            DeepSeekProvider.from_env,
+            lambda: DeepSeekProvider.from_env(root / ".env"),
             lambda: _create_sandbox(sandbox, sandbox_image),
             repeats=repeats,
         ).run(task_manifest)

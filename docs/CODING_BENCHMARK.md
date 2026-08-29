@@ -43,6 +43,16 @@ patchloop benchmark-code `
   --output benchmarks/results/code_benchmark_latest.json
 ```
 
+也可以在 `--root` 指向的项目根目录创建已被 Git 忽略的 `.env`：
+
+```dotenv
+LLM_API_KEY=your-key
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL_ID=deepseek-v4-flash
+```
+
+显式进程环境变量的优先级高于 `.env`。同时兼容 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL` 和 `DEEPSEEK_MODEL`；密钥不会写入评测报告或轨迹。只有 `benchmark-code` 会从显式评测根目录读取该文件，针对任意目标仓库的 `run` 和 `resume` 不会自动信任仓库内配置。
+
 没有 Docker 的受信任开发机可以显式使用 `--sandbox local`。该模式会在宿主机运行 fixture 的固定测试命令，不提供操作系统级隔离。
 
 ## 结果解释

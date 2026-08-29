@@ -114,19 +114,19 @@ class RunCommandTool(Tool):
     input_model = RunCommandInput
     permission = PermissionLevel.EXECUTE
 
-    _allowed_commands: ClassVar[frozenset[tuple[str, ...]]] = frozenset(
+    _allowed_git_commands: ClassVar[frozenset[tuple[str, ...]]] = frozenset(
         {
+            ("git", "status"),
             ("git", "status", "--short"),
             ("git", "diff"),
             ("git", "diff", "--stat"),
             ("git", "diff", "--check"),
-            ("python", "-m", "compileall", "-q", "."),
         }
     )
 
     def run(self, arguments: BaseModel, context: ToolContext) -> str:
         request = RunCommandInput.model_validate(arguments)
-        command = self._normalize_command(request.command)
+        command = self._normalize_command(request.command, context.repository)
         sandbox = context.sandbox or LocalProcessSandbox()
         try:
             completed = sandbox.execute(
@@ -160,7 +160,11 @@ class RunCommandTool(Tool):
         return None
 
     @classmethod
-    def _normalize_command(cls, command: list[str]) -> list[str]:
+    def _normalize_command(
+        cls,
+        command: list[str],
+        repository: Path | None = None,
+    ) -> list[str]:
         executable = Path(command[0]).name.casefold()
         if executable in {
             "python",
@@ -172,11 +176,42 @@ class RunCommandTool(Tool):
         }:
             canonical = ("python", *command[1:])
             normalized = [sys.executable, *command[1:]]
+            cls._validate_compileall(canonical, repository)
         elif executable in {"git", "git.exe"}:
             canonical = ("git", *command[1:])
             normalized = ["git", *command[1:]]
+            if canonical not in cls._allowed_git_commands:
+                raise ValueError(f"command is not allowlisted: {' '.join(canonical)}")
         else:
             raise ValueError("command is not allowlisted")
-        if canonical not in cls._allowed_commands:
-            raise ValueError(f"command is not allowlisted: {' '.join(canonical)}")
         return normalized
+
+    @staticmethod
+    def _validate_compileall(command: tuple[str, ...], repository: Path | None = None) -> None:
+        if command[:3] != ("python", "-m", "compileall"):
+            raise ValueError(f"command is not allowlisted: {' '.join(command)}")
+        targets = []
+        for argument in command[3:]:
+            if argument == "-q":
+                continue
+            if argument.startswith("-"):
+                raise ValueError(f"compileall option is not allowlisted: {argument}")
+            windows_path = PureWindowsPath(argument)
+            posix_path = PurePosixPath(argument)
+            if (
+                windows_path.is_absolute()
+                or posix_path.is_absolute()
+                or ".." in windows_path.parts
+                or ".." in posix_path.parts
+            ):
+                raise ValueError(f"compileall path escapes repository: {argument}")
+            if repository is not None:
+                root = repository.resolve(strict=True)
+                resolved = (root / argument).resolve(strict=True)
+                try:
+                    resolved.relative_to(root)
+                except ValueError as exc:
+                    raise ValueError(f"compileall path escapes repository: {argument}") from exc
+            targets.append(argument)
+        if not targets:
+            raise ValueError("compileall requires a repository-relative target")

@@ -30,14 +30,15 @@ def test_run_requires_environment_key(tmp_path: Path, monkeypatch: object) -> No
     result = runner.invoke(app, ["run", "Inspect repository", "--repo", str(tmp_path)])
 
     assert result.exit_code == 2
-    assert "DEEPSEEK_API_KEY is not set" in result.output
+    assert "DEEPSEEK_API_KEY or LLM_API_KEY is not set" in result.output
 
 
 def test_code_benchmark_requires_environment_key_without_creating_run(
     tmp_path: Path, monkeypatch: object
 ) -> None:
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)  # type: ignore[attr-defined]
-    root = Path(__file__).parents[2]
+    for name in ("DEEPSEEK_API_KEY", "LLM_API_KEY"):
+        monkeypatch.delenv(name, raising=False)  # type: ignore[attr-defined]
+    project_root = Path(__file__).parents[2]
     work_root = tmp_path / "runs"
 
     result = runner.invoke(
@@ -45,9 +46,9 @@ def test_code_benchmark_requires_environment_key_without_creating_run(
         [
             "benchmark-code",
             "--manifest",
-            str(root / "benchmarks" / "coding_tasks.json"),
+            str(project_root / "benchmarks" / "coding_tasks.json"),
             "--root",
-            str(root),
+            str(tmp_path),
             "--work-root",
             str(work_root),
             "--output",
@@ -58,7 +59,7 @@ def test_code_benchmark_requires_environment_key_without_creating_run(
     )
 
     assert result.exit_code == 2
-    assert "DEEPSEEK_API_KEY is not set" in result.output
+    assert "DEEPSEEK_API_KEY or LLM_API_KEY is not set" in result.output
     assert not work_root.exists()
 
 
@@ -66,7 +67,7 @@ def test_run_uses_provider_and_persists_result(tmp_path: Path, monkeypatch: obje
     provider = FakeProvider([ModelResponse(content="Repository inspected.")])
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "patchloop.cli.DeepSeekProvider.from_env",
-        lambda: provider,
+        lambda *_: provider,
     )
 
     result = runner.invoke(app, ["run", "Inspect repository", "--repo", str(tmp_path)])
@@ -126,7 +127,7 @@ def test_cli_resumes_running_task(tmp_path: Path, monkeypatch: object) -> None:
     )
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "patchloop.cli.DeepSeekProvider.from_env",
-        lambda: FakeProvider([ModelResponse(content="Resumed successfully.")]),
+        lambda *_: FakeProvider([ModelResponse(content="Resumed successfully.")]),
     )
 
     result = runner.invoke(app, ["resume", task.id, "--repo", str(tmp_path)])

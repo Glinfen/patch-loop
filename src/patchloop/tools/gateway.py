@@ -72,6 +72,15 @@ class ToolGateway:
                 output=f"permission denied for {tool.permission} tool: {call.name}",
             )
             return self._finish(task_id, call, result, started)
+        if call.arguments_error is not None:
+            result = ToolResult(
+                call_id=call.id,
+                tool_name=call.name,
+                success=False,
+                error_kind=ErrorKind.INVALID_ARGUMENTS,
+                output=call.arguments_error,
+            )
+            return self._finish(task_id, call, result, started)
         try:
             arguments = tool.input_model.model_validate(call.arguments)
             output = tool.run(arguments, self.context)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from patchloop.tools.base import Tool, ToolContext
+from patchloop.tools.base import Tool, ToolContext, ToolInputModel
 
 IGNORED_DIRECTORIES = {".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv"}
 
@@ -26,7 +26,7 @@ def _files_under(root: Path, context: ToolContext) -> list[Path]:
     return sorted(files)
 
 
-class ListFilesInput(BaseModel):
+class ListFilesInput(ToolInputModel):
     path: str = "."
     pattern: str = "*"
     max_files: int = Field(default=200, ge=1, le=2_000)
@@ -54,7 +54,7 @@ class ListFilesTool(Tool):
         return "\n".join(matches)
 
 
-class ReadFileInput(BaseModel):
+class ReadFileInput(ToolInputModel):
     path: str
     start_line: int = Field(default=1, ge=1)
     end_line: int | None = Field(default=None, ge=1)
@@ -84,7 +84,7 @@ class ReadFileTool(Tool):
         return output
 
 
-class SearchTextInput(BaseModel):
+class SearchTextInput(ToolInputModel):
     query: str = Field(min_length=1)
     path: str = "."
     pattern: str = "*"

@@ -12,6 +12,8 @@ from patchloop.domain import ToolCall
 class ModelMessage(BaseModel):
     role: str
     content: str
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_call_id: str | None = None
 
 
 class ToolSpec(BaseModel):

@@ -32,6 +32,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
+pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
@@ -46,4 +47,3 @@ python_version = "3.12"
 strict = true
 packages = ["patchloop"]
 mypy_path = "src"
-

@@ -58,7 +58,13 @@ class AgentRuntime:
                         "usage": response.usage.model_dump(mode="json"),
                     },
                 )
-                messages.append(ModelMessage(role="assistant", content=response.content))
+                messages.append(
+                    ModelMessage(
+                        role="assistant",
+                        content=response.content,
+                        tool_calls=response.tool_calls,
+                    )
+                )
                 if not response.tool_calls:
                     if not response.content.strip():
                         return self._fail(
@@ -96,6 +102,7 @@ class AgentRuntime:
                         ModelMessage(
                             role="tool",
                             content=result.model_dump_json(),
+                            tool_call_id=call.id,
                         )
                     )
                 self._emit(

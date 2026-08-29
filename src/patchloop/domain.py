@@ -88,6 +88,7 @@ class ToolCall(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     name: str = Field(min_length=1)
     arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments_error: str | None = None
 
 
 class ToolResult(BaseModel):

@@ -10,10 +10,16 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from pydantic import BaseModel, Field
 
-from patchloop.tools.base import PermissionLevel, Tool, ToolContext, ToolTimeoutError
+from patchloop.tools.base import (
+    PermissionLevel,
+    Tool,
+    ToolContext,
+    ToolInputModel,
+    ToolTimeoutError,
+)
 
 
-class RunTestsInput(BaseModel):
+class RunTestsInput(ToolInputModel):
     command: list[str] = Field(default_factory=lambda: ["python", "-m", "pytest", "-q"])
     timeout_seconds: float = Field(default=60.0, gt=0, le=300)
     max_output_chars: int = Field(default=30_000, ge=1_000, le=200_000)

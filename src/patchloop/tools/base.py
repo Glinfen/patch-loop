@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from patchloop.changes import FileChangeTracker
 from patchloop.providers.base import ToolSpec
@@ -25,6 +25,10 @@ class PermissionLevel(StrEnum):
     READ = "read"
     WRITE = "write"
     EXECUTE = "execute"
+
+
+class ToolInputModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class ToolContext:

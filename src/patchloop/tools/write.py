@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from patchloop.tools.base import PermissionLevel, Tool, ToolContext
+from patchloop.tools.base import PermissionLevel, Tool, ToolContext, ToolInputModel
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -19,7 +19,7 @@ def _atomic_write(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-class CreateFileInput(BaseModel):
+class CreateFileInput(ToolInputModel):
     path: str = Field(min_length=1)
     content: str
 
@@ -42,7 +42,7 @@ class CreateFileTool(Tool):
         return f"created {request.path} ({len(request.content)} characters)"
 
 
-class ReplaceTextInput(BaseModel):
+class ReplaceTextInput(ToolInputModel):
     path: str = Field(min_length=1)
     old_text: str = Field(min_length=1)
     new_text: str
@@ -76,7 +76,7 @@ class ReplaceTextTool(Tool):
         return f"updated {request.path} ({occurrences} replacement(s))"
 
 
-class GetDiffInput(BaseModel):
+class GetDiffInput(ToolInputModel):
     pass
 
 

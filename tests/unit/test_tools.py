@@ -82,6 +82,22 @@ def test_gateway_classifies_invalid_arguments(tmp_path: Path) -> None:
     assert result.error_kind is ErrorKind.INVALID_ARGUMENTS
 
 
+def test_gateway_rejects_provider_argument_parse_error(tmp_path: Path) -> None:
+    gateway = make_gateway(make_repository(tmp_path))
+
+    result = gateway.execute(
+        "task-1",
+        ToolCall(
+            name="list_files",
+            arguments_error="invalid tool arguments JSON",
+        ),
+    )
+
+    assert not result.success
+    assert result.error_kind is ErrorKind.INVALID_ARGUMENTS
+    assert result.output == "invalid tool arguments JSON"
+
+
 def test_default_policy_denies_write_tools(tmp_path: Path) -> None:
     repository = make_repository(tmp_path)
     gateway = ToolGateway(ToolContext(repository), [ReplaceTextTool()])

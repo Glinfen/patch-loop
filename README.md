@@ -42,6 +42,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 
 - `Task`、`AgentStep`、`ToolCall`、`ToolResult` 等领域模型。
 - 模型无关的 Provider 协议和确定性 Fake Provider。
+- DeepSeek V4 Flash Provider，支持 thinking、工具调用、重试和用量统计。
 - 带参数校验、路径边界和错误分类的 Tool Gateway。
 - `list_files`、`read_file`、`search_text` 三个只读工具。
 - 原子 `create_file`、精确 `replace_text`、`run_tests` 和 `get_diff` 工具。
@@ -70,6 +71,18 @@ patchloop task show <task-id> --repo /path/to/repository
 patchloop tools --repo /path/to/repository
 ```
 
-当前版本已完成“读取 → 修改 → 测试 → diff → 汇报”的确定性端到端闭环。模型测试仍使用 Fake Provider；真实模型 Provider、SQLite 检查点和 Docker 沙箱属于后续阶段。
+运行 DeepSeek V4 Flash Agent：
+
+```powershell
+$env:DEEPSEEK_API_KEY = Read-Host "DeepSeek API key" -MaskInput
+patchloop run "修复分页边界错误并运行回归测试" `
+  --repo C:\path\to\repository `
+  --allow-write `
+  --allow-execute
+```
+
+密钥只从进程环境变量读取，不会保存在任务、轨迹或仓库文件中。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。
+
+当前版本已完成“读取 → 修改 → 测试 → diff → 汇报”的确定性端到端闭环，并接入 DeepSeek V4 Flash。SQLite 检查点、Docker 沙箱和流式输出属于后续阶段。
 
 `benchmarks/fixtures/calculator_bug` 提供了第一个固定缺陷仓库，后续写入闭环以 `benchmarks/tasks/calculator_bug.json` 作为自动验收任务。

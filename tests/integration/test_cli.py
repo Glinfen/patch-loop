@@ -44,3 +44,4 @@ def test_run_uses_provider_and_persists_result(tmp_path: Path, monkeypatch: obje
     assert payload["status"] == "completed"
     assert payload["result"] == "Repository inspected."
     assert (tmp_path / ".patchloop" / "tasks" / f"{payload['id']}.json").is_file()
+    assert (tmp_path / ".patchloop" / "artifacts" / payload["id"] / "report.json").is_file()

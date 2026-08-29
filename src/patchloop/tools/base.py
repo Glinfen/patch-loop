@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from patchloop.changes import FileChangeTracker
+from patchloop.domain import Plan
 from patchloop.providers.base import ToolSpec
 
 
@@ -37,6 +38,7 @@ class ToolContext:
         if not self.repository.is_dir():
             raise ValueError(f"repository is not a directory: {self.repository}")
         self.changes = FileChangeTracker(self.repository)
+        self.plan: Plan | None = None
 
     def resolve_path(self, relative_path: str, *, must_exist: bool = True) -> Path:
         candidate = (self.repository / relative_path).resolve(strict=must_exist)

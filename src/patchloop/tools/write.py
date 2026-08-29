@@ -76,6 +76,54 @@ class ReplaceTextTool(Tool):
         return f"updated {request.path} ({occurrences} replacement(s))"
 
 
+class TextEditInput(ToolInputModel):
+    old_text: str = Field(min_length=1)
+    new_text: str
+    expected_occurrences: int = Field(default=1, ge=1, le=1_000)
+
+
+class ApplyPatchInput(ToolInputModel):
+    path: str = Field(min_length=1)
+    edits: list[TextEditInput] = Field(min_length=1, max_length=100)
+
+
+class ApplyPatchTool(Tool):
+    name = "apply_patch"
+    description = (
+        "Atomically apply multiple exact text edits to one file; if any occurrence guard "
+        "fails, no edit is written."
+    )
+    input_model = ApplyPatchInput
+    permission = PermissionLevel.WRITE
+
+    def run(self, arguments: BaseModel, context: ToolContext) -> str:
+        request = ApplyPatchInput.model_validate(arguments)
+        path = context.resolve_path(request.path)
+        if not path.is_file():
+            raise ValueError(f"not a file: {request.path}")
+        updated = path.read_text(encoding="utf-8")
+        replacement_count = 0
+        for index, edit in enumerate(request.edits):
+            occurrences = updated.count(edit.old_text)
+            if occurrences != edit.expected_occurrences:
+                raise ValueError(
+                    f"edit {index}: expected {edit.expected_occurrences} occurrences, "
+                    f"found {occurrences}"
+                )
+            updated = updated.replace(
+                edit.old_text,
+                edit.new_text,
+                edit.expected_occurrences,
+            )
+            replacement_count += occurrences
+        context.changes.capture(path)
+        _atomic_write(path, updated)
+        return (
+            f"patched {request.path} ({len(request.edits)} edit(s), "
+            f"{replacement_count} replacement(s))"
+        )
+
+
 class GetDiffInput(ToolInputModel):
     pass
 

@@ -35,6 +35,9 @@ def test_runtime_executes_multiple_tools_and_records_trace(tmp_path: Path) -> No
 
     assert result.status is TaskStatus.COMPLETED
     assert result.result == "The repository defines VALUE in app.py:1."
+    assert result.report is not None
+    assert result.report.tool_calls == 2
+    assert result.report.changed_files == []
     assert len(provider.requests) == 3
     events = trace.read()
     assert [event.type for event in events].count("tool.completed") == 2
@@ -60,6 +63,7 @@ def test_runtime_stops_at_step_budget(tmp_path: Path) -> None:
 
     assert result.status is TaskStatus.FAILED
     assert result.error == "step budget exceeded (2)"
+    assert result.report is not None
 
 
 def test_runtime_stops_repeated_action_loop(tmp_path: Path) -> None:

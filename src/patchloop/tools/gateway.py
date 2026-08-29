@@ -22,12 +22,14 @@ class ToolPolicy:
     def __init__(
         self,
         allowed_permissions: frozenset[PermissionLevel] | None = None,
+        require_plan_for_mutations: bool = True,
     ) -> None:
         self.allowed_permissions = (
             frozenset({PermissionLevel.READ})
             if allowed_permissions is None
             else allowed_permissions
         )
+        self.require_plan_for_mutations = require_plan_for_mutations
 
     def allows(self, tool: Tool) -> bool:
         return tool.permission in self.allowed_permissions
@@ -47,6 +49,7 @@ class ToolGateway:
             raise ValueError("tool names must be unique")
         self.event_logger = event_logger
         self.policy = policy or ToolPolicy()
+        self.history: list[ToolResult] = []
 
     def specifications(self) -> list[ToolSpec]:
         return [tool.specification() for tool in self._tools.values()]
@@ -70,6 +73,19 @@ class ToolGateway:
                 success=False,
                 error_kind=ErrorKind.PERMISSION_DENIED,
                 output=f"permission denied for {tool.permission} tool: {call.name}",
+            )
+            return self._finish(task_id, call, result, started)
+        if (
+            self.policy.require_plan_for_mutations
+            and tool.permission in {PermissionLevel.WRITE, PermissionLevel.EXECUTE}
+            and self.context.plan is None
+        ):
+            result = ToolResult(
+                call_id=call.id,
+                tool_name=call.name,
+                success=False,
+                error_kind=ErrorKind.PERMISSION_DENIED,
+                output=f"an execution plan is required before using {call.name}",
             )
             return self._finish(task_id, call, result, started)
         if call.arguments_error is not None:
@@ -132,6 +148,7 @@ class ToolGateway:
         started: float,
     ) -> ToolResult:
         result.duration_ms = (perf_counter() - started) * 1_000
+        self.history.append(result)
         if self.event_logger is not None:
             self.event_logger.emit(
                 Event(

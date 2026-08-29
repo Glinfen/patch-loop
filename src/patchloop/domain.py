@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Self
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -27,6 +27,49 @@ class StepStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class PlanItem(BaseModel):
+    id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$",
+    )
+    description: str = Field(min_length=1)
+    status: StepStatus = StepStatus.PENDING
+    evidence: list[str] = Field(default_factory=list)
+
+
+class Plan(BaseModel):
+    items: list[PlanItem] = Field(min_length=1)
+    revision: int = Field(default=1, ge=1)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_active_item_count(self) -> Self:
+        active_count = sum(item.status is StepStatus.RUNNING for item in self.items)
+        if active_count > 1:
+            raise ValueError("a plan can have at most one running item")
+        return self
+
+
+class ValidationRecord(BaseModel):
+    tool_name: str
+    passed: bool
+    exit_code: int | None = None
+    details: str = ""
+
+
+class TaskReport(BaseModel):
+    summary: str
+    changed_files: list[str] = Field(default_factory=list)
+    diff: str = ""
+    validations: list[ValidationRecord] = Field(default_factory=list)
+    tool_calls: int = Field(default=0, ge=0)
+    successful_tool_calls: int = Field(default=0, ge=0)
+    failed_tool_calls: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    generated_at: datetime = Field(default_factory=utc_now)
 
 
 class ErrorKind(StrEnum):
@@ -52,11 +95,16 @@ class TaskBudget(BaseModel):
 class Task(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
-    id: str = Field(default_factory=lambda: str(uuid4()))
+    id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$",
+    )
     goal: str = Field(min_length=1)
     repository: str
     status: TaskStatus = TaskStatus.CREATED
     budget: TaskBudget = Field(default_factory=TaskBudget)
+    plan: Plan | None = None
+    report: TaskReport | None = None
     result: str | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)

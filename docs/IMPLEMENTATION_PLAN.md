@@ -110,12 +110,14 @@ Tool Gateway ─── 文件 / 搜索 / 补丁 / Shell / Test / Git
 
 任务：
 
-- 实现 Plan-Execute 状态机。
-- 实现写入工具：应用补丁、创建文件。
-- 实现 Shell/Test 工具的受限版本。
-- 生成统一 diff 和最终任务报告。
+- [x] 实现 Plan-Execute 状态机。
+- [x] 实现写入工具：应用补丁、创建文件。
+- [x] 实现 Shell/Test 工具的受限版本。
+- [x] 生成统一 diff 和最终任务报告。
 
 退出标准：Agent 能在样例仓库中完成一个缺陷修复任务，并通过自动化测试。
+
+第二周任务已于 2026-08-29 全部完成，自动化证据见 [Week 2 验收记录](milestones/WEEK_02_ACCEPTANCE.md)。
 
 ### 第 3 周：测试反馈与失败恢复
 

@@ -5,15 +5,17 @@ from patchloop.domain import Task, TaskStatus, ToolCall
 from patchloop.events import EventLogger
 from patchloop.providers import FakeProvider, ModelResponse
 from patchloop.runtime import AgentRuntime
+from patchloop.storage import ArtifactStore
 from patchloop.tools import (
+    ApplyPatchTool,
     GetDiffTool,
     PermissionLevel,
     ReadFileTool,
-    ReplaceTextTool,
     RunTestsTool,
     ToolContext,
     ToolGateway,
     ToolPolicy,
+    UpdatePlanTool,
 )
 
 
@@ -24,7 +26,13 @@ def test_agent_repairs_calculator_fixture_and_runs_tests(tmp_path: Path) -> None
     trace = EventLogger(tmp_path / "trace.jsonl")
     gateway = ToolGateway(
         ToolContext(repository),
-        [ReadFileTool(), ReplaceTextTool(), RunTestsTool(), GetDiffTool()],
+        [
+            ReadFileTool(),
+            UpdatePlanTool(),
+            ApplyPatchTool(),
+            RunTestsTool(),
+            GetDiffTool(),
+        ],
         trace,
         ToolPolicy(
             frozenset({PermissionLevel.READ, PermissionLevel.WRITE, PermissionLevel.EXECUTE})
@@ -38,11 +46,29 @@ def test_agent_repairs_calculator_fixture_and_runs_tests(tmp_path: Path) -> None
             ModelResponse(
                 tool_calls=[
                     ToolCall(
-                        name="replace_text",
+                        name="update_plan",
+                        arguments={
+                            "items": [
+                                {"description": "Inspect the defect", "status": "completed"},
+                                {"description": "Fix division", "status": "running"},
+                                {"description": "Run regression test", "status": "pending"},
+                            ]
+                        },
+                    )
+                ]
+            ),
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        name="apply_patch",
                         arguments={
                             "path": "calculator.py",
-                            "old_text": "return dividend // divisor",
-                            "new_text": "return dividend / divisor",
+                            "edits": [
+                                {
+                                    "old_text": "return dividend // divisor",
+                                    "new_text": "return dividend / divisor",
+                                }
+                            ],
                         },
                     )
                 ]
@@ -64,17 +90,52 @@ def test_agent_repairs_calculator_fixture_and_runs_tests(tmp_path: Path) -> None
                 ]
             ),
             ModelResponse(tool_calls=[ToolCall(name="get_diff")]),
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        name="update_plan",
+                        arguments={
+                            "items": [
+                                {
+                                    "description": "Inspect the defect",
+                                    "status": "completed",
+                                    "evidence": ["calculator.py:3"],
+                                },
+                                {
+                                    "description": "Fix division",
+                                    "status": "completed",
+                                    "evidence": ["calculator.py changed"],
+                                },
+                                {
+                                    "description": "Run regression test",
+                                    "status": "completed",
+                                    "evidence": ["1 passed"],
+                                },
+                            ]
+                        },
+                    )
+                ]
+            ),
             ModelResponse(content="Fixed integer floor division and verified the regression test."),
         ]
     )
     task = Task(goal="Fix divide and run tests", repository=str(repository))
 
     result = AgentRuntime(provider, gateway, trace).run(task)
+    artifacts = ArtifactStore(tmp_path / "artifacts").save_report(result)
 
     assert result.status is TaskStatus.COMPLETED
     assert "dividend / divisor" in (repository / "calculator.py").read_text(encoding="utf-8")
+    assert result.plan is not None
+    assert all(item.status.value == "completed" for item in result.plan.items)
+    assert result.report is not None
+    assert result.report.changed_files == ["calculator.py"]
+    assert result.report.validations[0].passed
+    assert {path.name for path in artifacts} == {"report.json", "changes.diff"}
     tool_events = [event for event in trace.read() if event.type == "tool.completed"]
-    test_result = tool_events[2].data["result"]
+    test_event = next(event for event in tool_events if event.data["call"]["name"] == "run_tests")
+    test_result = test_event.data["result"]
     assert isinstance(test_result, dict)
     assert '"exit_code": 0' in str(test_result["output"])
-    assert "+    return dividend / divisor" in str(tool_events[3].data["result"])
+    diff_event = next(event for event in tool_events if event.data["call"]["name"] == "get_diff")
+    assert "+    return dividend / divisor" in str(diff_event.data["result"])

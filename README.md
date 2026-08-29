@@ -15,6 +15,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [项目目标](docs/PROJECT_GOALS.md)：项目定位、目标用户、核心能力、成功指标与边界。
 - [实施计划](docs/IMPLEMENTATION_PLAN.md)：技术方案、阶段里程碑、验收标准、风险与交付物。
 - [Week 1 验收记录](docs/milestones/WEEK_01_ACCEPTANCE.md)：安装、CLI、测试、类型检查和覆盖率证据。
+- [Week 2 验收记录](docs/milestones/WEEK_02_ACCEPTANCE.md)：Plan-Execute、补丁、测试、diff 和最终报告证据。
 
 ## 推荐项目周期
 
@@ -46,10 +47,13 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - DeepSeek V4 Flash Provider，支持 thinking、工具调用、重试和用量统计。
 - 带参数校验、路径边界和错误分类的 Tool Gateway。
 - `list_files`、`read_file`、`search_text` 三个只读工具。
-- 原子 `create_file`、精确 `replace_text`、`run_tests` 和 `get_diff` 工具。
+- 显式 `update_plan`，写入和执行前必须先建立计划。
+- 原子 `create_file`、结构化 `apply_patch`、精确 `replace_text` 工具。
+- 受限 `run_command`、`run_tests` 和 `get_diff` 工具。
 - 默认只读的权限策略，以及仓库路径和符号链接边界检查。
 - 有步骤、时间预算和重复动作检测的 Agent 执行循环。
 - JSONL 事件轨迹和本地任务存储。
+- 包含变更、验证、工具统计和 Token 用量的最终报告与持久化产物。
 - `task create`、`task show`、`tools`、`trace` CLI 命令。
 
 ## 本地开发

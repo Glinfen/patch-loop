@@ -11,19 +11,22 @@ import typer
 from patchloop.domain import Task, TaskBudget, TaskStatus
 from patchloop.events import EventLogger
 from patchloop.providers import DeepSeekProvider
-from patchloop.storage import JsonTaskStore, TaskNotFoundError
+from patchloop.storage import ArtifactStore, JsonTaskStore, TaskNotFoundError
 from patchloop.tools import (
+    ApplyPatchTool,
     CreateFileTool,
     GetDiffTool,
     ListFilesTool,
     PermissionLevel,
     ReadFileTool,
     ReplaceTextTool,
+    RunCommandTool,
     RunTestsTool,
     SearchTextTool,
     ToolContext,
     ToolGateway,
     ToolPolicy,
+    UpdatePlanTool,
 )
 from patchloop.tools.base import Tool
 
@@ -41,8 +44,11 @@ def _all_tools() -> list[Tool]:
         ListFilesTool(),
         ReadFileTool(),
         SearchTextTool(),
+        UpdatePlanTool(),
         CreateFileTool(),
+        ApplyPatchTool(),
         ReplaceTextTool(),
+        RunCommandTool(),
         RunTestsTool(),
         GetDiffTool(),
     ]
@@ -153,6 +159,7 @@ def run_task(
 
     result = AgentRuntime(provider, gateway, trace).run(task)
     store.save(result)
+    ArtifactStore(state / "artifacts").save_report(result)
     typer.echo(result.model_dump_json(indent=2))
     diff = context.changes.diff()
     if diff:

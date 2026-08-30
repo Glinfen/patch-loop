@@ -26,8 +26,9 @@ class UpdatePlanInput(ToolInputModel):
 class UpdatePlanTool(Tool):
     name = "update_plan"
     description = (
-        "Create or replace the execution plan. Keep at most one item running and attach "
-        "evidence when completing an item."
+        "Create or replace a concise execution plan. Prefer two to four short items, keep at most "
+        "one item running, and attach brief evidence when completing an item. Update at phase "
+        "changes, failure recovery, or completion instead of after every successful tool call."
     )
     input_model = UpdatePlanInput
 

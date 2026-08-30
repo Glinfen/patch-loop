@@ -5,6 +5,7 @@ import pytest
 
 from patchloop.domain import ErrorKind, ToolCall
 from patchloop.intelligence import RepositoryIndexer
+from patchloop.runtime import SYSTEM_PROMPT
 from patchloop.tools import (
     ApplyPatchTool,
     CreateFileTool,
@@ -327,6 +328,16 @@ def test_run_tests_rejects_arbitrary_python(tmp_path: Path) -> None:
 
     assert not result.success
     assert result.error_kind is ErrorKind.EXECUTION_ERROR
+
+
+def test_agent_contract_explains_test_and_efficiency_boundaries() -> None:
+    assert "python -c" in RunTestsTool.description
+    assert "do not repeat" in RunTestsTool.description
+    assert "two to four short items" in UpdatePlanTool.description
+    assert "never pass python -c" in SYSTEM_PROMPT
+    assert "do not paste full source files" in SYSTEM_PROMPT
+    assert "Avoid duplicate discovery" in SYSTEM_PROMPT
+    assert "smallest focused tests" in SYSTEM_PROMPT
 
 
 def test_run_tests_rejects_external_config_path(tmp_path: Path) -> None:

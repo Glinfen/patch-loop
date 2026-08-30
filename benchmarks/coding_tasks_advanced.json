@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0",
+  "suite_id": "patchloop-coding-advanced-v1",
+  "revision": "2026-08-30",
+  "tasks": [
+    {
+      "id": "versioned-document-migration",
+      "fixture": "benchmarks/fixtures/advanced_tasks/versioned_migration",
+      "fixture_sha256": "29df9010985364141175527acedfed24b38ddb0a63504b3f5a2bb836184330b4",
+      "goal": "实现 migrations.py 的 migrate_document，将文档顺序迁移到当前版本 3。版本 1 到 2：移除 name，并写入 profile.display_name，同时保留 profile 的其他字段；版本 2 到 3：tags 若为逗号分隔字符串，则分割、去除两端空白并丢弃空项。保留所有无关字段；版本 3 返回完全深拷贝；缺少版本或版本不在 1、2、3 时抛出包含 version 的 ValueError；任何输入均不得被修改或与结果共享可变嵌套对象。只修改 migrations.py 并使测试通过。",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["migrations.py"],
+      "forbidden_changed_files": ["test_migrations.py", "pytest.ini"],
+      "hidden_tests": [
+        {
+          "source": "benchmarks/hidden_tests/advanced_tasks/test_migrations_hidden.py",
+          "destination": "test_patchloop_hidden.py",
+          "sha256": "1a51fd39d353283115a0ab4a0f7eb15c9e36a8bed119dfd2de2ed0f8c405c0d3"
+        }
+      ],
+      "max_steps": 34,
+      "max_cost_usd": 1.5
+    },
+    {
+      "id": "deterministic-feature-rollout",
+      "fixture": "benchmarks/fixtures/advanced_tasks/feature_flags",
+      "fixture_sha256": "a98d13e93a977d992bcacf28e01339c349baba20891b311e6ed9ec5467a98114",
+      "goal": "实现 feature_flags.py 的 enabled。rollout_percentage 必须位于闭区间 0 到 100，否则抛出包含 percentage 的 ValueError。用 UTF-8 编码 f\"{salt}:{flag}:{user_id}\"，计算 SHA-256，取摘要前 8 字节按大端无符号整数解释后对 10000 取模得到 bucket；阈值为 int(rollout_percentage * 100)，仅当 bucket 小于阈值时启用。结果必须确定，0 必为 False、100 必为 True，并正确支持 Unicode。只修改实现文件并使测试通过。",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["feature_flags.py"],
+      "forbidden_changed_files": ["test_feature_flags.py", "pytest.ini"],
+      "hidden_tests": [
+        {
+          "source": "benchmarks/hidden_tests/advanced_tasks/test_feature_flags_hidden.py",
+          "destination": "test_patchloop_hidden.py",
+          "sha256": "9f79d00196651cf5d18f47185ad45b6b61cfa590936ec2461dfe9506a9cb638e"
+        }
+      ],
+      "max_steps": 30,
+      "max_cost_usd": 1.2
+    },
+    {
+      "id": "atomic-bank-transfer",
+      "fixture": "benchmarks/fixtures/advanced_tasks/bank_transfer",
+      "fixture_sha256": "570c76564b50df84ca6d7cac614de0aceeea49ce7abca34acaf5d3f3756dbf94",
+      "goal": "完成多文件转账功能。在 models.py 新增不可变且按值比较的 TransferReceipt(source_id, target_id, amount, source_balance, target_balance)；在 ledger.py 实现 transfer。金额必须为正，否则抛出包含 positive 的 ValueError；账户必须都存在，否则抛出包含 unknown 的 ValueError；来源和目标必须不同，否则抛出包含 different 的 ValueError；余额不足抛出包含 insufficient 的 ValueError。校验全部成功后才同时更新两个余额并返回结果余额回执，任何失败不得产生部分修改。只修改 models.py 和 ledger.py 并使测试通过。",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["models.py", "ledger.py"],
+      "forbidden_changed_files": ["test_ledger.py", "pytest.ini"],
+      "hidden_tests": [
+        {
+          "source": "benchmarks/hidden_tests/advanced_tasks/test_ledger_hidden.py",
+          "destination": "test_patchloop_hidden.py",
+          "sha256": "1ea0fd1a54f6139eb601d9721e9c30fabb8d4be788c25cd8aa6686bc630114be"
+        }
+      ],
+      "max_steps": 38,
+      "max_cost_usd": 1.8
+    },
+    {
+      "id": "escaped-query-parser-with-regression-test",
+      "fixture": "benchmarks/fixtures/advanced_tasks/query_parser",
+      "fixture_sha256": "3c255b46366959594177f303663a4f2395dd9c50b267f90d6d3c26ec1a8233f4",
+      "goal": "修复 query_parser.py 的 parse_query，并新增 test_query_parser_regression.py。语法是用未转义逗号分隔赋值、用第一个未转义等号分隔键值；仅支持反斜杠转义逗号、等号和反斜杠，并在输出中解码；空字符串返回空字典。缺少等号抛出包含 assignment 的 ValueError，空键抛出包含 key 的 ValueError，重复键抛出包含 duplicate 的 ValueError，未知转义或末尾反斜杠抛出包含 escape 的 ValueError。新回归测试文件至少覆盖转义等号和转义反斜杠。不得修改现有测试或 pytest.ini。",
+      "task_type": "bugfix",
+      "difficulty": "hard",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["query_parser.py", "test_query_parser_regression.py"],
+      "forbidden_changed_files": ["test_query_parser.py", "pytest.ini"],
+      "hidden_tests": [
+        {
+          "source": "benchmarks/hidden_tests/advanced_tasks/test_query_parser_hidden.py",
+          "destination": "test_patchloop_hidden.py",
+          "sha256": "efedc4f70a789a7d27e607013088de096434ee11a140e322ed5437b5400ebda9"
+        }
+      ],
+      "max_steps": 40,
+      "max_cost_usd": 1.8
+    }
+  ]
+}

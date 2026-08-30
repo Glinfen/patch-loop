@@ -5,8 +5,8 @@
   "recent_steps": 1,
   "provider_calls": 7,
   "tool_calls": 6,
-  "context_compactions": 5,
-  "max_context_tokens_used": 867,
+  "context_compactions": 6,
+  "max_context_tokens_used": 817,
   "truncated_tool_outputs": 6,
   "early_evidence_retained": true,
   "completed": true

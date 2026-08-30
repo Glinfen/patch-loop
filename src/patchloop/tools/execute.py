@@ -28,7 +28,12 @@ class RunTestsInput(ToolInputModel):
 
 class RunTestsTool(Tool):
     name = "run_tests"
-    description = "Run pytest or unittest in the repository with a timeout and bounded output."
+    description = (
+        "Run a pytest or unittest command in the repository with a timeout and bounded output. "
+        "Only python -m pytest, python -m unittest, or pytest commands are accepted; python -c "
+        "and ad-hoc scripts are rejected. After a relevant test command passes, do not repeat it "
+        "or invent speculative checks."
+    )
     input_model = RunTestsInput
     permission = PermissionLevel.EXECUTE
 

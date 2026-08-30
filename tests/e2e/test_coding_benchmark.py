@@ -19,6 +19,7 @@ def test_published_coding_tasks_are_locked_and_start_with_failing_tests() -> Non
     for manifest_name, expected_tasks in (
         ("coding_tasks.json", 6),
         ("coding_tasks_hard.json", 5),
+        ("coding_tasks_advanced.json", 4),
     ):
         manifest = load_coding_manifest(root / "benchmarks" / manifest_name)
         assert len(manifest.tasks) == expected_tasks

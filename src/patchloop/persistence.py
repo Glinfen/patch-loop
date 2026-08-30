@@ -1,4 +1,4 @@
-"""SQLite persistence for tasks, steps, tool calls, checkpoints, and artifacts."""
+"""SQLite persistence for runtime state, artifacts, and layered memory."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from patchloop.domain import AgentStep, Plan, Task, TaskStatus, ToolCall, ToolResult
+from patchloop.memory.store import SQLiteMemoryStore, initialize_memory_schema
 from patchloop.providers.base import ModelMessage
 from patchloop.security import SecretRedactor
 from patchloop.storage import TaskNotFoundError
@@ -47,6 +48,7 @@ class SQLiteStore:
         self.redactor = redactor or SecretRedactor()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        self.memory = SQLiteMemoryStore(self.path, self.redactor)
 
     def _redacted_json(self, model: BaseModel) -> str:
         payload = self.redactor.redact(model.model_dump(mode="json"))
@@ -109,6 +111,7 @@ class SQLiteStore:
                 );
                 """
             )
+            initialize_memory_schema(connection)
 
     def save_task(self, task: Task) -> None:
         with self._connect() as connection:
@@ -260,3 +263,11 @@ class SQLiteStore:
             return self.get_task(task_id).status is TaskStatus.CANCELLED
         except TaskNotFoundError:
             return False
+
+    def delete_task(self, task_id: str) -> None:
+        """Delete runtime and memory state through SQLite foreign-key cascades."""
+
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        if cursor.rowcount == 0:
+            raise TaskNotFoundError(task_id)

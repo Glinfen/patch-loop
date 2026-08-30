@@ -234,6 +234,8 @@ LCM-00 已完成：当前 `TaskMemory V1` 在 DeepSeek 三轮长上下文探针�
 
 LCM-01 已完成：版本化分层记忆契约现已固定，并对无来源长期记忆、非法替代链、未知版本和内容哈希篡改执行失败关闭；详细边界见 [LCM-01 验收记录](milestones/LCM_01_ACCEPTANCE.md)。
 
+LCM-02 已完成：共享 SQLite Memory Store 支持事务迁移、写前脱敏、来源与内容幂等、索引查询、压缩报告、恢复重放和任务级联清理；验证见 [LCM-02 验收记录](milestones/LCM_02_ACCEPTANCE.md)。
+
 ## 6. 推荐仓库结构
 
 ```text

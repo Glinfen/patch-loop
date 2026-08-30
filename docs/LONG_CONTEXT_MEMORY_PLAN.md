@@ -124,7 +124,7 @@ LCM-00 已于 2026-08-30 完成，协议、确定性三轮基线和 DeepSeek V4 
 
 LCM-01 已于 2026-08-30 完成，领域边界和测试证据见 [LCM-01 验收记录](milestones/LCM_01_ACCEPTANCE.md)，不可变原始证据与可重建派生记忆的决策见 [ADR-010](adr/ADR-010-versioned-layered-memory-contracts.md)。
 
-### LCM-02：实现持久化 Memory Store
+### LCM-02：实现持久化 Memory Store（已完成）
 
 开发内容：
 
@@ -135,6 +135,8 @@ LCM-01 已于 2026-08-30 完成，领域边界和测试证据见 [LCM-01 验收�
 - 预留语义向量接口，但首版不得强制外部向量数据库或网络服务。
 
 完成标准：重复恢复不会产生重复记忆；迁移失败不破坏现有任务数据。
+
+LCM-02 已于 2026-08-30 完成，共享 SQLite schema、恢复幂等性、事务回滚和查询边界见 [LCM-02 验收记录](milestones/LCM_02_ACCEPTANCE.md)，持久化决策见 [ADR-011](adr/ADR-011-transactional-sqlite-memory-store.md)。
 
 ### LCM-03：实现短期工作记忆
 

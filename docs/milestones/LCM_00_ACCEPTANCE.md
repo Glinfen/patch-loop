@@ -110,7 +110,7 @@ patchloop benchmark-memory `
 
 - 当前任务使用合成历史和精确事实标记，不是完整代码修改任务。
 - 模型只在最终探针调用一次，模拟累计输入 Token 不代表实际 API 账单。
-- `checkpoint-memory-resume` 在 LCM-00 只验证检查点前事实召回，真正的中断恢复一致性将在 LCM-02 和 LCM-08 实现。
+- `checkpoint-memory-resume` 在 LCM-00 只验证检查点前事实召回；LCM-02 已实现存储重放幂等性，Runtime 自动记忆恢复仍由后续集成任务验证。
 - `repeated_failure_risk_rate` 是风险代理，实际重复动作需要未来 Runtime 集成任务判定。
 - 模型探针把选中历史封装为不可信用户数据，用于兼容 DeepSeek 思考协议；该结果不能代替真实 Agent 长任务评测。
 

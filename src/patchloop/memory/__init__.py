@@ -1,5 +1,11 @@
 """Public contracts for PatchLoop layered memory."""
 
+from patchloop.memory.compression import (
+    COMPRESSION_CONTENT_SCHEMA,
+    CompressionBatch,
+    CompressionLevel,
+    MemoryCompressor,
+)
 from patchloop.memory.episodic import (
     EPISODIC_MEMORY_PREFIX,
     EpisodeOutcome,
@@ -69,12 +75,15 @@ from patchloop.memory.working import (
 )
 
 __all__ = [
+    "COMPRESSION_CONTENT_SCHEMA",
     "EPISODIC_MEMORY_PREFIX",
     "LAYERED_MEMORY_PREFIX",
     "MEMORY_SCHEMA_VERSION",
     "MEMORY_STORE_SCHEMA_VERSION",
     "SEMANTIC_CONTENT_SCHEMA",
     "WORKING_MEMORY_PREFIX",
+    "CompressionBatch",
+    "CompressionLevel",
     "CompressionOperation",
     "CompressionReport",
     "ContextLayerAllocation",
@@ -89,6 +98,7 @@ __all__ = [
     "LayeredMemoryContext",
     "MemoryBudgetPolicy",
     "MemoryBundle",
+    "MemoryCompressor",
     "MemoryHit",
     "MemoryKind",
     "MemoryPromotionBatch",

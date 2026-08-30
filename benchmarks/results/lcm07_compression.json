@@ -1,0 +1,17 @@
+{
+  "suite": "lcm07-layered-compression",
+  "revision": "1.0",
+  "input_records": 77,
+  "protected_records": 6,
+  "invalidated_records": 71,
+  "output_active_records": 7,
+  "input_tokens": 9240,
+  "output_tokens": 745,
+  "compression_ratio": 0.08062770562770563,
+  "compression_factor": 12.40268456375839,
+  "protected_survival_rate": 1.0,
+  "replay_is_idempotent": true,
+  "maximum_verified_generation": 3,
+  "raw_lineage_complete": true,
+  "secrets_in_derived_summary": 0
+}

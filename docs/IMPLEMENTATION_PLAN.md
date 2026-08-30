@@ -232,6 +232,8 @@ Tool Gateway ─── 文件 / 搜索 / 补丁 / Shell / Test / Git
 
 LCM-00 已完成：当前 `TaskMemory V1` 在 DeepSeek 三轮长上下文探针中达到 22/24，而 `recent-only` 为 0/24；详细协议和限制见 [LCM-00 验收记录](milestones/LCM_00_ACCEPTANCE.md)。
 
+LCM-01 已完成：版本化分层记忆契约现已固定，并对无来源长期记忆、非法替代链、未知版本和内容哈希篡改执行失败关闭；详细边界见 [LCM-01 验收记录](milestones/LCM_01_ACCEPTANCE.md)。
+
 ## 6. 推荐仓库结构
 
 ```text

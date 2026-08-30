@@ -111,7 +111,7 @@ src/patchloop/memory/
 
 LCM-00 已于 2026-08-30 完成，协议、确定性三轮基线和 DeepSeek V4 Flash 三轮基线见 [LCM-00 验收记录](milestones/LCM_00_ACCEPTANCE.md)。
 
-### LCM-01：稳定记忆领域模型和 ADR
+### LCM-01：稳定记忆领域模型和 ADR（已完成）
 
 开发内容：
 
@@ -121,6 +121,8 @@ LCM-00 已于 2026-08-30 完成，协议、确定性三轮基线和 DeepSeek V4 
 - 所有模型支持版本化序列化，并拒绝未知类型或无来源的长期记忆。
 
 完成标准：模型 round-trip、非法状态、替代链和版本兼容测试全部通过。
+
+LCM-01 已于 2026-08-30 完成，领域边界和测试证据见 [LCM-01 验收记录](milestones/LCM_01_ACCEPTANCE.md)，不可变原始证据与可重建派生记忆的决策见 [ADR-010](adr/ADR-010-versioned-layered-memory-contracts.md)。
 
 ### LCM-02：实现持久化 Memory Store
 

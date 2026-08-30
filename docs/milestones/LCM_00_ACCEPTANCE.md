@@ -114,6 +114,6 @@ patchloop benchmark-memory `
 - `repeated_failure_risk_rate` 是风险代理，实际重复动作需要未来 Runtime 集成任务判定。
 - 模型探针把选中历史封装为不可信用户数据，用于兼容 DeepSeek 思考协议；该结果不能代替真实 Agent 长任务评测。
 
-## 下一任务
+## 后续进度
 
-LCM-01 将固定 `MemoryRecord`、来源、生命周期、替代链、召回结果和压缩报告模型，并编写新的分层记忆 ADR。LCM-01 不应提前修改 Context Engine 排序或压缩阈值。
+LCM-01 已固定 `MemoryRecord`、来源、生命周期、替代链、召回结果和压缩报告模型，见 [LCM-01 验收记录](LCM_01_ACCEPTANCE.md)。下一项 LCM-02 将实现持久化 Memory Store。

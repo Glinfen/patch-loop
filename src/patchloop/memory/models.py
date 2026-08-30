@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from patchloop.domain import utc_now
+from patchloop.domain import ErrorKind, utc_now
 
 MemorySchemaVersion = Literal["1.0"]
 MEMORY_SCHEMA_VERSION: MemorySchemaVersion = "1.0"
@@ -205,6 +205,9 @@ class MemoryQuery(VersionedMemoryModel):
     token_budget: int = Field(default=2_000, ge=1)
     include_ids: list[str] = Field(default_factory=list)
     exclude_ids: list[str] = Field(default_factory=list)
+    error_kinds: list[ErrorKind] = Field(default_factory=list)
+    plan_phases: list[str] = Field(default_factory=list)
+    episode_outcomes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_filters(self) -> Self:
@@ -234,6 +237,13 @@ class MemoryQuery(VersionedMemoryModel):
             raise ValueError("memory query created_before cannot precede created_after")
         if set(self.include_ids) & set(self.exclude_ids):
             raise ValueError("memory query include_ids and exclude_ids must be disjoint")
+        for label, values in (
+            ("error_kinds", self.error_kinds),
+            ("plan_phases", self.plan_phases),
+            ("episode_outcomes", self.episode_outcomes),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"memory query {label} must be unique")
         return self
 
 
@@ -294,6 +304,10 @@ class MemoryBundle(VersionedMemoryModel):
             raise ValueError("memory bundle contains a record outside query include_ids")
         if set(record_ids) & set(self.query.exclude_ids):
             raise ValueError("memory bundle contains a query-excluded record")
+        if any(
+            not memory_record_matches_episode_filters(hit.record, self.query) for hit in self.hits
+        ):
+            raise ValueError("memory bundle contains a record outside episode filters")
         known_sources = {source.id: source for source in self.sources}
         for hit in self.hits:
             if not set(hit.record.source_ids).issubset(known_sources):
@@ -331,6 +345,30 @@ class MemoryBundle(VersionedMemoryModel):
         if set(record_ids) & set(self.omitted_record_ids):
             raise ValueError("returned memory records cannot also be omitted")
         return self
+
+
+def memory_record_matches_episode_filters(
+    record: MemoryRecord,
+    query: MemoryQuery,
+) -> bool:
+    """Return whether a record satisfies optional structured episode filters."""
+
+    if not (query.error_kinds or query.plan_phases or query.episode_outcomes):
+        return True
+    if record.kind is not MemoryKind.EPISODIC:
+        return False
+    raw_reference = record.content.get("reference")
+    if not isinstance(raw_reference, dict):
+        return False
+    if query.error_kinds:
+        allowed_errors = {kind.value for kind in query.error_kinds}
+        if raw_reference.get("error_kind") not in allowed_errors:
+            return False
+    if query.plan_phases and raw_reference.get("plan_phase") not in query.plan_phases:
+        return False
+    return not (
+        query.episode_outcomes and raw_reference.get("outcome") not in query.episode_outcomes
+    )
 
 
 class CompressionReport(VersionedMemoryModel):

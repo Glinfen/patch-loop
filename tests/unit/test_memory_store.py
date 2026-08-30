@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from patchloop.domain import Task
+from patchloop.domain import ErrorKind, Plan, PlanItem, StepStatus, Task, ToolCall, ToolResult
 from patchloop.memory import (
     CompressionOperation,
     CompressionReport,
+    EpisodicMemoryManager,
     MemoryKind,
     MemoryQuery,
     MemoryRecord,
@@ -369,6 +370,68 @@ def test_deleting_task_cascades_all_memory_rows(tmp_path: Path) -> None:
         "memory_compactions",
     ):
         assert table_count(store.path, table) == 0
+
+
+def test_episode_query_filters_error_phase_path_outcome_and_time(tmp_path: Path) -> None:
+    store, task = create_store(tmp_path)
+    episodes = EpisodicMemoryManager(task.id, task.goal)
+    plan = Plan(
+        items=[
+            PlanItem(
+                id="repair",
+                description="Repair payment parser",
+                status=StepStatus.RUNNING,
+            )
+        ]
+    )
+    call = ToolCall(
+        id="failed-parser-write",
+        name="apply_patch",
+        arguments={"path": "src/parser.py"},
+    )
+    write = episodes.observe_tool(
+        call,
+        ToolResult(
+            call_id=call.id,
+            tool_name=call.name,
+            success=False,
+            output="target text not found",
+            error_kind=ErrorKind.EXECUTION_ERROR,
+        ),
+        step_index=7,
+        plan=plan,
+        changed_paths=[],
+    )
+    assert write is not None
+    store.memory.save_batch(sources=write.sources, records=[write.record])
+
+    bundle = store.memory.query(
+        MemoryQuery(
+            task_id=task.id,
+            text="parser target failure",
+            kinds=[MemoryKind.EPISODIC],
+            paths=["src/parser.py"],
+            step_start=7,
+            step_end=7,
+            created_after=datetime.now(UTC) - timedelta(minutes=1),
+            error_kinds=[ErrorKind.EXECUTION_ERROR],
+            plan_phases=["Repair payment parser"],
+            episode_outcomes=["failed"],
+        )
+    )
+
+    assert [hit.record.id for hit in bundle.hits] == [write.record.id]
+    assert bundle.sources[0].path == "src/parser.py"
+    assert (
+        store.memory.query(
+            MemoryQuery(
+                task_id=task.id,
+                text="parser",
+                error_kinds=[ErrorKind.TEST_FAILURE],
+            )
+        ).hits
+        == []
+    )
 
 
 def test_newer_memory_migration_fails_without_destroying_runtime_data(tmp_path: Path) -> None:

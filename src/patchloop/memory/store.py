@@ -21,6 +21,7 @@ from patchloop.memory.models import (
     MemoryRecord,
     MemorySource,
     MemorySourceKind,
+    memory_record_matches_episode_filters,
 )
 from patchloop.security import SecretRedactor
 
@@ -337,6 +338,11 @@ class SQLiteMemoryStore:
         safe_query = self._redact_query(query)
         with self._connect() as connection:
             records = self._select_records(connection, safe_query)
+            records = [
+                record
+                for record in records
+                if memory_record_matches_episode_filters(record, safe_query)
+            ]
             source_map = self._sources_for_records(connection, records)
         relevance = self._relevance_scores(safe_query.text, records)
         ranked = self._rank_records(records, source_map, relevance)

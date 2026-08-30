@@ -19,6 +19,10 @@ from patchloop.domain import (
     utc_now,
 )
 from patchloop.events import Event, EventLogger
+from patchloop.memory.episodic import (
+    EpisodeWrite,
+    EpisodicMemoryManager,
+)
 from patchloop.memory.store import MemoryStoreError
 from patchloop.memory.working import (
     WorkingMemoryBudgetError,
@@ -65,6 +69,7 @@ class AgentRuntime:
         self._max_context_tokens_used = 0
         self._truncated_tool_outputs = 0
         self._working_memory: WorkingMemoryManager | None = None
+        self._episodic_memory: EpisodicMemoryManager | None = None
 
     def run(self, task: Task) -> Task:
         task.transition(TaskStatus.RUNNING)
@@ -83,6 +88,7 @@ class AgentRuntime:
                 token_budget=self._working_memory_budget(task),
             )
             self._working_memory.sync_plan(task.plan, step_index=0)
+            self._episodic_memory = EpisodicMemoryManager(task.id, task.goal)
         except MemoryStoreError as exc:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except WorkingMemoryBudgetError as exc:
@@ -97,6 +103,7 @@ class AgentRuntime:
             messages=messages,
             plan=task.plan,
             working_memory=self._working_memory.snapshot(),
+            episodic_memory=self._episodic_memory.snapshot(),
         )
         self._persist_task(task)
         self._persist_checkpoint(state)
@@ -132,12 +139,32 @@ class AgentRuntime:
                     checkpoint.plan,
                     step_index=checkpoint.next_step_index,
                 )
+            recovered_records = (
+                self.state_store.memory.list_records(task.id)
+                if checkpoint.episodic_memory is None and self.state_store is not None
+                else None
+            )
+            self._episodic_memory = EpisodicMemoryManager(
+                task.id,
+                task.goal,
+                snapshot=checkpoint.episodic_memory,
+                records=recovered_records,
+            )
+        except MemoryStoreError as exc:
+            return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except (ValueError, WorkingMemoryBudgetError) as exc:
             return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
         self._emit(
             "task.resumed",
             task,
-            {"next_step_index": checkpoint.next_step_index},
+            {
+                "next_step_index": checkpoint.next_step_index,
+                "last_verified_episode_id": (
+                    self._episodic_memory.snapshot().last_verified_episode_id
+                    if self._episodic_memory is not None
+                    else None
+                ),
+            },
         )
         return self._execute(task, checkpoint)
 
@@ -176,7 +203,7 @@ class AgentRuntime:
                 self._emit("step.started", task, {"step": step_index})
                 specifications = self.gateway.specifications()
                 try:
-                    request_messages = self._with_working_memory(messages)
+                    request_messages = self._with_runtime_memory(messages)
                     window = context_engine.build(
                         request_messages,
                         specifications,
@@ -202,6 +229,7 @@ class AgentRuntime:
                             else None
                         ),
                         "working_memory": self._working_snapshot_data(),
+                        "episodic_memory": self._episodic_snapshot_data(),
                     },
                 )
                 response = self.provider.complete(window.messages, specifications)
@@ -287,7 +315,7 @@ class AgentRuntime:
                             tool_call_id=call.id,
                         )
                     )
-                    self._observe_tool(task, call, result, step_index)
+                    self._observe_memory(task, call, result, step_index)
                     if not result.success:
                         tool_failures += 1
                         error_fingerprint = json.dumps(
@@ -334,6 +362,7 @@ class AgentRuntime:
                         ],
                     },
                 )
+                self._observe_checkpoint(task, step_index + 1)
                 state = self._checkpoint(
                     task,
                     step_index + 1,
@@ -346,6 +375,8 @@ class AgentRuntime:
                 )
                 self._persist_checkpoint(state)
                 self._persist_task(task)
+        except MemoryStoreError as exc:
+            return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except WorkingMemoryBudgetError as exc:
             return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
         except Exception as exc:
@@ -369,6 +400,37 @@ class AgentRuntime:
                 {"call_id": call.id, "tool_name": call.name},
             )
             return persisted
+        if self._episodic_memory is not None and self._episodic_memory.is_known_failed_action(call):
+            result = ToolResult(
+                call_id=call.id,
+                tool_name=call.name,
+                success=False,
+                error_kind=ErrorKind.NO_PROGRESS,
+                output="blocked exact repetition of an unresolved failed action",
+            )
+            self.gateway.history.append(result)
+            self.gateway.context.requires_replan = True
+            if self.state_store is not None:
+                self.state_store.record_tool_call(task.id, call, result)
+            self._emit(
+                "tool.completed",
+                task,
+                {
+                    "call": call.model_dump(mode="json"),
+                    "result": result.model_dump(mode="json"),
+                    "blocked_by_episodic_memory": True,
+                },
+            )
+            self._emit(
+                "episode.repeat_blocked",
+                task,
+                {
+                    "call_id": call.id,
+                    "tool_name": call.name,
+                    "action_fingerprint": self._episodic_memory.action_fingerprint(call),
+                },
+            )
+            return result
         result = self.gateway.execute(task.id, call)
         if self.state_store is not None:
             self.state_store.record_tool_call(task.id, call, result)
@@ -429,6 +491,9 @@ class AgentRuntime:
         working_snapshot = (
             self._working_memory.snapshot() if self._working_memory is not None else None
         )
+        episodic_snapshot = (
+            self._episodic_memory.snapshot() if self._episodic_memory is not None else None
+        )
         return TaskReport(
             summary=summary,
             changed_files=self.gateway.context.changes.changed_paths(),
@@ -456,6 +521,17 @@ class AgentRuntime:
             ),
             max_working_memory_tokens_used=(
                 working_snapshot.max_estimated_tokens if working_snapshot is not None else 0
+            ),
+            episodes_created=(
+                episodic_snapshot.episode_count if episodic_snapshot is not None else 0
+            ),
+            episode_recoveries=(
+                episodic_snapshot.recovery_count if episodic_snapshot is not None else 0
+            ),
+            last_verified_episode_id=(
+                episodic_snapshot.last_verified_episode_id
+                if episodic_snapshot is not None
+                else None
             ),
         )
 
@@ -503,6 +579,9 @@ class AgentRuntime:
             working_memory=(
                 self._working_memory.snapshot() if self._working_memory is not None else None
             ),
+            episodic_memory=(
+                self._episodic_memory.snapshot() if self._episodic_memory is not None else None
+            ),
         )
 
     @staticmethod
@@ -510,39 +589,61 @@ class AgentRuntime:
         context_share = max(128, task.budget.max_context_tokens // 5)
         return min(task.budget.max_working_memory_tokens, context_share)
 
-    def _with_working_memory(self, messages: list[ModelMessage]) -> list[ModelMessage]:
-        if self._working_memory is None:
-            return list(messages)
+    def _with_runtime_memory(self, messages: list[ModelMessage]) -> list[ModelMessage]:
         request_messages = list(messages)
+        additions: list[str] = []
+        if self._working_memory is not None:
+            additions.append(self._working_memory.render())
+        if self._episodic_memory is not None and self._episodic_memory.has_context():
+            additions.append(self._episodic_memory.render())
+        if not additions:
+            return request_messages
         request_messages[0] = request_messages[0].model_copy(
-            update={
-                "content": (f"{request_messages[0].content}\n\n{self._working_memory.render()}")
-            }
+            update={"content": f"{request_messages[0].content}\n\n" + "\n\n".join(additions)}
         )
         return request_messages
 
-    def _observe_tool(
+    def _observe_memory(
         self,
         task: Task,
         call: ToolCall,
         result: ToolResult,
         step_index: int,
     ) -> None:
-        if self._working_memory is None:
-            return
-        batch = self._working_memory.observe_tool(
-            call,
-            result,
-            step_index=step_index,
-            plan=self.gateway.context.plan,
-            changed_paths=self.gateway.context.changes.changed_paths(),
-        )
-        if batch.records and self.state_store is not None:
-            self.state_store.memory.save_batch(
-                sources=batch.sources,
-                records=batch.records,
+        changed_paths = self.gateway.context.changes.changed_paths()
+        batch = (
+            self._working_memory.observe_tool(
+                call,
+                result,
+                step_index=step_index,
+                plan=self.gateway.context.plan,
+                changed_paths=changed_paths,
             )
-        if batch.records:
+            if self._working_memory is not None
+            else None
+        )
+        episode = (
+            self._episodic_memory.observe_tool(
+                call,
+                result,
+                step_index=step_index,
+                plan=self.gateway.context.plan,
+                changed_paths=changed_paths,
+            )
+            if self._episodic_memory is not None
+            else None
+        )
+        sources = [*(batch.sources if batch is not None else ())]
+        records = [*(batch.records if batch is not None else ())]
+        if episode is not None:
+            sources.extend(episode.sources)
+            records.append(episode.record)
+        if records and self.state_store is not None:
+            self.state_store.memory.save_batch(
+                sources=sources,
+                records=records,
+            )
+        if batch is not None and batch.records:
             self._emit(
                 "memory.promoted",
                 task,
@@ -552,18 +653,57 @@ class AgentRuntime:
                     "record_ids": [record.id for record in batch.records],
                 },
             )
-        snapshot = self._working_memory.snapshot()
+        if episode is not None:
+            self._emit_episode(task, episode)
+        if self._working_memory is not None:
+            snapshot = self._working_memory.snapshot()
+            self._emit(
+                "working_memory.updated",
+                task,
+                {
+                    "step": step_index,
+                    "revision": snapshot.revision,
+                    "estimated_tokens": snapshot.estimated_tokens,
+                    "token_budget": snapshot.token_budget,
+                    "evicted_count": snapshot.evicted_count,
+                    "items": len(snapshot.items),
+                    "phase_events": len(snapshot.phase_events),
+                },
+            )
+
+    def _observe_checkpoint(self, task: Task, step_index: int) -> None:
+        if self._episodic_memory is None:
+            return
+        episode = self._episodic_memory.observe_checkpoint(
+            step_index=step_index,
+            plan=self.gateway.context.plan,
+            changed_paths=self.gateway.context.changes.changed_paths(),
+        )
+        if episode is None:
+            return
+        if self.state_store is not None:
+            self.state_store.memory.save_batch(
+                sources=episode.sources,
+                records=[episode.record],
+            )
+        self._emit_episode(task, episode)
+
+    def _emit_episode(self, task: Task, episode: EpisodeWrite) -> None:
+        reference = episode.reference
         self._emit(
-            "working_memory.updated",
+            "episode.created",
             task,
             {
-                "step": step_index,
-                "revision": snapshot.revision,
-                "estimated_tokens": snapshot.estimated_tokens,
-                "token_budget": snapshot.token_budget,
-                "evicted_count": snapshot.evicted_count,
-                "items": len(snapshot.items),
-                "phase_events": len(snapshot.phase_events),
+                "episode_id": reference.id,
+                "step": reference.step_index,
+                "plan_phase": reference.plan_phase,
+                "tool_name": reference.tool_name,
+                "outcome": reference.outcome.value,
+                "paths": reference.paths,
+                "error_kind": (
+                    reference.error_kind.value if reference.error_kind is not None else None
+                ),
+                "recovers_episode_ids": reference.recovers_episode_ids,
             },
         )
 
@@ -571,6 +711,11 @@ class AgentRuntime:
         if self._working_memory is None:
             return None
         return self._working_memory.snapshot().model_dump(mode="json")
+
+    def _episodic_snapshot_data(self) -> dict[str, object] | None:
+        if self._episodic_memory is None:
+            return None
+        return self._episodic_memory.snapshot().model_dump(mode="json")
 
     def _persist_task(self, task: Task) -> None:
         if self.state_store is not None:

@@ -30,6 +30,9 @@ class TaskMetrics(BaseModel):
     working_memory_evictions: int = Field(default=0, ge=0)
     memory_promotions: int = Field(default=0, ge=0)
     max_working_memory_tokens_used: int = Field(default=0, ge=0)
+    episodes_created: int = Field(default=0, ge=0)
+    episode_recoveries: int = Field(default=0, ge=0)
+    repeated_failed_actions_blocked: int = Field(default=0, ge=0)
     errors: dict[str, int] = Field(default_factory=dict)
 
     @classmethod
@@ -74,6 +77,12 @@ class TaskMetrics(BaseModel):
                 )
             elif event.type == "memory.promoted":
                 metrics.memory_promotions += int(event.data.get("records", 0))
+            elif event.type == "episode.created":
+                metrics.episodes_created += 1
+                if event.data.get("recovers_episode_ids"):
+                    metrics.episode_recoveries += 1
+            elif event.type == "episode.repeat_blocked":
+                metrics.repeated_failed_actions_blocked += 1
             elif event.type in {"task.completed", "task.failed", "task.cancelled"}:
                 metrics.status = event.type.removeprefix("task.")
                 if event.type == "task.failed":

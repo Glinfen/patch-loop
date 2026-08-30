@@ -95,6 +95,9 @@ class TaskReport(BaseModel):
     working_memory_evictions: int = Field(default=0, ge=0)
     memory_promotions: int = Field(default=0, ge=0)
     max_working_memory_tokens_used: int = Field(default=0, ge=0)
+    episodes_created: int = Field(default=0, ge=0)
+    episode_recoveries: int = Field(default=0, ge=0)
+    last_verified_episode_id: str | None = None
     generated_at: datetime = Field(default_factory=utc_now)
 
 

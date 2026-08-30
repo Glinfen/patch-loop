@@ -238,6 +238,8 @@ LCM-02 已完成：共享 SQLite Memory Store 支持事务迁移、写前脱敏�
 
 LCM-03 已完成：Runtime 已接入有界工作记忆状态机、pin/显式淘汰、独立预算、checkpoint 恢复和阶段完成后的长期记忆晋升；100 步验收与预算隔离证据见 [LCM-03 验收记录](milestones/LCM_03_ACCEPTANCE.md)。
 
+LCM-04 已完成：工具调用与 checkpoint 现在形成结构化情景，支持失败—恢复因果链接、错误/阶段/路径/时间查询、重复无效动作阻断以及从最后已验证情景恢复；验证见 [LCM-04 验收记录](milestones/LCM_04_ACCEPTANCE.md)。
+
 ## 6. 推荐仓库结构
 
 ```text

@@ -12,6 +12,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from patchloop.domain import AgentStep, Plan, Task, TaskStatus, ToolCall, ToolResult
+from patchloop.memory.episodic import EpisodicMemorySnapshot
 from patchloop.memory.store import SQLiteMemoryStore, initialize_memory_schema
 from patchloop.memory.working import WorkingMemorySnapshot
 from patchloop.providers.base import ModelMessage
@@ -41,6 +42,7 @@ class RuntimeCheckpoint(BaseModel):
     max_context_tokens_used: int = Field(default=0, ge=0)
     truncated_tool_outputs: int = Field(default=0, ge=0)
     working_memory: WorkingMemorySnapshot | None = None
+    episodic_memory: EpisodicMemorySnapshot | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

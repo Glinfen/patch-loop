@@ -1,5 +1,13 @@
 """Public contracts for PatchLoop layered memory."""
 
+from patchloop.memory.episodic import (
+    EPISODIC_MEMORY_PREFIX,
+    EpisodeOutcome,
+    EpisodeReference,
+    EpisodeWrite,
+    EpisodicMemoryManager,
+    EpisodicMemorySnapshot,
+)
 from patchloop.memory.models import (
     MEMORY_SCHEMA_VERSION,
     CompressionOperation,
@@ -36,11 +44,17 @@ from patchloop.memory.working import (
 )
 
 __all__ = [
+    "EPISODIC_MEMORY_PREFIX",
     "MEMORY_SCHEMA_VERSION",
     "MEMORY_STORE_SCHEMA_VERSION",
     "WORKING_MEMORY_PREFIX",
     "CompressionOperation",
     "CompressionReport",
+    "EpisodeOutcome",
+    "EpisodeReference",
+    "EpisodeWrite",
+    "EpisodicMemoryManager",
+    "EpisodicMemorySnapshot",
     "MemoryBundle",
     "MemoryHit",
     "MemoryKind",

@@ -87,6 +87,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - `experiment` 一条命令运行规划、检索、反思消融，自动归类失败、比较优化阶段，并以结果指纹、最小/最大成功率和标准差检查重复稳定性。
 - 第九周 5 轮实验中完整系统稳定为 100%；去规划为 100%、去检索为 50%、去反思为 80%，所有变体结果标准差为 0，离线模型费用为 0 美元。
 - 端到端代码任务包含 6 个基础任务、5 个 hard 任务和 4 个 advanced 任务；后两套使用 Agent 结束后才注入的锁定隐藏测试，覆盖跨文件事务、版本迁移、状态解析与测试生成，并拒绝越界文件变更。
+- `benchmark-memory` 可生成 20～120 步固定长历史，对比 recent-only 与 TaskMemory V1；LCM-00 的 DeepSeek 三轮基线分别为 0/24 和 22/24，并单独报告关键事实、陈旧事实和重复失败风险。
 
 ## 本地开发
 
@@ -126,6 +127,9 @@ patchloop experiment --manifest benchmarks/evaluation_manifest.json --root . \
 patchloop benchmark-code --manifest benchmarks/coding_tasks.json --root . \
   --sandbox docker --repeats 1 \
   --output benchmarks/results/code_benchmark_latest.json
+patchloop benchmark-memory --manifest benchmarks/memory_tasks.json --root . \
+  --variant task_memory_v1 --mode deterministic --repeats 3 \
+  --output benchmarks/results/lcm00_task_memory_v1.json
 ```
 
 运行 DeepSeek V4 Flash Agent：
@@ -148,9 +152,9 @@ patchloop run "修复分页边界错误并运行回归测试" `
   --max-cost-usd 1.0
 ```
 
-密钥默认从进程环境变量读取；`benchmark-code` 还可以显式读取评测根目录下已被 Git 忽略的 `.env`。Provider 上下文、任务、轨迹、SQLite 和产物会对 API Key、Bearer Token、密码及常见敏感字段统一脱敏。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。默认执行后端是无网络 Docker 沙箱；`--sandbox local` 仅用于受信任环境的兼容调试，不提供操作系统级隔离。
+密钥默认从进程环境变量读取；`benchmark-code` 和模型模式的 `benchmark-memory` 还可以显式读取评测根目录下已被 Git 忽略的 `.env`。Provider 上下文、任务、轨迹、SQLite 和产物会对 API Key、Bearer Token、密码及常见敏感字段统一脱敏。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。默认执行后端是无网络 Docker 沙箱；`--sandbox local` 仅用于受信任环境的兼容调试，不提供操作系统级隔离。
 
-`benchmark-code` 的 `.env` 支持 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL_ID` 以及对应的 `DEEPSEEK_*` 变量；显式进程环境变量优先。对任意目标仓库执行 `run` 或 `resume` 时不会自动信任仓库内的 `.env`。
+上述两个评测命令的 `.env` 支持 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL_ID` 以及对应的 `DEEPSEEK_*` 变量；显式进程环境变量优先。`benchmark-memory --mode deterministic` 不读取 `.env`。对任意目标仓库执行 `run` 或 `resume` 时不会自动信任仓库内的 `.env`。
 
 当前版本已完成“检索 → 规划 → 修改 → 沙箱测试 → diff → 汇报 → 回放”的确定性端到端闭环，并接入 DeepSeek V4 Flash、SQLite 检查点、任务恢复、可解释 Repository Intelligence、预算化上下文记忆、安全策略与可观测性。流式输出属于后续阶段。
 

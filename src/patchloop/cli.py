@@ -16,9 +16,13 @@ from patchloop.evaluation import (
     EvaluationRunner,
     EvaluationVariant,
     ExperimentRunner,
+    MemoryBenchmarkMode,
+    MemoryBenchmarkRunner,
+    MemoryBenchmarkVariant,
     RetrievalBaseline,
     load_coding_manifest,
     load_evaluation_manifest,
+    load_memory_manifest,
 )
 from patchloop.events import EventLogger
 from patchloop.intelligence import (
@@ -322,6 +326,66 @@ def benchmark_code_tasks(
             lambda: _create_sandbox(sandbox, sandbox_image),
             repeats=repeats,
         ).run(task_manifest)
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    typer.echo(report.model_dump_json(indent=2))
+
+
+@app.command("benchmark-memory")
+def benchmark_memory(
+    manifest: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/memory_tasks.json"),
+    root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/results/lcm00_memory_baseline.json"),
+    variant: Annotated[
+        str,
+        typer.Option(help="recent_only, task_memory_v1, or hierarchical_memory."),
+    ] = "task_memory_v1",
+    mode: Annotated[
+        str,
+        typer.Option(help="deterministic or model."),
+    ] = "deterministic",
+    repeats: Annotated[int, typer.Option(min=1, max=20)] = 1,
+    task: Annotated[
+        str,
+        typer.Option("--task", help="Comma-separated memory task ids to run."),
+    ] = "",
+) -> None:
+    try:
+        task_manifest = load_memory_manifest(manifest)
+        if task:
+            selected = {item.strip() for item in task.split(",") if item.strip()}
+            available = {item.id for item in task_manifest.tasks}
+            unknown = sorted(selected - available)
+            if unknown:
+                raise ValueError(f"unknown memory task ids: {', '.join(unknown)}")
+            task_manifest = task_manifest.model_copy(
+                update={"tasks": [item for item in task_manifest.tasks if item.id in selected]}
+            )
+        benchmark_mode = MemoryBenchmarkMode(mode)
+        report = MemoryBenchmarkRunner(
+            (
+                (lambda: DeepSeekProvider.from_env(root / ".env"))
+                if benchmark_mode is MemoryBenchmarkMode.MODEL
+                else None
+            ),
+            repeats=repeats,
+        ).run(
+            task_manifest,
+            variant=MemoryBenchmarkVariant(variant),
+            mode=benchmark_mode,
+        )
     except (OSError, ValueError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None

@@ -87,6 +87,70 @@ def test_code_benchmark_rejects_unknown_task_filter(tmp_path: Path) -> None:
     assert "unknown coding task ids: missing-task" in result.output
 
 
+def test_memory_benchmark_runs_deterministically_without_api_key(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    for name in ("DEEPSEEK_API_KEY", "LLM_API_KEY"):
+        monkeypatch.delenv(name, raising=False)  # type: ignore[attr-defined]
+    project_root = Path(__file__).parents[2]
+    output = tmp_path / "memory.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark-memory",
+            "--manifest",
+            str(project_root / "benchmarks" / "memory_tasks.json"),
+            "--root",
+            str(project_root),
+            "--output",
+            str(output),
+            "--variant",
+            "recent_only",
+            "--mode",
+            "deterministic",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["total_runs"] == 8
+    assert payload["variant"] == "recent_only"
+    assert payload["stable_outcomes_across_repeats"] is True
+    assert payload["provider"] == "deterministic-context-inspection"
+
+
+def test_memory_model_benchmark_requires_explicit_evaluation_credentials(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    for name in ("DEEPSEEK_API_KEY", "LLM_API_KEY"):
+        monkeypatch.delenv(name, raising=False)  # type: ignore[attr-defined]
+    project_root = Path(__file__).parents[2]
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark-memory",
+            "--manifest",
+            str(project_root / "benchmarks" / "memory_tasks.json"),
+            "--root",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "memory.json"),
+            "--variant",
+            "task_memory_v1",
+            "--mode",
+            "model",
+            "--task",
+            "memory-poisoning-defense",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "DEEPSEEK_API_KEY or LLM_API_KEY is not set" in result.output
+    assert not (tmp_path / "memory.json").exists()
+
+
 def test_run_uses_provider_and_persists_result(tmp_path: Path, monkeypatch: object) -> None:
     provider = FakeProvider([ModelResponse(content="Repository inspected.")])
     monkeypatch.setattr(  # type: ignore[attr-defined]

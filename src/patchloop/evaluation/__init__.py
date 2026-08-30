@@ -16,6 +16,19 @@ from patchloop.evaluation.experiments import (
     ExperimentRunner,
 )
 from patchloop.evaluation.manifest import load_evaluation_manifest, repository_tree_sha256
+from patchloop.evaluation.memory import (
+    MemoryBenchmarkMode,
+    MemoryBenchmarkReport,
+    MemoryBenchmarkRunner,
+    MemoryBenchmarkVariant,
+    MemoryFactDefinition,
+    MemoryFactKind,
+    MemoryNoiseStyle,
+    MemoryTaskDefinition,
+    MemoryTaskManifest,
+    MemoryTaskResult,
+    load_memory_manifest,
+)
 from patchloop.evaluation.models import (
     Difficulty,
     EvaluationCandidate,
@@ -51,11 +64,22 @@ __all__ = [
     "ExperimentReport",
     "ExperimentRunner",
     "HiddenTestDefinition",
+    "MemoryBenchmarkMode",
+    "MemoryBenchmarkReport",
+    "MemoryBenchmarkRunner",
+    "MemoryBenchmarkVariant",
+    "MemoryFactDefinition",
+    "MemoryFactKind",
+    "MemoryNoiseStyle",
+    "MemoryTaskDefinition",
+    "MemoryTaskManifest",
+    "MemoryTaskResult",
     "RepositoryDefinition",
     "RetrievalBaseline",
     "SuccessCriteria",
     "TaskType",
     "load_coding_manifest",
     "load_evaluation_manifest",
+    "load_memory_manifest",
     "repository_tree_sha256",
 ]

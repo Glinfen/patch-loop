@@ -1,0 +1,107 @@
+{
+  "schema_version": "1.0",
+  "suite_id": "patchloop-coding-hard-v1",
+  "revision": "2026-08-29",
+  "tasks": [
+    {
+      "id": "deep-config-merge",
+      "fixture": "benchmarks/fixtures/hard_tasks/config_merge",
+      "fixture_sha256": "bf47ddb1a28497156384eb613d5f17d37484bd0feca915866a5a95743a23aeea",
+      "goal": "实现 config_merge.py 的 deep_merge：递归合并两个字典；双方值都是字典时继续合并，列表和其他值由 override 替换；不得修改或与结果共享 base、override 中的可变嵌套对象。只修改实现文件并使测试通过。",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["config_merge.py"],
+      "forbidden_changed_files": ["test_config_merge.py", "pytest.ini"],
+      "hidden_tests": [
+        {
+          "source": "benchmarks/hidden_tests/hard_tasks/test_config_merge_hidden.py",
+          "destination": "test_patchloop_hidden.py",
+          "sha256": "135a18baea524c7a36dba876ea987e691279ea1503c15f46b69ae5595c578062"
+        }
+      ],
+      "max_steps": 28,
+      "max_cost_usd": 1.2
+    },
+    {
+      "id": "deterministic-dependency-order",
+      "fixture": "benchmarks/fixtures/hard_tasks/dependency_order",
+      "fixture_sha256": "31df0162289960a9bf0989546a8648052f34ef08df8531f8af840d4b087cf040",
+      "goal": "实现 dependency_order.py 的确定性依赖排序：每个节点的依赖必须在该节点之前；同时就绪的节点按字典序选择；存在环时抛出包含 cycle 的 ValueError；引用未声明依赖时抛出包含 unknown 的 ValueError。只修改实现文件并使测试通过。",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["dependency_order.py"],
+      "forbidden_changed_files": ["test_dependency_order.py", "pytest.ini"],
+      "hidden_tests": [
+        {
+          "source": "benchmarks/hidden_tests/hard_tasks/test_dependency_order_hidden.py",
+          "destination": "test_patchloop_hidden.py",
+          "sha256": "8e42b009b9347f1c7be945f178a1e64e81b483d584faf534c15c7cdd38e67912"
+        }
+      ],
+      "max_steps": 30,
+      "max_cost_usd": 1.2
+    },
+    {
+      "id": "sliding-window-rate-limiter",
+      "fixture": "benchmarks/fixtures/hard_tasks/rate_limiter",
+      "fixture_sha256": "9a5d3079718b1227a9078c0f4e0bf4cd7d05e4624a4a72abdb41c93e53a9d910",
+      "goal": "实现 limiter.py 的按 key 滑动窗口限流器：构造参数必须为正；精确达到窗口边界的历史请求应过期；不同 key 独立；被拒绝的请求不占容量；同一 key 的时间戳必须非递减，否则抛出包含 nondecreasing 的 ValueError。只修改实现文件并使测试通过。",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["limiter.py"],
+      "forbidden_changed_files": ["test_limiter.py", "pytest.ini"],
+      "hidden_tests": [
+        {
+          "source": "benchmarks/hidden_tests/hard_tasks/test_limiter_hidden.py",
+          "destination": "test_patchloop_hidden.py",
+          "sha256": "baae004d2b77e30de9abf9af0d0fb21de9a4728bcc5abafbd1208184b5e3bb36"
+        }
+      ],
+      "max_steps": 30,
+      "max_cost_usd": 1.2
+    },
+    {
+      "id": "atomic-inventory-reservation",
+      "fixture": "benchmarks/fixtures/hard_tasks/inventory_reservation",
+      "fixture_sha256": "12e4df0a530af5dcf7b9712371cb9d01a53bb1c488b03e74d6bd0a6feae39547",
+      "goal": "完成多文件库存预留功能：在 models.py 新增可按值比较的 ReservationResult(reserved, total_count)；在 inventory.py 实现 reserve_many。重复 SKU 必须先汇总，数量必须为正，未知 SKU 抛出包含 unknown 的 ValueError，库存不足抛出包含 insufficient 的 ValueError，任何失败都不能部分扣减库存。只修改这两个实现文件并使测试通过。",
+      "task_type": "feature",
+      "difficulty": "hard",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["models.py", "inventory.py"],
+      "forbidden_changed_files": ["test_inventory.py", "pytest.ini"],
+      "hidden_tests": [
+        {
+          "source": "benchmarks/hidden_tests/hard_tasks/test_inventory_hidden.py",
+          "destination": "test_patchloop_hidden.py",
+          "sha256": "fa271599b818326ef19aa9efff42b84e5d9aaa646117cf9daedf67983f92e43b"
+        }
+      ],
+      "max_steps": 34,
+      "max_cost_usd": 1.5
+    },
+    {
+      "id": "structured-log-redaction",
+      "fixture": "benchmarks/fixtures/hard_tasks/log_redaction",
+      "fixture_sha256": "de76748779d72fc1d71da7ff9276ca02f8019ab67e4aceba44d3ea5220fb2215",
+      "goal": "修复 redaction.py：不区分大小写地脱敏 password、token、api_key、secret 的 key=value 值，值截止于空白、逗号或 &，保留键名和分隔符；同时脱敏所有 Bearer token 并保留 Bearer 前缀；普通文本保持不变。只修改实现文件并使测试通过。",
+      "task_type": "bugfix",
+      "difficulty": "hard",
+      "test_command": ["python", "-m", "pytest", "-q"],
+      "expected_changed_files": ["redaction.py"],
+      "forbidden_changed_files": ["test_redaction.py", "pytest.ini"],
+      "hidden_tests": [
+        {
+          "source": "benchmarks/hidden_tests/hard_tasks/test_redaction_hidden.py",
+          "destination": "test_patchloop_hidden.py",
+          "sha256": "f1ab88293847f1dd02c1305ab89ac72d4ab7f84665f1888651869c4bc2ffa986"
+        }
+      ],
+      "max_steps": 30,
+      "max_cost_usd": 1.2
+    }
+  ]
+}

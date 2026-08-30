@@ -63,6 +63,30 @@ def test_code_benchmark_requires_environment_key_without_creating_run(
     assert not work_root.exists()
 
 
+def test_code_benchmark_rejects_unknown_task_filter(tmp_path: Path) -> None:
+    project_root = Path(__file__).parents[2]
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark-code",
+            "--manifest",
+            str(project_root / "benchmarks" / "coding_tasks_hard.json"),
+            "--root",
+            str(tmp_path),
+            "--work-root",
+            str(tmp_path / "runs"),
+            "--output",
+            str(tmp_path / "report.json"),
+            "--task",
+            "missing-task",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "unknown coding task ids: missing-task" in result.output
+
+
 def test_run_uses_provider_and_persists_result(tmp_path: Path, monkeypatch: object) -> None:
     provider = FakeProvider([ModelResponse(content="Repository inspected.")])
     monkeypatch.setattr(  # type: ignore[attr-defined]

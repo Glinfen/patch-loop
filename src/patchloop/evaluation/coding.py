@@ -6,7 +6,7 @@ import hashlib
 import shutil
 import statistics
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from time import perf_counter
 from uuid import uuid4
 
@@ -28,7 +28,6 @@ from patchloop.tools import (
     PermissionLevel,
     ReadFileTool,
     ReplaceTextTool,
-    RunCommandTool,
     RunTestsTool,
     SearchCodeTool,
     SearchTextTool,
@@ -36,8 +35,15 @@ from patchloop.tools import (
     ToolGateway,
     ToolPolicy,
     UpdatePlanTool,
+    WriteFileTool,
 )
 from patchloop.tools.base import Tool
+
+
+class HiddenTestDefinition(BaseModel):
+    source: str = Field(min_length=1)
+    destination: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class CodingTaskDefinition(BaseModel):
@@ -51,6 +57,7 @@ class CodingTaskDefinition(BaseModel):
     expected_changed_files: list[str] = Field(min_length=1)
     forbidden_changed_files: list[str] = Field(default_factory=list)
     allowed_extra_files: list[str] = Field(default_factory=list)
+    hidden_tests: list[HiddenTestDefinition] = Field(default_factory=list)
     max_steps: int = Field(default=24, ge=1, le=100)
     max_cost_usd: float = Field(default=1.0, gt=0.0)
 
@@ -82,6 +89,7 @@ class CodingTaskResult(BaseModel):
     missing_expected_files: list[str]
     forbidden_changes: list[str]
     unexpected_changes: list[str]
+    hidden_tests_used: int = Field(ge=0)
     steps: int = Field(ge=0)
     tool_calls: int = Field(ge=0)
     input_tokens: int = Field(ge=0)
@@ -188,6 +196,7 @@ class CodingBenchmarkRunner:
                 f"expected {definition.fixture_sha256}, got {actual_hash}"
             )
         workspace = run_root / f"{definition.id}-r{repeat}"
+        hidden_sources = self._validate_hidden_tests(definition)
         shutil.copytree(
             source,
             workspace,
@@ -216,10 +225,12 @@ class CodingBenchmarkRunner:
         )
         started = perf_counter()
         result = AgentRuntime(provider, gateway, trace, store).run(task)
+        agent_files = _workspace_file_hashes(workspace)
         verifier_exit_code: int | None = None
         verifier_output = ""
         verification_error: str | None = None
         try:
+            self._inject_hidden_tests(hidden_sources, workspace)
             command = RunTestsTool._normalize_command(definition.test_command, context)
             verification = self.sandbox_factory().execute(
                 command,
@@ -232,11 +243,10 @@ class CodingBenchmarkRunner:
         except (OSError, ValueError, SandboxError, SandboxTimeoutError) as exc:
             verification_error = f"{type(exc).__name__}: {exc}"
         duration_ms = (perf_counter() - started) * 1_000
-        final_files = _workspace_file_hashes(workspace)
         changed_files = sorted(
             path
-            for path in original_files.keys() | final_files.keys()
-            if original_files.get(path) != final_files.get(path)
+            for path in original_files.keys() | agent_files.keys()
+            if original_files.get(path) != agent_files.get(path)
         )
         expected = set(definition.expected_changed_files)
         forbidden = set(definition.forbidden_changed_files)
@@ -261,6 +271,7 @@ class CodingBenchmarkRunner:
             missing_expected_files=missing,
             forbidden_changes=forbidden_changes,
             unexpected_changes=unexpected_changes,
+            hidden_tests_used=len(hidden_sources),
             steps=len(store.list_steps(task.id)),
             tool_calls=report.tool_calls if report is not None else 0,
             input_tokens=report.input_tokens if report is not None else 0,
@@ -274,6 +285,37 @@ class CodingBenchmarkRunner:
             trace_path=str(trace.path),
         )
 
+    def _validate_hidden_tests(self, definition: CodingTaskDefinition) -> list[tuple[Path, str]]:
+        resolved: list[tuple[Path, str]] = []
+        destinations: set[str] = set()
+        for hidden in definition.hidden_tests:
+            source = (self.root / hidden.source).resolve(strict=True)
+            source.relative_to(self.root)
+            if not source.is_file():
+                raise ValueError(f"hidden test source is not a file: {hidden.source}")
+            actual_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+            if actual_hash != hidden.sha256:
+                raise ValueError(
+                    f"hidden test fingerprint mismatch for {definition.id}: "
+                    f"expected {hidden.sha256}, got {actual_hash}"
+                )
+            destination = _safe_relative_path(hidden.destination)
+            if destination in destinations:
+                raise ValueError(f"duplicate hidden test destination: {destination}")
+            destinations.add(destination)
+            resolved.append((source, destination))
+        return resolved
+
+    @staticmethod
+    def _inject_hidden_tests(hidden_tests: list[tuple[Path, str]], workspace: Path) -> None:
+        for source, relative in hidden_tests:
+            destination = (workspace / relative).resolve(strict=False)
+            destination.relative_to(workspace)
+            if destination.exists():
+                raise ValueError(f"hidden test destination already exists: {relative}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
 
 def _coding_tools() -> list[Tool]:
     return [
@@ -285,7 +327,7 @@ def _coding_tools() -> list[Tool]:
         CreateFileTool(),
         ApplyPatchTool(),
         ReplaceTextTool(),
-        RunCommandTool(),
+        WriteFileTool(),
         RunTestsTool(),
         GetDiffTool(),
     ]
@@ -302,3 +344,16 @@ def _workspace_file_hashes(repository: Path) -> dict[str, str]:
         elif path.is_file():
             hashes[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     return hashes
+
+
+def _safe_relative_path(value: str) -> str:
+    windows_path = PureWindowsPath(value)
+    posix_path = PurePosixPath(value)
+    if (
+        windows_path.is_absolute()
+        or posix_path.is_absolute()
+        or ".." in windows_path.parts
+        or ".." in posix_path.parts
+    ):
+        raise ValueError(f"hidden test destination escapes workspace: {value}")
+    return posix_path.as_posix()

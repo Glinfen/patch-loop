@@ -25,13 +25,14 @@ IGNORED_DIRECTORIES = {
 def _files_under(root: Path, context: ToolContext) -> list[Path]:
     files: list[Path] = []
     for path in root.rglob("*"):
-        if not path.is_file() or any(part in IGNORED_DIRECTORIES for part in path.parts):
+        relative = path.relative_to(context.repository)
+        if not path.is_file() or any(part in IGNORED_DIRECTORIES for part in relative.parts):
             continue
         try:
-            resolved = context.resolve_path(str(path.relative_to(context.repository)))
+            resolved = context.resolve_path(str(relative))
         except (OSError, ValueError):
             continue
-        if resolved == path and not path.is_symlink():
+        if resolved == path.resolve() and not path.is_symlink():
             files.append(path)
     return sorted(files)
 

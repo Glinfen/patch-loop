@@ -5,6 +5,7 @@ from patchloop.evaluation.coding import (
     CodingTaskDefinition,
     CodingTaskManifest,
     CodingTaskResult,
+    HiddenTestDefinition,
     load_coding_manifest,
 )
 from patchloop.evaluation.experiments import (
@@ -49,6 +50,7 @@ __all__ = [
     "ExperimentFeatures",
     "ExperimentReport",
     "ExperimentRunner",
+    "HiddenTestDefinition",
     "RepositoryDefinition",
     "RetrievalBaseline",
     "SuccessCriteria",

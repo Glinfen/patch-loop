@@ -1,6 +1,8 @@
 """Explicit plan management for the Plan-Execute runtime."""
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, Field, field_validator
 
 from patchloop.domain import Plan, PlanItem, StepStatus
 from patchloop.tools.base import Tool, ToolContext, ToolInputModel
@@ -10,6 +12,11 @@ class PlanItemInput(ToolInputModel):
     description: str = Field(min_length=1)
     status: StepStatus = StepStatus.PENDING
     evidence: list[str] = Field(default_factory=list)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_in_progress(cls, value: Any) -> Any:
+        return StepStatus.RUNNING if value == "in_progress" else value
 
 
 class UpdatePlanInput(ToolInputModel):

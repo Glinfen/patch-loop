@@ -21,6 +21,7 @@ from patchloop.tools import (
     ToolGateway,
     ToolPolicy,
     UpdatePlanTool,
+    WriteFileTool,
 )
 
 
@@ -66,6 +67,38 @@ def test_read_only_tools_return_repository_evidence(tmp_path: Path) -> None:
     assert ".patchloop" not in listed.output
     assert read.success and "2:     return left + right" in read.output
     assert searched.success and "src/calculator.py:2" in searched.output
+
+
+def test_list_files_ignores_only_repository_relative_cache_directories(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / ".patchloop" / "benchmark-run"
+    repository.mkdir(parents=True)
+    (repository / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repository / ".patchloop").mkdir()
+    (repository / ".patchloop" / "trace.jsonl").write_text("{}\n", encoding="utf-8")
+
+    result = make_gateway(repository).execute("task-1", ToolCall(name="list_files", arguments={}))
+
+    assert result.success
+    assert result.output == "app.py"
+
+
+def test_update_plan_accepts_common_in_progress_alias(tmp_path: Path) -> None:
+    repository = make_repository(tmp_path)
+    gateway = ToolGateway(ToolContext(repository), [UpdatePlanTool()])
+
+    result = gateway.execute(
+        "task-1",
+        ToolCall(
+            name="update_plan",
+            arguments={"items": [{"description": "Implement fix", "status": "in_progress"}]},
+        ),
+    )
+
+    assert result.success
+    assert gateway.context.plan is not None
+    assert gateway.context.plan.items[0].status.value == "running"
 
 
 def test_search_code_returns_ranked_provenance_and_uses_recent_access(tmp_path: Path) -> None:
@@ -194,6 +227,38 @@ def test_write_tools_are_atomic_and_produce_diff(tmp_path: Path) -> None:
     assert "+++ b/notes.txt" in diff.output
     assert "+    return float(left + right)" in diff.output
     assert context.changes.changed_paths() == ["notes.txt", "src/calculator.py"]
+
+
+def test_write_file_replaces_existing_file_but_never_creates_one(tmp_path: Path) -> None:
+    repository = make_repository(tmp_path)
+    gateway = ToolGateway(
+        ToolContext(repository),
+        [WriteFileTool()],
+        policy=ToolPolicy(
+            frozenset({PermissionLevel.WRITE}),
+            require_plan_for_mutations=False,
+        ),
+    )
+
+    written = gateway.execute(
+        "task-1",
+        ToolCall(
+            name="write_file",
+            arguments={"path": "README.md", "content": "# Rewritten\n"},
+        ),
+    )
+    missing = gateway.execute(
+        "task-1",
+        ToolCall(
+            name="write_file",
+            arguments={"path": "missing.py", "content": "VALUE = 1\n"},
+        ),
+    )
+
+    assert written.success
+    assert (repository / "README.md").read_text(encoding="utf-8") == "# Rewritten\n"
+    assert not missing.success
+    assert not (repository / "missing.py").exists()
 
 
 def test_apply_patch_is_all_or_nothing(tmp_path: Path) -> None:

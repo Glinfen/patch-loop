@@ -51,6 +51,7 @@ from patchloop.tools import (
     ToolGateway,
     ToolPolicy,
     UpdatePlanTool,
+    WriteFileTool,
 )
 from patchloop.tools.base import Tool
 
@@ -77,6 +78,7 @@ def _all_tools() -> list[Tool]:
         CreateFileTool(),
         ApplyPatchTool(),
         ReplaceTextTool(),
+        WriteFileTool(),
         RunCommandTool(),
         RunTestsTool(),
         GetDiffTool(),
@@ -292,6 +294,10 @@ def benchmark_code_tasks(
         typer.Option(dir_okay=False, resolve_path=True),
     ] = Path("benchmarks/results/code_benchmark_latest.json"),
     repeats: Annotated[int, typer.Option(min=1, max=20)] = 1,
+    task: Annotated[
+        str,
+        typer.Option("--task", help="Comma-separated task ids to run."),
+    ] = "",
     sandbox: Annotated[str, typer.Option(help="docker or local")] = "docker",
     sandbox_image: Annotated[
         str,
@@ -300,6 +306,15 @@ def benchmark_code_tasks(
 ) -> None:
     try:
         task_manifest = load_coding_manifest(manifest)
+        if task:
+            selected = {item.strip() for item in task.split(",") if item.strip()}
+            available = {item.id for item in task_manifest.tasks}
+            unknown = sorted(selected - available)
+            if unknown:
+                raise ValueError(f"unknown coding task ids: {', '.join(unknown)}")
+            task_manifest = task_manifest.model_copy(
+                update={"tasks": [item for item in task_manifest.tasks if item.id in selected]}
+            )
         report = CodingBenchmarkRunner(
             root,
             work_root,

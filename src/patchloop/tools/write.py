@@ -42,6 +42,30 @@ class CreateFileTool(Tool):
         return f"created {request.path} ({len(request.content)} characters)"
 
 
+class WriteFileInput(ToolInputModel):
+    path: str = Field(min_length=1)
+    content: str
+
+
+class WriteFileTool(Tool):
+    name = "write_file"
+    description = (
+        "Atomically replace an existing UTF-8 file with complete content. Use this when "
+        "an exact edit cannot match a redacted observation; it never creates new files."
+    )
+    input_model = WriteFileInput
+    permission = PermissionLevel.WRITE
+
+    def run(self, arguments: BaseModel, context: ToolContext) -> str:
+        request = WriteFileInput.model_validate(arguments)
+        path = context.resolve_path(request.path)
+        if not path.is_file():
+            raise ValueError(f"not a file: {request.path}")
+        context.changes.capture(path)
+        _atomic_write(path, request.content)
+        return f"wrote {request.path} ({len(request.content)} characters)"
+
+
 class ReplaceTextInput(ToolInputModel):
     path: str = Field(min_length=1)
     old_text: str = Field(min_length=1)

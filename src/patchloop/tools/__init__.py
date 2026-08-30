@@ -4,7 +4,13 @@ from patchloop.tools.gateway import ToolGateway, ToolPolicy
 from patchloop.tools.intelligence import SearchCodeTool
 from patchloop.tools.plan import UpdatePlanTool
 from patchloop.tools.readonly import ListFilesTool, ReadFileTool, SearchTextTool
-from patchloop.tools.write import ApplyPatchTool, CreateFileTool, GetDiffTool, ReplaceTextTool
+from patchloop.tools.write import (
+    ApplyPatchTool,
+    CreateFileTool,
+    GetDiffTool,
+    ReplaceTextTool,
+    WriteFileTool,
+)
 
 __all__ = [
     "ApplyPatchTool",
@@ -23,4 +29,5 @@ __all__ = [
     "ToolGateway",
     "ToolPolicy",
     "UpdatePlanTool",
+    "WriteFileTool",
 ]

@@ -26,6 +26,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [Week 9 验收记录](docs/milestones/WEEK_09_ACCEPTANCE.md)：失败分类、组件消融、两阶段优化及 5 轮稳定性证据。
 - [端到端代码任务评测](docs/CODING_BENCHMARK.md)：真实修改、独立测试、变更范围约束和模型运行方式。
 - [DeepSeek V4 Flash 评测结果](docs/CODING_BENCHMARK_RESULTS.md)：6 个代码任务的优化前后成功率、成本、时延与限制。
+- [Hard Suite 评测结果](docs/CODING_BENCHMARK_HARD_RESULTS.md)：5 个隐藏测试任务从 40% 到 100% 的失败分析与运行时优化证据。
 
 ## 推荐项目周期
 

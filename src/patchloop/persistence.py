@@ -43,6 +43,10 @@ class RuntimeCheckpoint(BaseModel):
     truncated_tool_outputs: int = Field(default=0, ge=0)
     working_memory: WorkingMemorySnapshot | None = None
     episodic_memory: EpisodicMemorySnapshot | None = None
+    semantic_facts_created: int = Field(default=0, ge=0)
+    semantic_facts_superseded: int = Field(default=0, ge=0)
+    semantic_conflicts_rejected: int = Field(default=0, ge=0)
+    semantic_duplicates_suppressed: int = Field(default=0, ge=0)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

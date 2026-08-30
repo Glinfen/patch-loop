@@ -23,6 +23,7 @@ from patchloop.memory.episodic import (
     EpisodeWrite,
     EpisodicMemoryManager,
 )
+from patchloop.memory.semantic import SemanticMemoryManager, SemanticResolutionBatch
 from patchloop.memory.store import MemoryStoreError
 from patchloop.memory.working import (
     WorkingMemoryBudgetError,
@@ -70,6 +71,11 @@ class AgentRuntime:
         self._truncated_tool_outputs = 0
         self._working_memory: WorkingMemoryManager | None = None
         self._episodic_memory: EpisodicMemoryManager | None = None
+        self._semantic_memory: SemanticMemoryManager | None = None
+        self._semantic_facts_created = 0
+        self._semantic_facts_superseded = 0
+        self._semantic_conflicts_rejected = 0
+        self._semantic_duplicates_suppressed = 0
 
     def run(self, task: Task) -> Task:
         task.transition(TaskStatus.RUNNING)
@@ -81,6 +87,10 @@ class AgentRuntime:
         self._context_compactions = 0
         self._max_context_tokens_used = 0
         self._truncated_tool_outputs = 0
+        self._semantic_facts_created = 0
+        self._semantic_facts_superseded = 0
+        self._semantic_conflicts_rejected = 0
+        self._semantic_duplicates_suppressed = 0
         try:
             self._working_memory = WorkingMemoryManager(
                 task.id,
@@ -89,6 +99,11 @@ class AgentRuntime:
             )
             self._working_memory.sync_plan(task.plan, step_index=0)
             self._episodic_memory = EpisodicMemoryManager(task.id, task.goal)
+            self._semantic_memory = SemanticMemoryManager(
+                task.id,
+                task.goal,
+                task.repository,
+            )
         except MemoryStoreError as exc:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except WorkingMemoryBudgetError as exc:
@@ -97,6 +112,13 @@ class AgentRuntime:
             ModelMessage(role="system", content=SYSTEM_PROMPT),
             ModelMessage(role="user", content=task.goal),
         ]
+        self._persist_task(task)
+        self._emit("task.started", task, {"provider": self.provider.name})
+        try:
+            if self._semantic_memory is not None:
+                self._record_semantic_batch(task, self._semantic_memory.initial_facts())
+        except MemoryStoreError as exc:
+            return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         state = RuntimeCheckpoint(
             task_id=task.id,
             next_step_index=0,
@@ -104,10 +126,12 @@ class AgentRuntime:
             plan=task.plan,
             working_memory=self._working_memory.snapshot(),
             episodic_memory=self._episodic_memory.snapshot(),
+            semantic_facts_created=self._semantic_facts_created,
+            semantic_facts_superseded=self._semantic_facts_superseded,
+            semantic_conflicts_rejected=self._semantic_conflicts_rejected,
+            semantic_duplicates_suppressed=self._semantic_duplicates_suppressed,
         )
-        self._persist_task(task)
         self._persist_checkpoint(state)
-        self._emit("task.started", task, {"provider": self.provider.name})
         return self._execute(task, state)
 
     def resume(self, task: Task, checkpoint: RuntimeCheckpoint) -> Task:
@@ -127,6 +151,10 @@ class AgentRuntime:
         self._context_compactions = checkpoint.context_compactions
         self._max_context_tokens_used = checkpoint.max_context_tokens_used
         self._truncated_tool_outputs = checkpoint.truncated_tool_outputs
+        self._semantic_facts_created = checkpoint.semantic_facts_created
+        self._semantic_facts_superseded = checkpoint.semantic_facts_superseded
+        self._semantic_conflicts_rejected = checkpoint.semantic_conflicts_rejected
+        self._semantic_duplicates_suppressed = checkpoint.semantic_duplicates_suppressed
         try:
             self._working_memory = WorkingMemoryManager(
                 task.id,
@@ -149,6 +177,17 @@ class AgentRuntime:
                 task.goal,
                 snapshot=checkpoint.episodic_memory,
                 records=recovered_records,
+            )
+            semantic_records = (
+                self.state_store.memory.list_records(task.id)
+                if self.state_store is not None
+                else None
+            )
+            self._semantic_memory = SemanticMemoryManager(
+                task.id,
+                task.goal,
+                task.repository,
+                records=semantic_records,
             )
         except MemoryStoreError as exc:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
@@ -533,6 +572,10 @@ class AgentRuntime:
                 if episodic_snapshot is not None
                 else None
             ),
+            semantic_facts_created=self._semantic_facts_created,
+            semantic_facts_superseded=self._semantic_facts_superseded,
+            semantic_conflicts_rejected=self._semantic_conflicts_rejected,
+            semantic_duplicates_suppressed=self._semantic_duplicates_suppressed,
         )
 
     def _model_budget_error(self, task: Task) -> str | None:
@@ -582,6 +625,10 @@ class AgentRuntime:
             episodic_memory=(
                 self._episodic_memory.snapshot() if self._episodic_memory is not None else None
             ),
+            semantic_facts_created=self._semantic_facts_created,
+            semantic_facts_superseded=self._semantic_facts_superseded,
+            semantic_conflicts_rejected=self._semantic_conflicts_rejected,
+            semantic_duplicates_suppressed=self._semantic_duplicates_suppressed,
         )
 
     @staticmethod
@@ -633,11 +680,26 @@ class AgentRuntime:
             if self._episodic_memory is not None
             else None
         )
+        semantic = (
+            self._semantic_memory.observe_tool(
+                call,
+                result,
+                step_index=step_index,
+                plan=self.gateway.context.plan,
+                changed_paths=changed_paths,
+                diff=self.gateway.context.changes.diff(),
+            )
+            if self._semantic_memory is not None
+            else None
+        )
         sources = [*(batch.sources if batch is not None else ())]
         records = [*(batch.records if batch is not None else ())]
         if episode is not None:
             sources.extend(episode.sources)
             records.append(episode.record)
+        if semantic is not None:
+            sources.extend(semantic.sources)
+            records.extend(semantic.records)
         if records and self.state_store is not None:
             self.state_store.memory.save_batch(
                 sources=sources,
@@ -655,6 +717,8 @@ class AgentRuntime:
             )
         if episode is not None:
             self._emit_episode(task, episode)
+        if semantic is not None:
+            self._record_semantic_batch(task, semantic, persist=False)
         if self._working_memory is not None:
             snapshot = self._working_memory.snapshot()
             self._emit(
@@ -668,6 +732,35 @@ class AgentRuntime:
                     "evicted_count": snapshot.evicted_count,
                     "items": len(snapshot.items),
                     "phase_events": len(snapshot.phase_events),
+                },
+            )
+
+    def _record_semantic_batch(
+        self,
+        task: Task,
+        batch: SemanticResolutionBatch,
+        *,
+        persist: bool = True,
+    ) -> None:
+        if persist and batch.records and self.state_store is not None:
+            self.state_store.memory.save_batch(
+                sources=batch.sources,
+                records=batch.records,
+            )
+        self._semantic_facts_created += batch.created_count
+        self._semantic_facts_superseded += batch.superseded_count
+        self._semantic_conflicts_rejected += batch.rejected_conflict_count
+        self._semantic_duplicates_suppressed += batch.suppressed_duplicate_count
+        if batch.records:
+            self._emit(
+                "semantic.facts_resolved",
+                task,
+                {
+                    "created": batch.created_count,
+                    "superseded": batch.superseded_count,
+                    "conflicts_rejected": batch.rejected_conflict_count,
+                    "duplicates_suppressed": batch.suppressed_duplicate_count,
+                    "record_ids": [record.id for record in batch.records],
                 },
             )
 

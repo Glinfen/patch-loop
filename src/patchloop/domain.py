@@ -98,6 +98,10 @@ class TaskReport(BaseModel):
     episodes_created: int = Field(default=0, ge=0)
     episode_recoveries: int = Field(default=0, ge=0)
     last_verified_episode_id: str | None = None
+    semantic_facts_created: int = Field(default=0, ge=0)
+    semantic_facts_superseded: int = Field(default=0, ge=0)
+    semantic_conflicts_rejected: int = Field(default=0, ge=0)
+    semantic_duplicates_suppressed: int = Field(default=0, ge=0)
     generated_at: datetime = Field(default_factory=utc_now)
 
 

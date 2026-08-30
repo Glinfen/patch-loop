@@ -33,6 +33,10 @@ class TaskMetrics(BaseModel):
     episodes_created: int = Field(default=0, ge=0)
     episode_recoveries: int = Field(default=0, ge=0)
     repeated_failed_actions_blocked: int = Field(default=0, ge=0)
+    semantic_facts_created: int = Field(default=0, ge=0)
+    semantic_facts_superseded: int = Field(default=0, ge=0)
+    semantic_conflicts_rejected: int = Field(default=0, ge=0)
+    semantic_duplicates_suppressed: int = Field(default=0, ge=0)
     errors: dict[str, int] = Field(default_factory=dict)
 
     @classmethod
@@ -83,6 +87,13 @@ class TaskMetrics(BaseModel):
                     metrics.episode_recoveries += 1
             elif event.type == "episode.repeat_blocked":
                 metrics.repeated_failed_actions_blocked += 1
+            elif event.type == "semantic.facts_resolved":
+                metrics.semantic_facts_created += int(event.data.get("created", 0))
+                metrics.semantic_facts_superseded += int(event.data.get("superseded", 0))
+                metrics.semantic_conflicts_rejected += int(event.data.get("conflicts_rejected", 0))
+                metrics.semantic_duplicates_suppressed += int(
+                    event.data.get("duplicates_suppressed", 0)
+                )
             elif event.type in {"task.completed", "task.failed", "task.cancelled"}:
                 metrics.status = event.type.removeprefix("task.")
                 if event.type == "task.failed":

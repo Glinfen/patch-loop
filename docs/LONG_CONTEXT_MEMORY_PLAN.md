@@ -166,7 +166,7 @@ LCM-03 已于 2026-08-30 完成。Runtime 现在维护版本化工作记忆快�
 
 LCM-04 已于 2026-08-30 完成。Runtime 现在按工具调用和 checkpoint 边界生成带来源的结构化情景，维护失败到恢复的因果链接，并在恢复时从快照或持久化记录定位最后一个已验证情景。稳定的完全相同失败调用会在执行前阻止；策略前置条件和测试失败仍允许在状态变化后重试。详见 [LCM-04 验收记录](milestones/LCM_04_ACCEPTANCE.md) 和 [ADR-013](adr/ADR-013-event-segmented-episodic-memory.md)。
 
-### LCM-05：实现语义记忆
+### LCM-05：实现语义记忆（已完成）
 
 开发内容：
 
@@ -177,6 +177,8 @@ LCM-04 已于 2026-08-30 完成。Runtime 现在按工具调用和 checkpoint �
 - 将模型辅助抽取定义为可插拔接口，不作为核心测试或离线运行的必需依赖。
 
 完成标准：后续权威事实能替代早期过期事实，召回结果不同时返回冲突的活动版本。
+
+LCM-05 已于 2026-08-30 完成。Runtime 现在使用确定性抽取器生成类型化事实，以 `verified > user_asserted > observed > inferred` 的固定权威解析冲突，保存双向替代链并默认只查询唯一活动版本；模型辅助输出被强制限制为推断。详见 [LCM-05 验收记录](milestones/LCM_05_ACCEPTANCE.md) 和 [ADR-014](adr/ADR-014-authority-aware-semantic-facts.md)。
 
 ### LCM-06：实现跨层检索和预算分配
 

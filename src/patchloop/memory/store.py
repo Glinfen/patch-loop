@@ -22,6 +22,7 @@ from patchloop.memory.models import (
     MemorySource,
     MemorySourceKind,
     memory_record_matches_episode_filters,
+    memory_record_matches_semantic_filters,
 )
 from patchloop.security import SecretRedactor
 
@@ -342,6 +343,7 @@ class SQLiteMemoryStore:
                 record
                 for record in records
                 if memory_record_matches_episode_filters(record, safe_query)
+                and memory_record_matches_semantic_filters(record, safe_query)
             ]
             source_map = self._sources_for_records(connection, records)
         relevance = self._relevance_scores(safe_query.text, records)

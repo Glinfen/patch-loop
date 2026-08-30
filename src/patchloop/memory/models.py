@@ -208,6 +208,8 @@ class MemoryQuery(VersionedMemoryModel):
     error_kinds: list[ErrorKind] = Field(default_factory=list)
     plan_phases: list[str] = Field(default_factory=list)
     episode_outcomes: list[str] = Field(default_factory=list)
+    fact_types: list[str] = Field(default_factory=list)
+    epistemic_statuses: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_filters(self) -> Self:
@@ -241,6 +243,8 @@ class MemoryQuery(VersionedMemoryModel):
             ("error_kinds", self.error_kinds),
             ("plan_phases", self.plan_phases),
             ("episode_outcomes", self.episode_outcomes),
+            ("fact_types", self.fact_types),
+            ("epistemic_statuses", self.epistemic_statuses),
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"memory query {label} must be unique")
@@ -308,6 +312,10 @@ class MemoryBundle(VersionedMemoryModel):
             not memory_record_matches_episode_filters(hit.record, self.query) for hit in self.hits
         ):
             raise ValueError("memory bundle contains a record outside episode filters")
+        if any(
+            not memory_record_matches_semantic_filters(hit.record, self.query) for hit in self.hits
+        ):
+            raise ValueError("memory bundle contains a record outside semantic filters")
         known_sources = {source.id: source for source in self.sources}
         for hit in self.hits:
             if not set(hit.record.source_ids).issubset(known_sources):
@@ -368,6 +376,26 @@ def memory_record_matches_episode_filters(
         return False
     return not (
         query.episode_outcomes and raw_reference.get("outcome") not in query.episode_outcomes
+    )
+
+
+def memory_record_matches_semantic_filters(
+    record: MemoryRecord,
+    query: MemoryQuery,
+) -> bool:
+    """Return whether a record satisfies optional typed semantic filters."""
+
+    if not (query.fact_types or query.epistemic_statuses):
+        return True
+    if record.kind is not MemoryKind.SEMANTIC:
+        return False
+    if record.content.get("semantic_schema") != "1.0":
+        return False
+    if query.fact_types and record.content.get("fact_type") not in query.fact_types:
+        return False
+    return not (
+        query.epistemic_statuses
+        and record.content.get("epistemic_status") not in query.epistemic_statuses
     )
 
 

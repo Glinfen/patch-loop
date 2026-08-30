@@ -236,6 +236,8 @@ LCM-01 已完成：版本化分层记忆契约现已固定，并对无来源长�
 
 LCM-02 已完成：共享 SQLite Memory Store 支持事务迁移、写前脱敏、来源与内容幂等、索引查询、压缩报告、恢复重放和任务级联清理；验证见 [LCM-02 验收记录](milestones/LCM_02_ACCEPTANCE.md)。
 
+LCM-03 已完成：Runtime 已接入有界工作记忆状态机、pin/显式淘汰、独立预算、checkpoint 恢复和阶段完成后的长期记忆晋升；100 步验收与预算隔离证据见 [LCM-03 验收记录](milestones/LCM_03_ACCEPTANCE.md)。
+
 ## 6. 推荐仓库结构
 
 ```text

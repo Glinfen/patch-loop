@@ -19,6 +19,11 @@ from patchloop.domain import (
     utc_now,
 )
 from patchloop.events import Event, EventLogger
+from patchloop.memory.store import MemoryStoreError
+from patchloop.memory.working import (
+    WorkingMemoryBudgetError,
+    WorkingMemoryManager,
+)
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
 from patchloop.providers.base import ModelMessage, ModelProvider
 from patchloop.tools.gateway import ToolGateway
@@ -59,6 +64,7 @@ class AgentRuntime:
         self._context_compactions = 0
         self._max_context_tokens_used = 0
         self._truncated_tool_outputs = 0
+        self._working_memory: WorkingMemoryManager | None = None
 
     def run(self, task: Task) -> Task:
         task.transition(TaskStatus.RUNNING)
@@ -70,6 +76,17 @@ class AgentRuntime:
         self._context_compactions = 0
         self._max_context_tokens_used = 0
         self._truncated_tool_outputs = 0
+        try:
+            self._working_memory = WorkingMemoryManager(
+                task.id,
+                task.goal,
+                token_budget=self._working_memory_budget(task),
+            )
+            self._working_memory.sync_plan(task.plan, step_index=0)
+        except MemoryStoreError as exc:
+            return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
+        except WorkingMemoryBudgetError as exc:
+            return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
         messages = [
             ModelMessage(role="system", content=SYSTEM_PROMPT),
             ModelMessage(role="user", content=task.goal),
@@ -79,6 +96,7 @@ class AgentRuntime:
             next_step_index=0,
             messages=messages,
             plan=task.plan,
+            working_memory=self._working_memory.snapshot(),
         )
         self._persist_task(task)
         self._persist_checkpoint(state)
@@ -102,6 +120,20 @@ class AgentRuntime:
         self._context_compactions = checkpoint.context_compactions
         self._max_context_tokens_used = checkpoint.max_context_tokens_used
         self._truncated_tool_outputs = checkpoint.truncated_tool_outputs
+        try:
+            self._working_memory = WorkingMemoryManager(
+                task.id,
+                task.goal,
+                token_budget=self._working_memory_budget(task),
+                snapshot=checkpoint.working_memory,
+            )
+            if checkpoint.working_memory is None:
+                self._working_memory.sync_plan(
+                    checkpoint.plan,
+                    step_index=checkpoint.next_step_index,
+                )
+        except (ValueError, WorkingMemoryBudgetError) as exc:
+            return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
         self._emit(
             "task.resumed",
             task,
@@ -144,8 +176,9 @@ class AgentRuntime:
                 self._emit("step.started", task, {"step": step_index})
                 specifications = self.gateway.specifications()
                 try:
+                    request_messages = self._with_working_memory(messages)
                     window = context_engine.build(
-                        messages,
+                        request_messages,
                         specifications,
                         self.gateway.context.plan,
                     )
@@ -168,6 +201,7 @@ class AgentRuntime:
                             if window.memory is not None
                             else None
                         ),
+                        "working_memory": self._working_snapshot_data(),
                     },
                 )
                 response = self.provider.complete(window.messages, specifications)
@@ -253,6 +287,7 @@ class AgentRuntime:
                             tool_call_id=call.id,
                         )
                     )
+                    self._observe_tool(task, call, result, step_index)
                     if not result.success:
                         tool_failures += 1
                         error_fingerprint = json.dumps(
@@ -311,6 +346,8 @@ class AgentRuntime:
                 )
                 self._persist_checkpoint(state)
                 self._persist_task(task)
+        except WorkingMemoryBudgetError as exc:
+            return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
         except Exception as exc:
             return self._fail(task, ErrorKind.PROVIDER_ERROR, str(exc))
         return self._fail(
@@ -389,6 +426,9 @@ class AgentRuntime:
                 )
             )
         successful_calls = sum(result.success for result in self.gateway.history)
+        working_snapshot = (
+            self._working_memory.snapshot() if self._working_memory is not None else None
+        )
         return TaskReport(
             summary=summary,
             changed_files=self.gateway.context.changes.changed_paths(),
@@ -405,6 +445,18 @@ class AgentRuntime:
             context_compactions=self._context_compactions,
             max_context_tokens_used=self._max_context_tokens_used,
             truncated_tool_outputs=self._truncated_tool_outputs,
+            working_memory_updates=(
+                len(self.gateway.history) if working_snapshot is not None else 0
+            ),
+            working_memory_evictions=(
+                working_snapshot.evicted_count if working_snapshot is not None else 0
+            ),
+            memory_promotions=(
+                working_snapshot.promoted_count if working_snapshot is not None else 0
+            ),
+            max_working_memory_tokens_used=(
+                working_snapshot.max_estimated_tokens if working_snapshot is not None else 0
+            ),
         )
 
     def _model_budget_error(self, task: Task) -> str | None:
@@ -448,7 +500,77 @@ class AgentRuntime:
             context_compactions=self._context_compactions,
             max_context_tokens_used=self._max_context_tokens_used,
             truncated_tool_outputs=self._truncated_tool_outputs,
+            working_memory=(
+                self._working_memory.snapshot() if self._working_memory is not None else None
+            ),
         )
+
+    @staticmethod
+    def _working_memory_budget(task: Task) -> int:
+        context_share = max(128, task.budget.max_context_tokens // 5)
+        return min(task.budget.max_working_memory_tokens, context_share)
+
+    def _with_working_memory(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        if self._working_memory is None:
+            return list(messages)
+        request_messages = list(messages)
+        request_messages[0] = request_messages[0].model_copy(
+            update={
+                "content": (f"{request_messages[0].content}\n\n{self._working_memory.render()}")
+            }
+        )
+        return request_messages
+
+    def _observe_tool(
+        self,
+        task: Task,
+        call: ToolCall,
+        result: ToolResult,
+        step_index: int,
+    ) -> None:
+        if self._working_memory is None:
+            return
+        batch = self._working_memory.observe_tool(
+            call,
+            result,
+            step_index=step_index,
+            plan=self.gateway.context.plan,
+            changed_paths=self.gateway.context.changes.changed_paths(),
+        )
+        if batch.records and self.state_store is not None:
+            self.state_store.memory.save_batch(
+                sources=batch.sources,
+                records=batch.records,
+            )
+        if batch.records:
+            self._emit(
+                "memory.promoted",
+                task,
+                {
+                    "sources": len(batch.sources),
+                    "records": len(batch.records),
+                    "record_ids": [record.id for record in batch.records],
+                },
+            )
+        snapshot = self._working_memory.snapshot()
+        self._emit(
+            "working_memory.updated",
+            task,
+            {
+                "step": step_index,
+                "revision": snapshot.revision,
+                "estimated_tokens": snapshot.estimated_tokens,
+                "token_budget": snapshot.token_budget,
+                "evicted_count": snapshot.evicted_count,
+                "items": len(snapshot.items),
+                "phase_events": len(snapshot.phase_events),
+            },
+        )
+
+    def _working_snapshot_data(self) -> dict[str, object] | None:
+        if self._working_memory is None:
+            return None
+        return self._working_memory.snapshot().model_dump(mode="json")
 
     def _persist_task(self, task: Task) -> None:
         if self.state_store is not None:

@@ -138,7 +138,7 @@ LCM-01 已于 2026-08-30 完成，领域边界和测试证据见 [LCM-01 验收�
 
 LCM-02 已于 2026-08-30 完成，共享 SQLite schema、恢复幂等性、事务回滚和查询边界见 [LCM-02 验收记录](milestones/LCM_02_ACCEPTANCE.md)，持久化决策见 [ADR-011](adr/ADR-011-transactional-sqlite-memory-store.md)。
 
-### LCM-03：实现短期工作记忆
+### LCM-03：实现短期工作记忆（已完成）
 
 开发内容：
 
@@ -149,6 +149,8 @@ LCM-02 已于 2026-08-30 完成，共享 SQLite schema、恢复幂等性、事�
 - 为工作记忆设置独立 Token 预算和确定性裁剪顺序。
 
 完成标准：100 步任务中工作记忆大小保持有界，活动约束和当前错误保持 100% 可见。
+
+LCM-03 已于 2026-08-30 完成。Runtime 现在维护版本化工作记忆快照，将其作为强制系统上下文注入并随 checkpoint 恢复；100 步端到端任务验证了预算上界、约束和活动错误可见性。阶段完成和成功验证会通过 LCM-02 的事务边界提升为带来源的长期记录。详见 [LCM-03 验收记录](milestones/LCM_03_ACCEPTANCE.md) 和 [ADR-012](adr/ADR-012-bounded-runtime-working-memory.md)。
 
 ### LCM-04：实现情景记忆
 

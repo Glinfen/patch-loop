@@ -24,15 +24,27 @@ from patchloop.memory.store import (
     MemoryWriteResult,
     SQLiteMemoryStore,
 )
+from patchloop.memory.working import (
+    WORKING_MEMORY_PREFIX,
+    MemoryPromotionBatch,
+    WorkingMemoryBudgetError,
+    WorkingMemoryEvent,
+    WorkingMemoryItem,
+    WorkingMemoryItemKind,
+    WorkingMemoryManager,
+    WorkingMemorySnapshot,
+)
 
 __all__ = [
     "MEMORY_SCHEMA_VERSION",
     "MEMORY_STORE_SCHEMA_VERSION",
+    "WORKING_MEMORY_PREFIX",
     "CompressionOperation",
     "CompressionReport",
     "MemoryBundle",
     "MemoryHit",
     "MemoryKind",
+    "MemoryPromotionBatch",
     "MemoryQuery",
     "MemoryRecord",
     "MemoryScope",
@@ -44,6 +56,12 @@ __all__ = [
     "MemoryVectorIndex",
     "MemoryWriteResult",
     "SQLiteMemoryStore",
+    "WorkingMemoryBudgetError",
+    "WorkingMemoryEvent",
+    "WorkingMemoryItem",
+    "WorkingMemoryItemKind",
+    "WorkingMemoryManager",
+    "WorkingMemorySnapshot",
     "compute_memory_content_hash",
     "validate_supersession_chain",
 ]

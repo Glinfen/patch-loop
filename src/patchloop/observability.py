@@ -26,6 +26,10 @@ class TaskMetrics(BaseModel):
     cost_usd: float = Field(default=0.0, ge=0)
     tool_duration_ms: float = Field(default=0.0, ge=0)
     elapsed_ms: float = Field(default=0.0, ge=0)
+    working_memory_updates: int = Field(default=0, ge=0)
+    working_memory_evictions: int = Field(default=0, ge=0)
+    memory_promotions: int = Field(default=0, ge=0)
+    max_working_memory_tokens_used: int = Field(default=0, ge=0)
     errors: dict[str, int] = Field(default_factory=dict)
 
     @classmethod
@@ -58,6 +62,18 @@ class TaskMetrics(BaseModel):
                     metrics.approvals_requested += 1
                     if not assessment.get("allowed"):
                         metrics.approvals_denied += 1
+            elif event.type == "working_memory.updated":
+                metrics.working_memory_updates += 1
+                metrics.working_memory_evictions = max(
+                    metrics.working_memory_evictions,
+                    int(event.data.get("evicted_count", 0)),
+                )
+                metrics.max_working_memory_tokens_used = max(
+                    metrics.max_working_memory_tokens_used,
+                    int(event.data.get("estimated_tokens", 0)),
+                )
+            elif event.type == "memory.promoted":
+                metrics.memory_promotions += int(event.data.get("records", 0))
             elif event.type in {"task.completed", "task.failed", "task.cancelled"}:
                 metrics.status = event.type.removeprefix("task.")
                 if event.type == "task.failed":

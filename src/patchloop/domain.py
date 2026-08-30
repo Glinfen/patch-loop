@@ -91,6 +91,10 @@ class TaskReport(BaseModel):
     context_compactions: int = Field(default=0, ge=0)
     max_context_tokens_used: int = Field(default=0, ge=0)
     truncated_tool_outputs: int = Field(default=0, ge=0)
+    working_memory_updates: int = Field(default=0, ge=0)
+    working_memory_evictions: int = Field(default=0, ge=0)
+    memory_promotions: int = Field(default=0, ge=0)
+    max_working_memory_tokens_used: int = Field(default=0, ge=0)
     generated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -107,6 +111,7 @@ class TaskBudget(BaseModel):
     max_output_tokens: int = Field(default=100_000, ge=1)
     max_cost_usd: float = Field(default=5.0, gt=0)
     max_context_tokens: int = Field(default=32_000, ge=256, le=1_000_000)
+    max_working_memory_tokens: int = Field(default=2_000, ge=128, le=128_000)
     max_tool_output_chars: int = Field(default=8_000, ge=128, le=1_000_000)
     context_recent_steps: int = Field(default=4, ge=1, le=100)
 

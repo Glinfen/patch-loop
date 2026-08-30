@@ -1,0 +1,14 @@
+{
+  "suite": "lcm06-cross-layer-retrieval",
+  "revision": "1.0",
+  "k": 5,
+  "relevant_records": 4,
+  "retrieved_records": 5,
+  "relevant_hits": 4,
+  "memory_recall_at_5": 1.0,
+  "memory_precision_at_5": 0.8,
+  "stale_fact_candidates": 1,
+  "stale_fact_hits": 0,
+  "stale_fact_rate": 0.0,
+  "max_per_diversity_key": 2
+}

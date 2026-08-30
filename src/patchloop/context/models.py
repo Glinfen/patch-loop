@@ -42,6 +42,8 @@ class ContextDebug(BaseModel):
     memory_budget_tokens: int = Field(ge=0)
     memory_tokens: int = Field(ge=0)
     truncated_messages: int = Field(ge=0)
+    history_budget_tokens: int = Field(default=0, ge=0)
+    history_tokens: int = Field(default=0, ge=0)
 
     def render(self, width: int = 24) -> str:
         used = min(self.estimated_tokens, self.budget_tokens)

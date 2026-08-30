@@ -37,6 +37,9 @@ class TaskMetrics(BaseModel):
     semantic_facts_superseded: int = Field(default=0, ge=0)
     semantic_conflicts_rejected: int = Field(default=0, ge=0)
     semantic_duplicates_suppressed: int = Field(default=0, ge=0)
+    memory_retrievals: int = Field(default=0, ge=0)
+    memory_retrieval_hits: int = Field(default=0, ge=0)
+    memory_retrieval_tokens: int = Field(default=0, ge=0)
     errors: dict[str, int] = Field(default_factory=dict)
 
     @classmethod
@@ -94,6 +97,15 @@ class TaskMetrics(BaseModel):
                 metrics.semantic_duplicates_suppressed += int(
                     event.data.get("duplicates_suppressed", 0)
                 )
+            elif event.type == "memory.retrieved":
+                metrics.memory_retrievals += 1
+                raw_selected = event.data.get("selected", [])
+                if isinstance(raw_selected, list):
+                    metrics.memory_retrieval_hits += sum(
+                        isinstance(item, dict) and item.get("record_id") is not None
+                        for item in raw_selected
+                    )
+                metrics.memory_retrieval_tokens += int(event.data.get("estimated_tokens", 0))
             elif event.type in {"task.completed", "task.failed", "task.cancelled"}:
                 metrics.status = event.type.removeprefix("task.")
                 if event.type == "task.failed":

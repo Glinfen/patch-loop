@@ -104,3 +104,21 @@ def test_context_redacts_credentials_before_provider_messages() -> None:
 
     assert secret not in window.messages[1].content
     assert "[REDACTED]" in window.messages[1].content
+
+
+def test_context_engine_enforces_explicit_recent_history_budget() -> None:
+    engine = ContextEngine(max_tokens=1_200, max_tool_output_chars=160, recent_steps=3)
+    messages = [
+        ModelMessage(role="system", content="system"),
+        ModelMessage(role="user", content="retain relevant evidence"),
+        *tool_group(0, "relevant evidence " + "a" * 1_000),
+        *tool_group(1, "recent evidence " + "b" * 1_000),
+        *tool_group(2, "latest evidence " + "c" * 1_000),
+    ]
+
+    window = engine.build(messages, [], None, history_token_budget=240)
+
+    assert window.debug.history_budget_tokens == 240
+    assert window.debug.history_tokens <= 240
+    assert window.debug.estimated_tokens <= 1_200
+    assert window.debug.dropped_steps

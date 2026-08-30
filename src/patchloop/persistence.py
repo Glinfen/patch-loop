@@ -47,6 +47,9 @@ class RuntimeCheckpoint(BaseModel):
     semantic_facts_superseded: int = Field(default=0, ge=0)
     semantic_conflicts_rejected: int = Field(default=0, ge=0)
     semantic_duplicates_suppressed: int = Field(default=0, ge=0)
+    memory_retrievals: int = Field(default=0, ge=0)
+    memory_retrieval_hits: int = Field(default=0, ge=0)
+    memory_retrieval_tokens: int = Field(default=0, ge=0)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

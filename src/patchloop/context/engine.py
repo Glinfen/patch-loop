@@ -84,6 +84,8 @@ class ContextEngine:
         messages: list[ModelMessage],
         tools: list[ToolSpec],
         plan: Plan | None,
+        *,
+        history_token_budget: int | None = None,
     ) -> ContextWindow:
         messages = [
             ModelMessage.model_validate(self.redactor.redact(message.model_dump(mode="json")))
@@ -103,9 +105,18 @@ class ContextEngine:
             )
 
         available = self.max_tokens - fixed_tokens
-        needs_compaction = sum(group.estimated_tokens for group in groups) > available
-        reserve = min(768, max(96, available // 3)) if needs_compaction and available >= 96 else 0
-        group_budget = max(0, available - reserve)
+        if history_token_budget is not None and history_token_budget < 0:
+            raise ValueError("history token budget cannot be negative")
+        history_budget = (
+            available if history_token_budget is None else min(available, history_token_budget)
+        )
+        needs_compaction = sum(group.estimated_tokens for group in groups) > history_budget
+        reserve = (
+            min(768, max(96, history_budget // 3))
+            if needs_compaction and history_budget >= 96
+            else 0
+        )
+        group_budget = max(0, history_budget - reserve)
         ranked = sorted(
             groups,
             key=lambda group: (
@@ -175,6 +186,8 @@ class ContextEngine:
                 memory_budget_tokens=memory_budget,
                 memory_tokens=memory_tokens,
                 truncated_messages=truncated_messages,
+                history_budget_tokens=history_budget,
+                history_tokens=(sum(group.estimated_tokens for group in selected) + memory_tokens),
             ),
         )
 

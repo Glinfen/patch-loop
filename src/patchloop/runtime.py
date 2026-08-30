@@ -23,6 +23,7 @@ from patchloop.memory.episodic import (
     EpisodeWrite,
     EpisodicMemoryManager,
 )
+from patchloop.memory.retrieval import CrossLayerMemoryRetriever, LayeredMemoryContext
 from patchloop.memory.semantic import SemanticMemoryManager, SemanticResolutionBatch
 from patchloop.memory.store import MemoryStoreError
 from patchloop.memory.working import (
@@ -76,6 +77,10 @@ class AgentRuntime:
         self._semantic_facts_superseded = 0
         self._semantic_conflicts_rejected = 0
         self._semantic_duplicates_suppressed = 0
+        self._memory_retriever = CrossLayerMemoryRetriever()
+        self._memory_retrievals = 0
+        self._memory_retrieval_hits = 0
+        self._memory_retrieval_tokens = 0
 
     def run(self, task: Task) -> Task:
         task.transition(TaskStatus.RUNNING)
@@ -91,6 +96,9 @@ class AgentRuntime:
         self._semantic_facts_superseded = 0
         self._semantic_conflicts_rejected = 0
         self._semantic_duplicates_suppressed = 0
+        self._memory_retrievals = 0
+        self._memory_retrieval_hits = 0
+        self._memory_retrieval_tokens = 0
         try:
             self._working_memory = WorkingMemoryManager(
                 task.id,
@@ -130,6 +138,9 @@ class AgentRuntime:
             semantic_facts_superseded=self._semantic_facts_superseded,
             semantic_conflicts_rejected=self._semantic_conflicts_rejected,
             semantic_duplicates_suppressed=self._semantic_duplicates_suppressed,
+            memory_retrievals=self._memory_retrievals,
+            memory_retrieval_hits=self._memory_retrieval_hits,
+            memory_retrieval_tokens=self._memory_retrieval_tokens,
         )
         self._persist_checkpoint(state)
         return self._execute(task, state)
@@ -155,6 +166,9 @@ class AgentRuntime:
         self._semantic_facts_superseded = checkpoint.semantic_facts_superseded
         self._semantic_conflicts_rejected = checkpoint.semantic_conflicts_rejected
         self._semantic_duplicates_suppressed = checkpoint.semantic_duplicates_suppressed
+        self._memory_retrievals = checkpoint.memory_retrievals
+        self._memory_retrieval_hits = checkpoint.memory_retrieval_hits
+        self._memory_retrieval_tokens = checkpoint.memory_retrieval_tokens
         try:
             self._working_memory = WorkingMemoryManager(
                 task.id,
@@ -242,12 +256,25 @@ class AgentRuntime:
                 self._emit("step.started", task, {"step": step_index})
                 specifications = self.gateway.specifications()
                 try:
-                    request_messages = self._with_runtime_memory(messages)
+                    mandatory_tokens = context_engine.estimate_messages(messages[:2])
+                    mandatory_tokens += context_engine.estimate_tools(specifications)
+                    retrieval_cap = max(
+                        0,
+                        context_engine.max_tokens - mandatory_tokens - 16,
+                    )
+                    layered_memory = self._retrieve_memory(
+                        task,
+                        context_engine.max_tokens,
+                        retrieval_cap,
+                    )
+                    request_messages = self._with_runtime_memory(messages, layered_memory)
                     window = context_engine.build(
                         request_messages,
                         specifications,
                         self.gateway.context.plan,
+                        history_token_budget=(layered_memory.allocation.recent_history_tokens),
                     )
+                    self._record_memory_retrieval(task, step_index, layered_memory)
                 except ContextBudgetError as exc:
                     return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
                 self._context_windows += 1
@@ -269,6 +296,20 @@ class AgentRuntime:
                         ),
                         "working_memory": self._working_snapshot_data(),
                         "episodic_memory": self._episodic_snapshot_data(),
+                        "layered_memory": {
+                            "query": layered_memory.query.model_dump(mode="json"),
+                            "allocation": layered_memory.allocation.model_dump(mode="json"),
+                            "estimated_tokens": layered_memory.estimated_tokens,
+                            "used_tokens": {
+                                layer.value: tokens
+                                for layer, tokens in layered_memory.used_tokens.items()
+                            },
+                            "selections": [
+                                selection.model_dump(mode="json", exclude={"text"})
+                                for selection in layered_memory.selections
+                            ],
+                            "omitted_ids": layered_memory.omitted_ids,
+                        },
                     },
                 )
                 response = self.provider.complete(window.messages, specifications)
@@ -576,6 +617,9 @@ class AgentRuntime:
             semantic_facts_superseded=self._semantic_facts_superseded,
             semantic_conflicts_rejected=self._semantic_conflicts_rejected,
             semantic_duplicates_suppressed=self._semantic_duplicates_suppressed,
+            memory_retrievals=self._memory_retrievals,
+            memory_retrieval_hits=self._memory_retrieval_hits,
+            memory_retrieval_tokens=self._memory_retrieval_tokens,
         )
 
     def _model_budget_error(self, task: Task) -> str | None:
@@ -629,6 +673,9 @@ class AgentRuntime:
             semantic_facts_superseded=self._semantic_facts_superseded,
             semantic_conflicts_rejected=self._semantic_conflicts_rejected,
             semantic_duplicates_suppressed=self._semantic_duplicates_suppressed,
+            memory_retrievals=self._memory_retrievals,
+            memory_retrieval_hits=self._memory_retrieval_hits,
+            memory_retrieval_tokens=self._memory_retrieval_tokens,
         )
 
     @staticmethod
@@ -636,19 +683,89 @@ class AgentRuntime:
         context_share = max(128, task.budget.max_context_tokens // 5)
         return min(task.budget.max_working_memory_tokens, context_share)
 
-    def _with_runtime_memory(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+    def _with_runtime_memory(
+        self,
+        messages: list[ModelMessage],
+        memory: LayeredMemoryContext,
+    ) -> list[ModelMessage]:
         request_messages = list(messages)
-        additions: list[str] = []
-        if self._working_memory is not None:
-            additions.append(self._working_memory.render())
-        if self._episodic_memory is not None and self._episodic_memory.has_context():
-            additions.append(self._episodic_memory.render())
-        if not additions:
+        if not memory.rendered:
             return request_messages
         request_messages[0] = request_messages[0].model_copy(
-            update={"content": f"{request_messages[0].content}\n\n" + "\n\n".join(additions)}
+            update={"content": f"{request_messages[0].content}\n\n{memory.rendered}"}
         )
         return request_messages
+
+    def _retrieve_memory(
+        self,
+        task: Task,
+        total_context_tokens: int,
+        retrieval_token_cap: int | None = None,
+    ) -> LayeredMemoryContext:
+        working_snapshot = (
+            self._working_memory.snapshot() if self._working_memory is not None else None
+        )
+        records = (
+            self.state_store.memory.list_records(task.id)
+            if self.state_store is not None
+            else (
+                self._semantic_memory.active_records() if self._semantic_memory is not None else []
+            )
+        )
+        sources = (
+            self.state_store.memory.list_sources(task.id) if self.state_store is not None else []
+        )
+        return self._memory_retriever.retrieve(
+            task_id=task.id,
+            repository_scope_id=task.repository,
+            goal=task.goal,
+            plan=self.gateway.context.plan,
+            working=working_snapshot,
+            working_render=(
+                self._working_memory.render() if self._working_memory is not None else None
+            ),
+            episodic_render=(
+                self._episodic_memory.render()
+                if self._episodic_memory is not None and self._episodic_memory.has_context()
+                else None
+            ),
+            changed_paths=self.gateway.context.changes.changed_paths(),
+            records=records,
+            sources=sources,
+            total_context_tokens=total_context_tokens,
+            retrieval_token_cap=retrieval_token_cap,
+        )
+
+    def _record_memory_retrieval(
+        self,
+        task: Task,
+        step_index: int,
+        memory: LayeredMemoryContext,
+    ) -> None:
+        self._memory_retrievals += 1
+        self._memory_retrieval_hits += len(memory.record_selections)
+        self._memory_retrieval_tokens += memory.estimated_tokens
+        self._emit(
+            "memory.retrieved",
+            task,
+            {
+                "step": step_index,
+                "query": memory.query.text,
+                "allocation": memory.allocation.model_dump(mode="json"),
+                "estimated_tokens": memory.estimated_tokens,
+                "selected": [
+                    {
+                        "id": selection.id,
+                        "record_id": selection.record_id,
+                        "layer": selection.layer.value,
+                        "score": selection.score,
+                        "reason": selection.reason,
+                    }
+                    for selection in memory.selections
+                ],
+                "omitted_ids": memory.omitted_ids,
+            },
+        )
 
     def _observe_memory(
         self,

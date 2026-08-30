@@ -180,7 +180,7 @@ LCM-04 已于 2026-08-30 完成。Runtime 现在按工具调用和 checkpoint �
 
 LCM-05 已于 2026-08-30 完成。Runtime 现在使用确定性抽取器生成类型化事实，以 `verified > user_asserted > observed > inferred` 的固定权威解析冲突，保存双向替代链并默认只查询唯一活动版本；模型辅助输出被强制限制为推断。详见 [LCM-05 验收记录](milestones/LCM_05_ACCEPTANCE.md) 和 [ADR-014](adr/ADR-014-authority-aware-semantic-facts.md)。
 
-### LCM-06：实现跨层检索和预算分配
+### LCM-06：实现跨层检索和预算分配（已完成）
 
 开发内容：
 
@@ -191,6 +191,8 @@ LCM-05 已于 2026-08-30 完成。Runtime 现在使用确定性抽取器生成�
 - 在总上下文预算内分别为工作记忆、语义记忆、情景记忆和原始最近步骤分配额度，并输出选择原因。
 
 完成标准：标注集上的 `memory_recall@5` 不低于 0.90，`memory_precision@5` 不低于 0.70，过期事实召回率为 0。
+
+LCM-06 已于 2026-08-30 完成。Runtime 现在以目标、计划、错误、路径和最近动作构建查询，使用词项/符号/路径/时间/重要度/置信度/来源质量混合排序，并执行跨层多样性和工作 20%、语义 12%、情景 8%、最近历史 60% 的可收缩预算。固定任务达到 Recall@5 1.00、Precision@5 0.80、过期事实召回率 0。详见 [LCM-06 验收记录](milestones/LCM_06_ACCEPTANCE.md) 和 [ADR-015](adr/ADR-015-budgeted-cross-layer-memory-retrieval.md)。
 
 ### LCM-07：实现安全的分层记忆压缩
 

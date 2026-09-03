@@ -5,7 +5,7 @@ from pathlib import Path
 
 from patchloop.domain import Task, TaskStatus, ToolCall
 from patchloop.events import EventLogger
-from patchloop.observability import TaskMetrics
+from patchloop.observability import TaskMetrics, TaskReplay
 from patchloop.persistence import SQLiteStore
 from patchloop.providers import ModelMessage, ModelResponse, ToolSpec
 from patchloop.runtime import AgentRuntime
@@ -122,13 +122,31 @@ def test_runtime_retrieves_only_active_cross_layer_facts_with_reasons(
     ]
     assert record_selections
     assert all(item["reason"] for item in record_selections)
+    assert all(item["status"] == "active" for item in record_selections)
+    assert all(item["source_ids"] for item in record_selections)
+    assert all(item["score_components"] for item in record_selections)
     assert result.report is not None
     assert result.report.memory_retrievals == 4
     assert result.report.memory_retrieval_hits >= 1
     assert result.report.memory_retrieval_tokens > 0
+    assert result.report.memory_read_duration_ms > 0
+    assert result.report.memory_write_duration_ms > 0
+    assert result.report.max_memory_context_tokens_used > 0
+    assert result.report.max_memory_context_occupancy > 0
+    assert result.report.memory_stale_hits == 0
+    assert result.report.memory_records_by_kind["semantic"] > 0
     metrics = TaskMetrics.from_events(task.id, trace.read())
     assert metrics.memory_retrievals == result.report.memory_retrievals
     assert metrics.memory_retrieval_hits == result.report.memory_retrieval_hits
     assert metrics.memory_retrieval_tokens == result.report.memory_retrieval_tokens
+    assert metrics.memory_read_duration_ms > 0
+    assert metrics.memory_write_duration_ms > 0
+    assert metrics.memory_stale_hits == 0
+    assert metrics.memory_records_by_kind == result.report.memory_records_by_kind
+    replay = TaskReplay.from_events(task.id, trace.read())
+    assert len(replay.memory_decisions) == result.report.memory_retrievals
+    assert replay.memory_decisions[-1].selected_record_ids
+    assert replay.memory_decisions[-1].selections[0]["reason"]
+    assert any(event.type == "memory.superseded" for event in trace.read())
     checkpoint = store.get_checkpoint(task.id)
     assert checkpoint.memory_retrievals == 3

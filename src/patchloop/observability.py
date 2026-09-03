@@ -40,6 +40,23 @@ class TaskMetrics(BaseModel):
     memory_retrievals: int = Field(default=0, ge=0)
     memory_retrieval_hits: int = Field(default=0, ge=0)
     memory_retrieval_tokens: int = Field(default=0, ge=0)
+    memory_records_written: int = Field(default=0, ge=0)
+    memory_records_superseded: int = Field(default=0, ge=0)
+    memory_compactions: int = Field(default=0, ge=0)
+    memory_fallbacks: int = Field(default=0, ge=0)
+    memory_replays: int = Field(default=0, ge=0)
+    memory_stale_hits: int = Field(default=0, ge=0)
+    memory_security_filters: int = Field(default=0, ge=0)
+    memory_compression_input_tokens: int = Field(default=0, ge=0)
+    memory_compression_output_tokens: int = Field(default=0, ge=0)
+    memory_compression_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    memory_read_duration_ms: float = Field(default=0.0, ge=0.0)
+    memory_write_duration_ms: float = Field(default=0.0, ge=0.0)
+    memory_compression_duration_ms: float = Field(default=0.0, ge=0.0)
+    max_memory_context_tokens_used: int = Field(default=0, ge=0)
+    max_memory_context_occupancy: float = Field(default=0.0, ge=0.0, le=1.0)
+    memory_records_by_kind: dict[str, int] = Field(default_factory=dict)
+    memory_records_by_status: dict[str, int] = Field(default_factory=dict)
     errors: dict[str, int] = Field(default_factory=dict)
 
     @classmethod
@@ -106,12 +123,57 @@ class TaskMetrics(BaseModel):
                         for item in raw_selected
                     )
                 metrics.memory_retrieval_tokens += int(event.data.get("estimated_tokens", 0))
+                metrics.memory_stale_hits += int(event.data.get("stale_hits", 0))
+                metrics.memory_read_duration_ms += float(event.data.get("read_duration_ms", 0.0))
+                metrics.max_memory_context_tokens_used = max(
+                    metrics.max_memory_context_tokens_used,
+                    int(event.data.get("estimated_tokens", 0)),
+                )
+                metrics.max_memory_context_occupancy = max(
+                    metrics.max_memory_context_occupancy,
+                    float(event.data.get("context_occupancy", 0.0)),
+                )
+            elif event.type == "memory.written":
+                record_ids = event.data.get("record_ids", [])
+                if isinstance(record_ids, list):
+                    metrics.memory_records_written += len(record_ids)
+                metrics.memory_write_duration_ms += float(event.data.get("write_duration_ms", 0.0))
+                _apply_memory_inventory(metrics, event.data.get("inventory"))
+            elif event.type == "memory.superseded":
+                records = event.data.get("records", [])
+                if isinstance(records, list):
+                    metrics.memory_records_superseded += len(records)
+            elif event.type == "memory.compacted":
+                metrics.memory_compactions += 1
+                written_record_ids = event.data.get("written_record_ids", [])
+                if isinstance(written_record_ids, list):
+                    metrics.memory_records_written += len(written_record_ids)
+                metrics.memory_compression_input_tokens += int(event.data.get("input_tokens", 0))
+                metrics.memory_compression_output_tokens += int(event.data.get("output_tokens", 0))
+                metrics.memory_compression_duration_ms += float(event.data.get("duration_ms", 0.0))
+                _apply_memory_inventory(metrics, event.data.get("inventory"))
+            elif event.type == "memory.fallback":
+                metrics.memory_fallbacks += 1
+            elif event.type == "memory.replayed":
+                metrics.memory_replays += 1
+            elif event.type == "memory.security_filtered":
+                selections = event.data.get("selections", [])
+                if isinstance(selections, list):
+                    metrics.memory_security_filters += sum(
+                        len(item.get("findings", []))
+                        for item in selections
+                        if isinstance(item, dict) and isinstance(item.get("findings"), list)
+                    )
             elif event.type in {"task.completed", "task.failed", "task.cancelled"}:
                 metrics.status = event.type.removeprefix("task.")
                 if event.type == "task.failed":
                     errors[str(event.data.get("error_kind") or "unknown")] += 1
         metrics.steps = len(step_indices)
         metrics.errors = dict(sorted(errors.items()))
+        if metrics.memory_compression_input_tokens:
+            metrics.memory_compression_ratio = (
+                metrics.memory_compression_output_tokens / metrics.memory_compression_input_tokens
+            )
         if len(selected) >= 2:
             metrics.elapsed_ms = max(
                 0.0,
@@ -129,13 +191,26 @@ class ReplayFrame(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class MemoryDecision(BaseModel):
+    sequence: int
+    step: int
+    query: str
+    selected_record_ids: list[str] = Field(default_factory=list)
+    selections: list[dict[str, Any]] = Field(default_factory=list)
+    omitted_ids: list[str] = Field(default_factory=list)
+    estimated_tokens: int = Field(default=0, ge=0)
+    context_occupancy: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class TaskReplay(BaseModel):
     task_id: str
     frames: list[ReplayFrame]
+    memory_decisions: list[MemoryDecision] = Field(default_factory=list)
 
     @classmethod
     def from_events(cls, task_id: str, events: list[Event]) -> TaskReplay:
         frames = []
+        memory_decisions: list[MemoryDecision] = []
         current_step: int | None = None
         for event in events:
             if event.task_id != task_id:
@@ -153,9 +228,45 @@ class TaskReplay(BaseModel):
                     data=event.data,
                 )
             )
+            if event.type == "memory.retrieved" and isinstance(event_step, int):
+                raw_selections = event.data.get("selected", [])
+                selections = (
+                    [item for item in raw_selections if isinstance(item, dict)]
+                    if isinstance(raw_selections, list)
+                    else []
+                )
+                memory_decisions.append(
+                    MemoryDecision(
+                        sequence=event.sequence,
+                        step=event_step,
+                        query=str(event.data.get("query", "")),
+                        selected_record_ids=[
+                            str(item["record_id"])
+                            for item in selections
+                            if item.get("record_id") is not None
+                        ],
+                        selections=selections,
+                        omitted_ids=[str(item) for item in event.data.get("omitted_ids", [])],
+                        estimated_tokens=int(event.data.get("estimated_tokens", 0)),
+                        context_occupancy=float(event.data.get("context_occupancy", 0.0)),
+                    )
+                )
             if event.type == "step.completed":
                 current_step = None
-        return cls(task_id=task_id, frames=frames)
+        return cls(task_id=task_id, frames=frames, memory_decisions=memory_decisions)
+
+
+def _apply_memory_inventory(metrics: TaskMetrics, raw_inventory: object) -> None:
+    if not isinstance(raw_inventory, dict):
+        return
+    by_kind = raw_inventory.get("by_kind", {})
+    by_status = raw_inventory.get("by_status", {})
+    if isinstance(by_kind, dict):
+        metrics.memory_records_by_kind = {str(key): int(value) for key, value in by_kind.items()}
+    if isinstance(by_status, dict):
+        metrics.memory_records_by_status = {
+            str(key): int(value) for key, value in by_status.items()
+        }
 
 
 def _event_summary(event: Event) -> str:
@@ -168,6 +279,12 @@ def _event_summary(event: Event) -> str:
         assessment = event.data.get("assessment", {})
         if isinstance(assessment, dict):
             return f"{assessment.get('risk', 'unknown')} risk: {assessment.get('reason', '')}"
+    if event.type == "memory.retrieved":
+        selected = event.data.get("selected", [])
+        count = len(selected) if isinstance(selected, list) else 0
+        return f"memory decision selected {count} items"
+    if event.type == "memory.replayed":
+        return f"memory replay suppressed {event.data.get('event_id', 'event')}"
     if event.type.startswith("task."):
         return event.type.replace(".", " ")
     if event.type.startswith("step."):

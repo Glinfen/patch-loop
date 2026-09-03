@@ -19,7 +19,7 @@ from patchloop.context.models import (
 from patchloop.domain import Plan, StepStatus, ToolResult
 from patchloop.intelligence.search import tokenize
 from patchloop.providers.base import ModelMessage, ToolSpec
-from patchloop.security import SecretRedactor
+from patchloop.security import SecretRedactor, UntrustedContentGuard
 
 PATH_PATTERN = re.compile(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.py(?::\d+)?")
 MEMORY_PREFIX = (
@@ -70,6 +70,7 @@ class ContextEngine:
         self.max_tool_output_chars = max_tool_output_chars
         self.recent_steps = recent_steps
         self.redactor = redactor or SecretRedactor()
+        self.content_guard = UntrustedContentGuard(self.redactor)
 
     def compact_tool_result(self, result: ToolResult) -> tuple[str, bool]:
         payload = self.redactor.redact(result.model_dump(mode="json"))
@@ -211,7 +212,12 @@ class ContextEngine:
             if message.role in {"system", "user"}:
                 normalized.append(message.model_copy(deep=True))
                 continue
-            content, truncated = self._compact_message_content(message.content, max_chars)
+            safe_content = (
+                self.content_guard.inspect(message.content).safe_text
+                if message.role == "tool"
+                else message.content
+            )
+            content, truncated = self._compact_message_content(safe_content, max_chars)
             truncated_count += int(truncated)
             normalized.append(message.model_copy(update={"content": content}, deep=True))
         return normalized, truncated_count

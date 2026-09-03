@@ -28,6 +28,7 @@ from patchloop.memory.manager import (
     MemoryManager,
     MemoryManagerUpdate,
 )
+from patchloop.memory.models import MemoryStatus
 from patchloop.memory.retrieval import LayeredMemoryContext
 from patchloop.memory.semantic import SemanticMemoryManager, SemanticResolutionBatch
 from patchloop.memory.store import MemoryStoreError
@@ -86,6 +87,10 @@ class AgentRuntime:
         self._memory_retrievals = 0
         self._memory_retrieval_hits = 0
         self._memory_retrieval_tokens = 0
+        self._memory_stale_hits = 0
+        self._memory_security_filters = 0
+        self._max_memory_context_tokens_used = 0
+        self._max_memory_context_occupancy = 0.0
 
     def run(self, task: Task) -> Task:
         task.transition(TaskStatus.RUNNING)
@@ -104,6 +109,10 @@ class AgentRuntime:
         self._memory_retrievals = 0
         self._memory_retrieval_hits = 0
         self._memory_retrieval_tokens = 0
+        self._memory_stale_hits = 0
+        self._memory_security_filters = 0
+        self._max_memory_context_tokens_used = 0
+        self._max_memory_context_occupancy = 0.0
         self._memory_manager = None
         try:
             self._memory_manager = MemoryManager(
@@ -147,6 +156,10 @@ class AgentRuntime:
             memory_retrievals=self._memory_retrievals,
             memory_retrieval_hits=self._memory_retrieval_hits,
             memory_retrieval_tokens=self._memory_retrieval_tokens,
+            memory_stale_hits=self._memory_stale_hits,
+            memory_security_filters=self._memory_security_filters,
+            max_memory_context_tokens_used=self._max_memory_context_tokens_used,
+            max_memory_context_occupancy=self._max_memory_context_occupancy,
             memory_manager=memory_snapshot,
         )
         self._persist_checkpoint(state)
@@ -176,6 +189,10 @@ class AgentRuntime:
         self._memory_retrievals = checkpoint.memory_retrievals
         self._memory_retrieval_hits = checkpoint.memory_retrieval_hits
         self._memory_retrieval_tokens = checkpoint.memory_retrieval_tokens
+        self._memory_stale_hits = checkpoint.memory_stale_hits
+        self._memory_security_filters = checkpoint.memory_security_filters
+        self._max_memory_context_tokens_used = checkpoint.max_memory_context_tokens_used
+        self._max_memory_context_occupancy = checkpoint.max_memory_context_occupancy
         try:
             self._memory_manager = MemoryManager(
                 task.id,
@@ -282,7 +299,12 @@ class AgentRuntime:
                                 else ()
                             ),
                         )
-                        self._record_memory_retrieval(task, step_index, layered_memory)
+                        self._record_memory_retrieval(
+                            task,
+                            step_index,
+                            layered_memory,
+                            read_duration_ms=managed_retrieval.read_duration_ms,
+                        )
                 except ContextBudgetError as exc:
                     return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
                 self._context_windows += 1
@@ -633,6 +655,30 @@ class AgentRuntime:
                 memory_snapshot.compression_output_tokens if memory_snapshot is not None else 0
             ),
             memory_fallbacks=(memory_snapshot.fallback_count if memory_snapshot is not None else 0),
+            memory_records_by_kind=(
+                memory_snapshot.records_by_kind if memory_snapshot is not None else {}
+            ),
+            memory_records_by_status=(
+                memory_snapshot.records_by_status if memory_snapshot is not None else {}
+            ),
+            memory_stale_hits=self._memory_stale_hits,
+            memory_security_filters=self._memory_security_filters,
+            memory_read_duration_ms=(
+                memory_snapshot.read_duration_ms if memory_snapshot is not None else 0.0
+            ),
+            memory_write_duration_ms=(
+                memory_snapshot.write_duration_ms if memory_snapshot is not None else 0.0
+            ),
+            memory_compression_duration_ms=(
+                memory_snapshot.compression_duration_ms if memory_snapshot is not None else 0.0
+            ),
+            memory_compression_ratio=(
+                memory_snapshot.compression_output_tokens / memory_snapshot.compression_input_tokens
+                if memory_snapshot is not None and memory_snapshot.compression_input_tokens
+                else 0.0
+            ),
+            max_memory_context_tokens_used=self._max_memory_context_tokens_used,
+            max_memory_context_occupancy=self._max_memory_context_occupancy,
         )
 
     def _model_budget_error(self, task: Task) -> str | None:
@@ -689,6 +735,10 @@ class AgentRuntime:
             memory_retrievals=self._memory_retrievals,
             memory_retrieval_hits=self._memory_retrieval_hits,
             memory_retrieval_tokens=self._memory_retrieval_tokens,
+            memory_stale_hits=self._memory_stale_hits,
+            memory_security_filters=self._memory_security_filters,
+            max_memory_context_tokens_used=self._max_memory_context_tokens_used,
+            max_memory_context_occupancy=self._max_memory_context_occupancy,
             memory_manager=(
                 self._memory_manager.snapshot() if self._memory_manager is not None else None
             ),
@@ -732,10 +782,50 @@ class AgentRuntime:
         task: Task,
         step_index: int,
         memory: LayeredMemoryContext,
+        *,
+        read_duration_ms: float,
     ) -> None:
         self._memory_retrievals += 1
         self._memory_retrieval_hits += len(memory.record_selections)
         self._memory_retrieval_tokens += memory.estimated_tokens
+        stale_hits = sum(
+            selection.status is not None and selection.status is not MemoryStatus.ACTIVE
+            for selection in memory.record_selections
+        )
+        self._memory_stale_hits += stale_hits
+        self._max_memory_context_tokens_used = max(
+            self._max_memory_context_tokens_used,
+            memory.estimated_tokens,
+        )
+        occupancy = (
+            memory.estimated_tokens / memory.allocation.retrieval_tokens
+            if memory.allocation.retrieval_tokens
+            else 0.0
+        )
+        self._max_memory_context_occupancy = max(
+            self._max_memory_context_occupancy,
+            occupancy,
+        )
+        security_selections = [
+            {
+                "id": selection.id,
+                "record_id": selection.record_id,
+                "findings": [finding.value for finding in selection.security_findings],
+            }
+            for selection in memory.selections
+            if selection.security_findings
+        ]
+        if security_selections:
+            self._memory_security_filters += sum(
+                len(selection.security_findings)
+                for selection in memory.selections
+                if selection.security_findings
+            )
+            self._emit(
+                "memory.security_filtered",
+                task,
+                {"step": step_index, "selections": security_selections},
+            )
         self._emit(
             "memory.retrieved",
             task,
@@ -744,6 +834,9 @@ class AgentRuntime:
                 "query": memory.query.text,
                 "allocation": memory.allocation.model_dump(mode="json"),
                 "estimated_tokens": memory.estimated_tokens,
+                "context_occupancy": occupancy,
+                "read_duration_ms": read_duration_ms,
+                "stale_hits": stale_hits,
                 "selected": [
                     {
                         "id": selection.id,
@@ -751,6 +844,14 @@ class AgentRuntime:
                         "layer": selection.layer.value,
                         "score": selection.score,
                         "reason": selection.reason,
+                        "status": (
+                            selection.status.value if selection.status is not None else None
+                        ),
+                        "source_ids": selection.source_ids,
+                        "score_components": selection.score_components,
+                        "security_findings": [
+                            finding.value for finding in selection.security_findings
+                        ],
                     }
                     for selection in memory.selections
                 ],
@@ -774,6 +875,15 @@ class AgentRuntime:
             "omitted_ids": memory.omitted_ids,
         }
 
+    def _memory_inventory_data(self) -> dict[str, dict[str, int]]:
+        if self._memory_manager is None:
+            return {"by_kind": {}, "by_status": {}}
+        snapshot = self._memory_manager.snapshot()
+        return {
+            "by_kind": snapshot.records_by_kind,
+            "by_status": snapshot.records_by_status,
+        }
+
     def _apply_memory_update(
         self,
         task: Task,
@@ -785,7 +895,13 @@ class AgentRuntime:
             self._emit(
                 "memory.replayed",
                 task,
-                {"event_id": update.event_id, "event_index": update.event_index},
+                {
+                    "step": step_index,
+                    "event_id": update.event_id,
+                    "event_index": update.event_index,
+                    "decision": "event_already_processed",
+                    "writes_suppressed": True,
+                },
             )
             return
         self._emit(
@@ -801,6 +917,8 @@ class AgentRuntime:
                     "event_id": update.event_id,
                     "event_index": update.event_index,
                     "record_ids": list(update.written_record_ids),
+                    "write_duration_ms": update.write_duration_ms,
+                    "inventory": self._memory_inventory_data(),
                 },
             )
         if update.promotion is not None and update.promotion.records:
@@ -817,6 +935,27 @@ class AgentRuntime:
             self._emit_episode(task, update.episode)
         if update.semantic is not None:
             self._record_semantic_batch(task, update.semantic, persist=False)
+            superseded = [
+                record
+                for record in update.semantic.records
+                if record.status is MemoryStatus.SUPERSEDED
+            ]
+            if superseded:
+                self._emit(
+                    "memory.superseded",
+                    task,
+                    {
+                        "step": step_index,
+                        "event_id": update.event_id,
+                        "records": [
+                            {
+                                "record_id": record.id,
+                                "superseded_by_id": record.superseded_by_id,
+                            }
+                            for record in superseded
+                        ],
+                    },
+                )
         if update.compaction is not None and update.compaction.report is not None:
             report = update.compaction.report
             self._emit(
@@ -828,9 +967,14 @@ class AgentRuntime:
                     "generation": report.generation,
                     "input_records": len(report.input_record_ids),
                     "output_records": len(report.output_record_ids),
+                    "written_record_ids": [
+                        record.id for record in update.compaction.summary_records
+                    ],
                     "input_tokens": report.input_tokens,
                     "output_tokens": report.output_tokens,
                     "compression_ratio": report.compression_ratio,
+                    "duration_ms": update.compression_duration_ms,
+                    "inventory": self._memory_inventory_data(),
                 },
             )
         if update.fallback_reason is not None:

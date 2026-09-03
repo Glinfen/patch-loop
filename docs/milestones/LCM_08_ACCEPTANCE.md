@@ -62,4 +62,4 @@ PatchLoop 已于 2026-09-03 完成 LCM-08。Runtime 现在通过一个 `MemoryMa
 
 ## 下一任务
 
-LCM-09 将补齐 memory CLI、逐条召回解释、读写与压缩耗时指标、安全事件和 replay 的记忆决策链。
+LCM-09 已补齐 memory CLI、逐条召回解释、读写与压缩耗时指标、安全事件和 replay 的记忆决策链。下一步进入 LCM-10 的消融实验与失败驱动优化。

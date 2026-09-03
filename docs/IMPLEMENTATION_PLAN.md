@@ -248,6 +248,8 @@ LCM-07 已完成：四级确定性压缩保护关键事实、保留原始证据�
 
 LCM-08 已完成：统一 MemoryManager 负责事件水位、增量写入、检索和自动压缩，checkpoint 恢复不重复工具副作用，记忆故障安全回退到 TaskMemory V1；三轮固定长上下文任务达到 24/24，验证见 [LCM-08 验收记录](milestones/LCM_08_ACCEPTANCE.md)。
 
+LCM-09 已完成：memory CLI、结构化召回解释、记忆库存与耗时指标、安全过滤事件和 replay 记忆决策链已接入；仓库 Prompt Injection 与凭据流转验收见 [LCM-09 验收记录](milestones/LCM_09_ACCEPTANCE.md)。
+
 ## 6. 推荐仓库结构
 
 ```text

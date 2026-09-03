@@ -156,6 +156,9 @@ def test_manager_triggers_bounded_compression_at_active_watermark() -> None:
     assert snapshot.compactions == 1
     assert snapshot.compression_output_tokens < snapshot.compression_input_tokens
     assert snapshot.records_written == 5
+    assert sum(snapshot.records_by_kind.values()) == snapshot.records_written
+    assert snapshot.records_by_status["active"] > 0
+    assert snapshot.compression_duration_ms > 0
     assert snapshot.cursor.next_event_index == 5
     assert snapshot.cursor.pending_event_ids == []
 

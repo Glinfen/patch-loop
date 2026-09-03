@@ -5,6 +5,12 @@ from typer.testing import CliRunner
 
 from patchloop.cli import app
 from patchloop.domain import Task, TaskExecutionConfig, TaskStatus
+from patchloop.memory import (
+    MemoryKind,
+    MemoryRecord,
+    MemorySource,
+    MemorySourceKind,
+)
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
 from patchloop.providers import FakeProvider, ModelMessage, ModelResponse
 
@@ -22,6 +28,73 @@ def test_cli_creates_and_reads_task(tmp_path: Path) -> None:
     assert shown.exit_code == 0, shown.output
     assert json.loads(shown.output)["goal"] == "Fix the bug"
     assert (tmp_path / ".patchloop" / "patchloop.db").is_file()
+
+
+def test_memory_cli_filters_records_and_explains_recall(tmp_path: Path) -> None:
+    task = Task(id="memory-cli", goal="Inspect payment contract", repository=str(tmp_path))
+    store = SQLiteStore(tmp_path / ".patchloop" / "patchloop.db")
+    store.save_task(task)
+    source = MemorySource(
+        id="memory-cli-source",
+        task_id=task.id,
+        kind=MemorySourceKind.TOOL_RESULT,
+        evidence_hash="a" * 64,
+        event_id="tool:payment-read",
+        tool_call_id="payment-read",
+        step_index=4,
+        path="src/payment.py",
+    )
+    record = MemoryRecord(
+        id="memory-cli-record",
+        task_id=task.id,
+        kind=MemoryKind.SEMANTIC,
+        scope_id=task.id,
+        content={"fact": "payment contract v2"},
+        retrieval_text="payment contract v2",
+        source_ids=[source.id],
+        importance=0.9,
+        confidence=0.95,
+        estimated_tokens=12,
+    )
+    store.memory.save_batch(sources=[source], records=[record])
+
+    result = runner.invoke(
+        app,
+        [
+            "memory",
+            task.id,
+            "--repo",
+            str(tmp_path),
+            "--kind",
+            "semantic",
+            "--query",
+            "payment contract",
+            "--step",
+            "4",
+            "--status",
+            "active",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["filters"] == {
+        "kinds": ["semantic"],
+        "statuses": ["active"],
+        "step": 4,
+        "limit": 20,
+    }
+    assert payload["results"][0]["record"]["id"] == record.id
+    assert payload["results"][0]["sources"][0]["path"] == "src/payment.py"
+    assert "kind=semantic" in payload["results"][0]["why_recalled"]
+    assert payload["results"][0]["score"]["total"] > 0
+
+    invalid = runner.invoke(
+        app,
+        ["memory", task.id, "--repo", str(tmp_path), "--kind", "unknown"],
+    )
+    assert invalid.exit_code == 2
+    assert "unknown" in invalid.output
 
 
 def test_run_requires_environment_key(tmp_path: Path, monkeypatch: object) -> None:

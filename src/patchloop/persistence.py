@@ -51,6 +51,10 @@ class RuntimeCheckpoint(BaseModel):
     memory_retrievals: int = Field(default=0, ge=0)
     memory_retrieval_hits: int = Field(default=0, ge=0)
     memory_retrieval_tokens: int = Field(default=0, ge=0)
+    memory_stale_hits: int = Field(default=0, ge=0)
+    memory_security_filters: int = Field(default=0, ge=0)
+    max_memory_context_tokens_used: int = Field(default=0, ge=0)
+    max_memory_context_occupancy: float = Field(default=0.0, ge=0.0, le=1.0)
     memory_manager: MemoryManagerSnapshot | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

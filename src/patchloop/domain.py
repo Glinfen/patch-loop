@@ -111,6 +111,16 @@ class TaskReport(BaseModel):
     memory_compression_input_tokens: int = Field(default=0, ge=0)
     memory_compression_output_tokens: int = Field(default=0, ge=0)
     memory_fallbacks: int = Field(default=0, ge=0)
+    memory_records_by_kind: dict[str, int] = Field(default_factory=dict)
+    memory_records_by_status: dict[str, int] = Field(default_factory=dict)
+    memory_stale_hits: int = Field(default=0, ge=0)
+    memory_security_filters: int = Field(default=0, ge=0)
+    memory_read_duration_ms: float = Field(default=0.0, ge=0.0)
+    memory_write_duration_ms: float = Field(default=0.0, ge=0.0)
+    memory_compression_duration_ms: float = Field(default=0.0, ge=0.0)
+    memory_compression_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_memory_context_tokens_used: int = Field(default=0, ge=0)
+    max_memory_context_occupancy: float = Field(default=0.0, ge=0.0, le=1.0)
     generated_at: datetime = Field(default_factory=utc_now)
 
 

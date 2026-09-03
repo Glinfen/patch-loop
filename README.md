@@ -90,6 +90,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - `benchmark-memory` 可生成 20～120 步固定长历史，对比 recent-only 与 TaskMemory V1；LCM-00 的 DeepSeek 三轮基线分别为 0/24 和 22/24，并单独报告关键事实、陈旧事实和重复失败风险。
 - 分层记忆 V1 契约已固定工作、语义、情景三类记忆，以及不可变来源、双向替代链、预算化召回和可追踪压缩报告；Runtime 自动抽取与集成将在后续 LCM 任务完成。
 - Memory Store 已接入共享 SQLite，支持原子迁移、写前脱敏、恢复去重、内容与步骤索引、压缩谱系、可选向量评分协议和任务级联清理；默认路径不依赖网络或外部向量数据库。
+- `memory` CLI 可按类型、状态、步骤和查询检查记忆，逐条展示总分、评分分量、来源与召回原因；`metrics` 和 `replay` 同步展示库存、耗时、压缩比、安全过滤及每个模型步骤使用的记忆。
 
 ## 本地开发
 
@@ -114,6 +115,8 @@ patchloop diff <task-id> --repo /path/to/repository
 patchloop trace <task-id> --repo /path/to/repository
 patchloop context <task-id> --repo /path/to/repository
 patchloop metrics <task-id> --repo /path/to/repository
+patchloop memory <task-id> --repo /path/to/repository \
+  --kind semantic --status active --step 4 --query "分页接口约束"
 patchloop replay <task-id> --repo /path/to/repository
 patchloop resume <task-id> --repo /path/to/repository
 patchloop cancel <task-id> --repo /path/to/repository

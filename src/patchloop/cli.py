@@ -32,6 +32,7 @@ from patchloop.intelligence import (
     evaluate_retrieval,
     load_retrieval_tasks,
 )
+from patchloop.memory import MemoryKind, MemoryQuery, MemoryStatus, MemoryStoreError
 from patchloop.observability import TaskMetrics, TaskReplay
 from patchloop.persistence import SQLiteStore
 from patchloop.providers import DeepSeekProvider
@@ -454,6 +455,97 @@ def show_metrics(
         typer.echo(f"trace not found: {task_id}", err=True)
         raise typer.Exit(code=1)
     typer.echo(TaskMetrics.from_events(task_id, events).model_dump_json(indent=2))
+
+
+@app.command("memory")
+def inspect_memory(
+    task_id: Annotated[str, typer.Argument()],
+    repo: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+    kind: Annotated[
+        str,
+        typer.Option(help="Comma-separated working, semantic, or episodic kinds."),
+    ] = "",
+    query: Annotated[str, typer.Option(help="Recall query; defaults to the task goal.")] = "",
+    step: Annotated[
+        int,
+        typer.Option(help="Exact source step to inspect; -1 disables this filter."),
+    ] = -1,
+    status: Annotated[
+        str,
+        typer.Option(help="Comma-separated active, superseded, or invalidated states."),
+    ] = "active",
+    limit: Annotated[int, typer.Option(min=1, max=100)] = 20,
+) -> None:
+    store = _sqlite_store(repo)
+    try:
+        task = store.get_task(task_id)
+        kinds = (
+            [MemoryKind(item.strip()) for item in kind.split(",") if item.strip()]
+            if kind
+            else list(MemoryKind)
+        )
+        statuses = [MemoryStatus(item.strip()) for item in status.split(",") if item.strip()]
+        if not statuses:
+            raise ValueError("at least one memory status is required")
+        if step < -1:
+            raise ValueError("memory step must be -1 or greater")
+        exact_step = None if step == -1 else step
+        bundle = store.memory.query(
+            MemoryQuery(
+                task_id=task_id,
+                text=query.strip() or task.goal,
+                kinds=kinds,
+                statuses=statuses,
+                step_start=exact_step,
+                step_end=exact_step,
+                max_results=limit,
+                token_budget=max(2_000, limit * 1_000),
+            )
+        )
+    except TaskNotFoundError:
+        typer.echo(f"task not found: {task_id}", err=True)
+        raise typer.Exit(code=1) from None
+    except (MemoryStoreError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    source_map = {source.id: source for source in bundle.sources}
+    payload = {
+        "task_id": task_id,
+        "query": bundle.query.text,
+        "filters": {
+            "kinds": [item.value for item in bundle.query.kinds],
+            "statuses": [item.value for item in bundle.query.statuses],
+            "step": exact_step,
+            "limit": limit,
+        },
+        "results": [
+            {
+                "record": hit.record.model_dump(mode="json"),
+                "score": {
+                    "total": hit.score,
+                    "relevance": hit.relevance_score,
+                    "recency": hit.recency_score,
+                    "importance": hit.record.importance,
+                    "confidence": hit.record.confidence,
+                    "source_quality": hit.source_quality_score,
+                },
+                "why_recalled": hit.reason,
+                "matched_terms": hit.matched_terms,
+                "sources": [
+                    source_map[source_id].model_dump(mode="json")
+                    for source_id in hit.record.source_ids
+                    if source_id in source_map
+                ],
+            }
+            for hit in bundle.hits
+        ],
+        "truncated": bundle.truncated,
+        "omitted_record_ids": bundle.omitted_record_ids,
+    }
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 @app.command("replay")

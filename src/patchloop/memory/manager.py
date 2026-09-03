@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -17,6 +18,7 @@ from patchloop.memory.episodic import (
 )
 from patchloop.memory.models import (
     CompressionReport,
+    MemoryKind,
     MemoryRecord,
     MemorySource,
     MemoryStatus,
@@ -99,6 +101,11 @@ class MemoryManagerSnapshot(BaseModel):
     fallback_count: int = Field(default=0, ge=0)
     fallback_active: bool = False
     fallback_reason: str | None = None
+    records_by_kind: dict[str, int] = Field(default_factory=dict)
+    records_by_status: dict[str, int] = Field(default_factory=dict)
+    read_duration_ms: float = Field(default=0.0, ge=0.0)
+    write_duration_ms: float = Field(default=0.0, ge=0.0)
+    compression_duration_ms: float = Field(default=0.0, ge=0.0)
 
     @model_validator(mode="after")
     def validate_snapshot(self) -> Self:
@@ -110,6 +117,11 @@ class MemoryManagerSnapshot(BaseModel):
             raise ValueError("memory fallback state and reason must be set together")
         if self.compression_output_tokens > self.compression_input_tokens:
             raise ValueError("memory compression output cannot exceed input")
+        if any(
+            value < 0
+            for value in (*self.records_by_kind.values(), *self.records_by_status.values())
+        ):
+            raise ValueError("memory inventory counts cannot be negative")
         return self
 
 
@@ -124,12 +136,15 @@ class MemoryManagerUpdate:
     written_record_ids: tuple[str, ...] = ()
     compaction: CompressionBatch | None = None
     fallback_reason: str | None = None
+    write_duration_ms: float = 0.0
+    compression_duration_ms: float = 0.0
 
 
 @dataclass(frozen=True)
 class ManagedMemoryRetrieval:
     context: LayeredMemoryContext | None
     fallback_reason: str | None = None
+    read_duration_ms: float = 0.0
 
 
 class MemoryManager:
@@ -171,6 +186,13 @@ class MemoryManager:
             snapshot.compression_output_tokens if snapshot is not None else 0
         )
         self._fallback_count = snapshot.fallback_count if snapshot is not None else 0
+        self._records_by_kind = dict(snapshot.records_by_kind) if snapshot is not None else {}
+        self._records_by_status = dict(snapshot.records_by_status) if snapshot is not None else {}
+        self._read_duration_ms = snapshot.read_duration_ms if snapshot is not None else 0.0
+        self._write_duration_ms = snapshot.write_duration_ms if snapshot is not None else 0.0
+        self._compression_duration_ms = (
+            snapshot.compression_duration_ms if snapshot is not None else 0.0
+        )
         cursor = snapshot.cursor if snapshot is not None else None
         self._processed_event_ids = list(cursor.processed_event_ids) if cursor is not None else []
         self._pending_event_ids = list(cursor.pending_event_ids) if cursor is not None else []
@@ -178,6 +200,7 @@ class MemoryManager:
         self._volatile_records: dict[str, MemoryRecord] = {}
         recovered_records: list[MemoryRecord] = []
         if store is not None and not self._fallback_active:
+            read_started = perf_counter()
             try:
                 recovered_records = store.list_records(task_id)
                 recovered_sources = store.list_sources(task_id)
@@ -185,6 +208,8 @@ class MemoryManager:
                 self._volatile_sources.update((source.id, source) for source in recovered_sources)
             except MemoryStoreError as exc:
                 self._activate_fallback(f"memory restore failed: {exc}")
+            finally:
+                self._read_duration_ms += (perf_counter() - read_started) * 1_000
 
         working_snapshot = snapshot.working_memory if snapshot is not None else legacy_working
         episodic_snapshot = snapshot.episodic_memory if snapshot is not None else legacy_episodic
@@ -210,6 +235,7 @@ class MemoryManager:
         )
         if snapshot is None:
             self._restore_legacy_cursor(episodic_snapshot, recovered_records)
+        self._refresh_inventory()
 
     @property
     def fallback_active(self) -> bool:
@@ -321,6 +347,7 @@ class MemoryManager:
     ) -> ManagedMemoryRetrieval:
         if self._fallback_active:
             return ManagedMemoryRetrieval(context=None)
+        read_started = perf_counter()
         records = list(self._volatile_records.values())
         sources = list(self._volatile_sources.values())
         if self.store is not None:
@@ -328,8 +355,14 @@ class MemoryManager:
                 records = self.store.list_records(self.task_id)
                 sources = self.store.list_sources(self.task_id)
             except MemoryStoreError as exc:
+                duration = (perf_counter() - read_started) * 1_000
+                self._read_duration_ms += duration
                 reason = self._activate_fallback(f"memory retrieval failed: {exc}")
-                return ManagedMemoryRetrieval(context=None, fallback_reason=reason)
+                return ManagedMemoryRetrieval(
+                    context=None,
+                    fallback_reason=reason,
+                    read_duration_ms=duration,
+                )
         context = self.retriever.retrieve(
             task_id=self.task_id,
             repository_scope_id=self.repository_scope_id,
@@ -345,8 +378,12 @@ class MemoryManager:
             retrieval_token_cap=retrieval_token_cap,
         )
         if not context.rendered and context.omitted_ids:
-            return ManagedMemoryRetrieval(context=None)
-        return ManagedMemoryRetrieval(context=context)
+            duration = (perf_counter() - read_started) * 1_000
+            self._read_duration_ms += duration
+            return ManagedMemoryRetrieval(context=None, read_duration_ms=duration)
+        duration = (perf_counter() - read_started) * 1_000
+        self._read_duration_ms += duration
+        return ManagedMemoryRetrieval(context=context, read_duration_ms=duration)
 
     def snapshot(self) -> MemoryManagerSnapshot:
         processed = list(self._processed_event_ids)
@@ -367,6 +404,11 @@ class MemoryManager:
             fallback_count=self._fallback_count,
             fallback_active=self._fallback_active,
             fallback_reason=self._fallback_reason,
+            records_by_kind=self._records_by_kind,
+            records_by_status=self._records_by_status,
+            read_duration_ms=self._read_duration_ms,
+            write_duration_ms=self._write_duration_ms,
+            compression_duration_ms=self._compression_duration_ms,
         )
 
     def _complete_event(
@@ -387,13 +429,19 @@ class MemoryManager:
             sources.extend(semantic.sources)
             records.extend(semantic.records)
         self._remember(sources, records)
+        write_duration_ms = 0.0
         if records and self.store is not None and not self._fallback_active:
+            write_started = perf_counter()
             try:
                 self.store.save_batch(sources=sources, records=records)
             except MemoryStoreError as exc:
                 self._activate_fallback(f"memory write failed: {exc}")
+            finally:
+                write_duration_ms = (perf_counter() - write_started) * 1_000
+                self._write_duration_ms += write_duration_ms
         self._records_written += len(records)
-        compaction = self._maybe_compress()
+        compaction, compression_duration_ms, compression_write_duration_ms = self._maybe_compress()
+        write_duration_ms += compression_write_duration_ms
         self._finish_event(event_id)
         return MemoryManagerUpdate(
             event_id=event_id,
@@ -404,11 +452,13 @@ class MemoryManager:
             written_record_ids=tuple(record.id for record in records),
             compaction=compaction,
             fallback_reason=self.take_fallback_transition(),
+            write_duration_ms=write_duration_ms,
+            compression_duration_ms=compression_duration_ms,
         )
 
-    def _maybe_compress(self) -> CompressionBatch | None:
+    def _maybe_compress(self) -> tuple[CompressionBatch | None, float, float]:
         if self._fallback_active:
-            return None
+            return None, 0.0, 0.0
         active = [
             record
             for record in self._volatile_records.values()
@@ -419,12 +469,13 @@ class MemoryManager:
         generation_rollup = False
         if len(uncompressed) < self.compression_policy.active_uncompressed_threshold:
             if len(compressed) < self.compression_policy.active_generation_threshold:
-                return None
+                return None, 0.0, 0.0
             if max(record.compression_generation for record in compressed) >= (
                 self.compression_policy.maximum_generation
             ):
-                return None
+                return None, 0.0, 0.0
             generation_rollup = True
+        compression_started = perf_counter()
         batch = self.compressor.compress(
             self.task_id,
             active,
@@ -432,20 +483,32 @@ class MemoryManager:
             generation_rollup=generation_rollup,
         )
         if batch.report is None:
-            return None
+            duration = (perf_counter() - compression_started) * 1_000
+            self._compression_duration_ms += duration
+            return None, duration, 0.0
+        write_duration = 0.0
         if self.store is not None:
+            write_started = perf_counter()
             try:
                 self.store.save_batch(records=batch.writes, compactions=[batch.report])
             except (MemoryStoreError, ValueError) as exc:
+                write_duration = (perf_counter() - write_started) * 1_000
+                self._write_duration_ms += write_duration
+                duration = (perf_counter() - compression_started) * 1_000
+                self._compression_duration_ms += duration
                 self._activate_fallback(f"memory compression failed: {exc}")
-                return None
+                return None, duration, write_duration
+            write_duration = (perf_counter() - write_started) * 1_000
+            self._write_duration_ms += write_duration
         self._remember((), batch.writes)
         self.semantic.synchronize_records(list(self._volatile_records.values()))
         self._compactions += 1
         self._compression_input_tokens += batch.report.input_tokens
         self._compression_output_tokens += batch.report.output_tokens
         self._records_written += len(batch.summary_records)
-        return batch
+        duration = (perf_counter() - compression_started) * 1_000
+        self._compression_duration_ms += duration
+        return batch, duration, write_duration
 
     def _remember(
         self,
@@ -454,6 +517,19 @@ class MemoryManager:
     ) -> None:
         self._volatile_sources.update((source.id, source) for source in sources)
         self._volatile_records.update((record.id, record) for record in records)
+        self._refresh_inventory()
+
+    def _refresh_inventory(self) -> None:
+        if not self._volatile_records:
+            return
+        self._records_by_kind = {
+            kind.value: sum(record.kind is kind for record in self._volatile_records.values())
+            for kind in MemoryKind
+        }
+        self._records_by_status = {
+            status.value: sum(record.status is status for record in self._volatile_records.values())
+            for status in MemoryStatus
+        }
 
     def _begin_event(self, event_id: str) -> None:
         if event_id not in self._pending_event_ids and event_id not in self._processed_event_ids:

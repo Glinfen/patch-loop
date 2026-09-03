@@ -100,6 +100,10 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
     before_memory_ids = {record.id for record in store.memory.list_records(task.id)}
     assert checkpoint.memory_manager.cursor.pending_event_ids == []
     assert checkpoint.memory_manager.cursor.processed_event_ids.count("tool:write-call") == 1
+    assert checkpoint.memory_manager.read_duration_ms > 0
+    assert checkpoint.memory_manager.write_duration_ms > 0
+    assert checkpoint.max_memory_context_tokens_used > 0
+    assert checkpoint.max_memory_context_occupancy > 0
     assert persisted.status is TaskStatus.RUNNING
     assert checkpoint.next_step_index == 2
     assert "return dividend / divisor" in (repository / "calculator.py").read_text(encoding="utf-8")
@@ -141,6 +145,8 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
     assert result.report is not None
     assert result.report.changed_files == ["calculator.py"]
     assert result.report.validations[0].passed
+    assert result.report.max_memory_context_tokens_used >= checkpoint.max_memory_context_tokens_used
+    assert result.report.memory_read_duration_ms >= checkpoint.memory_manager.read_duration_ms
     assert store.get_task(task.id).status is TaskStatus.COMPLETED
     assert len(store.list_steps(task.id)) == 4
     assert len(store.list_tool_results(task.id)) == 3

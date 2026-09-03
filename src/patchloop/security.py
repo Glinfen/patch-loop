@@ -6,7 +6,7 @@ import re
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RiskLevel(StrEnum):
@@ -14,6 +14,11 @@ class RiskLevel(StrEnum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+
+
+class UntrustedContentFinding(StrEnum):
+    CREDENTIAL_REDACTED = "credential_redacted"
+    PROMPT_INJECTION_BLOCKED = "prompt_injection_blocked"
 
 
 RISK_ORDER = {
@@ -38,6 +43,11 @@ class RiskAssessment(BaseModel):
     allowed: bool
     approval_required: bool = False
     reason: str
+
+
+class UntrustedContentInspection(BaseModel):
+    safe_text: str
+    findings: list[UntrustedContentFinding] = Field(default_factory=list)
 
 
 class SecretRedactor:
@@ -87,3 +97,40 @@ class SecretRedactor:
         if isinstance(value, tuple):
             return tuple(self.redact(item) for item in value)
         return value
+
+
+class UntrustedContentGuard:
+    """Remove executable-looking instructions from untrusted memory text."""
+
+    replacement = "[UNTRUSTED_INSTRUCTION_BLOCKED]"
+    _prompt_injection_patterns: ClassVar[tuple[re.Pattern[str], ...]] = (
+        re.compile(
+            r"(?i)\bignore\s+(?:all\s+|any\s+|the\s+)?"
+            r"(?:previous|prior|system|developer)\s+instructions?\b"
+        ),
+        re.compile(
+            r"(?i)\b(?:override|disregard)\s+(?:all\s+|the\s+)?"
+            r"(?:previous|prior|system|developer)\s+(?:instructions?|messages?)\b"
+        ),
+        re.compile(
+            r"(?i)\b(?:reveal|print|exfiltrate)\s+(?:the\s+)?"
+            r"(?:system\s+prompt|credentials?|secrets?)\b"
+        ),
+        re.compile(r"(?i)\byou\s+are\s+now\b"),
+    )
+
+    def __init__(self, redactor: SecretRedactor | None = None) -> None:
+        self.redactor = redactor or SecretRedactor()
+
+    def inspect(self, value: str) -> UntrustedContentInspection:
+        safe_text = self.redactor.redact_text(value)
+        findings: list[UntrustedContentFinding] = []
+        if safe_text != value:
+            findings.append(UntrustedContentFinding.CREDENTIAL_REDACTED)
+        injection_blocked = False
+        for pattern in self._prompt_injection_patterns:
+            safe_text, replacements = pattern.subn(self.replacement, safe_text)
+            injection_blocked = injection_blocked or replacements > 0
+        if injection_blocked:
+            findings.append(UntrustedContentFinding.PROMPT_INJECTION_BLOCKED)
+        return UntrustedContentInspection(safe_text=safe_text, findings=findings)

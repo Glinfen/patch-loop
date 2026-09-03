@@ -22,7 +22,11 @@ from patchloop.memory.models import (
     MemoryStatus,
 )
 from patchloop.memory.working import WorkingMemoryItemKind, WorkingMemorySnapshot
-from patchloop.security import SecretRedactor
+from patchloop.security import (
+    SecretRedactor,
+    UntrustedContentFinding,
+    UntrustedContentGuard,
+)
 
 LAYERED_MEMORY_PREFIX = (
     "PATCHLOOP_LAYERED_MEMORY_V1\n"
@@ -82,6 +86,10 @@ class RetrievalSelection(BaseModel):
     reason: str = Field(min_length=1)
     paths: list[str] = Field(default_factory=list)
     record_id: str | None = None
+    status: MemoryStatus | None = None
+    source_ids: list[str] = Field(default_factory=list)
+    score_components: dict[str, float] = Field(default_factory=dict)
+    security_findings: list[UntrustedContentFinding] = Field(default_factory=list)
     diversity_key: str = Field(min_length=1)
     pinned: bool = False
 
@@ -157,6 +165,7 @@ class MemoryBudgetPolicy:
 class RetrievalQueryBuilder:
     def __init__(self, redactor: SecretRedactor | None = None) -> None:
         self.redactor = redactor or SecretRedactor()
+        self.content_guard = UntrustedContentGuard(self.redactor)
 
     def build(
         self,
@@ -197,9 +206,15 @@ class RetrievalQueryBuilder:
         )
         safe_goal = _bounded_signal(str(safe["goal"]), 1_200)
         safe_plan = [_bounded_signal(str(value), 400) for value in safe["active_plan"][:8]]
-        safe_errors = [_bounded_signal(str(value), 400) for value in safe["current_errors"][:8]]
+        safe_errors = [
+            _bounded_signal(self.content_guard.inspect(str(value)).safe_text, 400)
+            for value in safe["current_errors"][:8]
+        ]
         safe_paths = [_bounded_signal(str(value), 300) for value in safe["target_paths"][:20]]
-        safe_actions = [_bounded_signal(str(value), 400) for value in safe["recent_actions"][-4:]]
+        safe_actions = [
+            _bounded_signal(self.content_guard.inspect(str(value)).safe_text, 400)
+            for value in safe["recent_actions"][-4:]
+        ]
         parts = [safe_goal, *safe_plan, *safe_errors, *safe_paths, *safe_actions]
         text = _bounded_signal(" ".join(part for part in parts if part).strip(), 4_000)
         return RetrievalQuery(
@@ -228,6 +243,7 @@ class CrossLayerMemoryRetriever:
         self.max_results = max_results
         self.max_per_diversity_key = max_per_diversity_key
         self.redactor = redactor or SecretRedactor()
+        self.content_guard = UntrustedContentGuard(self.redactor)
         self.query_builder = RetrievalQueryBuilder(self.redactor)
 
     def retrieve(
@@ -401,22 +417,37 @@ class CrossLayerMemoryRetriever:
                 else RetrievalLayer.EPISODIC
             )
             diversity_key = _diversity_key(record, paths)
+            inspection = self.content_guard.inspect(record.retrieval_text)
             reason = (
                 f"hybrid: lexical={lexical:.3f}, symbol={symbol:.3f}, "
                 f"path={path_score:.3f}, recency={recency:.3f}, "
                 f"importance={record.importance:.3f}, confidence={record.confidence:.3f}, "
                 f"source={source_quality:.3f}; diversity={diversity_key}"
             )
+            if inspection.findings:
+                reason += "; security=" + ",".join(item.value for item in inspection.findings)
             candidates.append(
                 RetrievalSelection(
                     id=f"record:{record.id}",
                     record_id=record.id,
                     layer=layer,
-                    text=record.retrieval_text,
+                    text=inspection.safe_text,
                     score=score,
-                    estimated_tokens=max(1, record.estimated_tokens),
+                    estimated_tokens=max(1, _estimate_text(inspection.safe_text)),
                     reason=reason,
                     paths=paths,
+                    status=record.status,
+                    source_ids=record.source_ids,
+                    score_components={
+                        "lexical": lexical,
+                        "symbol": symbol,
+                        "path": path_score,
+                        "recency": recency,
+                        "importance": record.importance,
+                        "confidence": record.confidence,
+                        "source_quality": source_quality,
+                    },
+                    security_findings=inspection.findings,
                     diversity_key=diversity_key,
                 )
             )
@@ -487,8 +518,8 @@ class CrossLayerMemoryRetriever:
         omitted = [selection.id for selection in records if selection.id not in accepted]
         return kept, omitted
 
-    @staticmethod
     def _direct_selection(
+        self,
         identifier: str,
         layer: RetrievalLayer,
         text: str,
@@ -497,7 +528,8 @@ class CrossLayerMemoryRetriever:
     ) -> RetrievalSelection | None:
         if budget <= 0:
             return None
-        bounded = _truncate_to_tokens(text, budget)
+        inspection = self.content_guard.inspect(text)
+        bounded = _truncate_to_tokens(inspection.safe_text, budget)
         if not bounded:
             return None
         return RetrievalSelection(
@@ -507,6 +539,7 @@ class CrossLayerMemoryRetriever:
             score=1.0,
             estimated_tokens=_estimate_text(bounded),
             reason=reason,
+            security_findings=inspection.findings,
             diversity_key=identifier,
             pinned=True,
         )
@@ -587,6 +620,11 @@ def _render_context(
                 "layer": item.layer.value,
                 "score": item.score,
                 "reason": item.reason,
+                "record_id": item.record_id,
+                "status": item.status.value if item.status is not None else None,
+                "source_ids": item.source_ids,
+                "score_components": item.score_components,
+                "security_findings": [finding.value for finding in item.security_findings],
             }
             for item in selections
         ],

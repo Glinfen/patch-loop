@@ -241,6 +241,8 @@ LCM-08 已于 2026-09-03 完成。统一 `MemoryManager` 以 checkpoint 事件�
 
 完成标准：任一召回结果都能解释分数、来源和状态；敏感原文不会进入 SQLite、Trace 或 Provider 上下文。
 
+LCM-09 已于 2026-09-03 完成。`patchloop memory` 支持类型、状态、步骤和文本查询，并为每条结果返回评分分解、来源与召回理由；Trace、metrics、TaskReport 和 replay 已串起写入、替代、召回、压缩、降级、安全过滤及模型步骤。确定性安全验收确认凭据原文不会进入 SQLite、Trace 或 Provider 上下文，仓库指令片段在记忆注入前被替换。详见 [LCM-09 验收记录](milestones/LCM_09_ACCEPTANCE.md) 和 [ADR-018](adr/ADR-018-explainable-memory-observability-and-safety.md)。
+
 ### LCM-10：运行消融实验并只优化真实失败
 
 必须比较：

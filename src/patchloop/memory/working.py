@@ -43,6 +43,7 @@ class WorkingMemoryItemKind(StrEnum):
     CONSTRAINT = "constraint"
     PROHIBITION = "prohibition"
     PLAN = "plan"
+    ACCESSED_FILE = "accessed_file"
     ACTIVE_ERROR = "active_error"
     OPEN_QUESTION = "open_question"
     CHANGED_FILE = "changed_file"
@@ -81,6 +82,7 @@ class WorkingMemorySnapshot(BaseModel):
     revision: int = Field(default=0, ge=0)
     items: list[WorkingMemoryItem] = Field(default_factory=list)
     phase_events: list[WorkingMemoryEvent] = Field(default_factory=list)
+    read_signatures: dict[str, str] = Field(default_factory=dict, max_length=512)
     promoted_keys: list[str] = Field(default_factory=list, max_length=256)
     estimated_tokens: int = Field(default=0, ge=0)
     max_estimated_tokens: int = Field(default=0, ge=0)
@@ -134,6 +136,7 @@ class WorkingMemoryManager:
         self._pending_records: dict[str, MemoryRecord] = {}
         self._items: dict[str, WorkingMemoryItem]
         self._phase_events: list[WorkingMemoryEvent]
+        self._read_signatures: dict[str, str]
         self._promoted_keys: list[str]
         if snapshot is not None:
             if snapshot.task_id != task_id:
@@ -142,6 +145,7 @@ class WorkingMemoryManager:
                 raise ValueError("working memory snapshot budget does not match task budget")
             self._items = {item.key: item for item in snapshot.items}
             self._phase_events = list(snapshot.phase_events)
+            self._read_signatures = dict(snapshot.read_signatures)
             self._promoted_keys = list(snapshot.promoted_keys)
             self._revision = snapshot.revision
             self._evicted_count = snapshot.evicted_count
@@ -151,6 +155,7 @@ class WorkingMemoryManager:
             return
         self._items = {}
         self._phase_events = []
+        self._read_signatures = {}
         self._promoted_keys = []
         self._revision = 0
         self._evicted_count = 0
@@ -191,6 +196,9 @@ class WorkingMemoryManager:
     def resolve_open_question(self, key: str) -> None:
         if self._items.pop(f"question:{key}", None) is not None:
             self._changed()
+
+    def has_read_call(self, call: ToolCall) -> bool:
+        return call.name == "read_file" and _call_signature(call) in self._read_signatures
 
     def sync_plan(
         self,
@@ -250,6 +258,19 @@ class WorkingMemoryManager:
     ) -> MemoryPromotionBatch:
         summary = self._tool_summary(result.output)
         source = self._tool_source(call, result, step_index)
+        raw_path = call.arguments.get("path")
+        if (
+            call.name in {"apply_patch", "replace_text", "write_file"}
+            and result.success
+            and isinstance(raw_path, str)
+        ):
+            safe_path = self.redactor.redact_text(raw_path)
+            self._read_signatures = {
+                signature: path
+                for signature, path in self._read_signatures.items()
+                if path != safe_path
+            }
+            self._items.pop(f"read:{_digest(safe_path)}", None)
         if all(event.call_id != call.id for event in self._phase_events):
             self._phase_events.append(
                 WorkingMemoryEvent(
@@ -272,6 +293,18 @@ class WorkingMemoryManager:
             step_index=step_index,
             source_id=source.id,
         )
+        if call.name == "read_file" and result.success and isinstance(raw_path, str):
+            safe_path = self.redactor.redact_text(raw_path)
+            self._read_signatures[_call_signature(call)] = safe_path
+            self._read_signatures = dict(list(self._read_signatures.items())[-512:])
+            self._upsert(
+                f"read:{_digest(safe_path)}",
+                WorkingMemoryItemKind.ACCESSED_FILE,
+                safe_path,
+                pinned=False,
+                step_index=step_index,
+                source_id=source.id,
+            )
         matching_terms = sorted(
             (term for term in self._goal_terms if term in summary.casefold()),
             key=lambda term: (-len(term), term),
@@ -324,6 +357,7 @@ class WorkingMemoryManager:
             revision=self._revision,
             items=self._sorted_items(),
             phase_events=list(self._phase_events),
+            read_signatures=dict(self._read_signatures),
             promoted_keys=list(self._promoted_keys),
             estimated_tokens=estimated,
             max_estimated_tokens=max(self._max_estimated_tokens, estimated),
@@ -533,6 +567,7 @@ class WorkingMemoryManager:
                 WorkingMemoryItemKind.OPEN_QUESTION: 3,
                 WorkingMemoryItemKind.PLAN: 4,
                 WorkingMemoryItemKind.KEY_EVIDENCE: 5,
+                WorkingMemoryItemKind.ACCESSED_FILE: 6,
             }
             for item in self._items.values():
                 if item.pinned or item.kind is WorkingMemoryItemKind.ACTIVE_ERROR:
@@ -573,6 +608,7 @@ class WorkingMemoryManager:
             WorkingMemoryItemKind.CONSTRAINT: "constraints",
             WorkingMemoryItemKind.PROHIBITION: "prohibitions",
             WorkingMemoryItemKind.PLAN: "plan",
+            WorkingMemoryItemKind.ACCESSED_FILE: "read_files",
             WorkingMemoryItemKind.ACTIVE_ERROR: "active_errors",
             WorkingMemoryItemKind.OPEN_QUESTION: "questions",
             WorkingMemoryItemKind.CHANGED_FILE: "changed_files",
@@ -610,6 +646,11 @@ def _estimate_text(value: str) -> int:
 
 def _digest(value: str) -> str:
     return hashlib.sha256(" ".join(value.casefold().split()).encode("utf-8")).hexdigest()[:20]
+
+
+def _call_signature(call: ToolCall) -> str:
+    payload = json.dumps(call.arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _stable_id(prefix: str, *values: str) -> str:

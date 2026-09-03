@@ -204,6 +204,65 @@ def test_snapshot_round_trip_restores_the_same_context() -> None:
     assert restored.render() == memory.render()
 
 
+def test_successful_file_reads_keep_a_compact_completed_discovery_index() -> None:
+    memory = WorkingMemoryManager(
+        "task-read-progress",
+        "Read evidence files once and then implement the change",
+        token_budget=650,
+    )
+
+    for index in range(12):
+        path = f"evidence/{index + 1:02d}_note.md"
+        call = ToolCall(id=f"read-{index}", name="read_file", arguments={"path": path})
+        memory.observe_tool(
+            call,
+            _result(call, "repository evidence " + "x" * 300),
+            step_index=index,
+            plan=None,
+            changed_paths=[],
+        )
+
+    snapshot = memory.snapshot()
+    read_paths = {
+        item.text for item in snapshot.items if item.kind is WorkingMemoryItemKind.ACCESSED_FILE
+    }
+
+    assert read_paths == {f"evidence/{index + 1:02d}_note.md" for index in range(12)}
+    assert snapshot.estimated_tokens <= snapshot.token_budget
+    assert '"read_files"' in memory.render()
+
+
+def test_file_write_invalidates_only_matching_read_signatures() -> None:
+    memory = WorkingMemoryManager("task-read-invalidation", "Update source", token_budget=650)
+    source_read = ToolCall(id="read-source", name="read_file", arguments={"path": "src/a.py"})
+    test_read = ToolCall(id="read-test", name="read_file", arguments={"path": "tests/test_a.py"})
+    for step, call in enumerate((source_read, test_read)):
+        memory.observe_tool(
+            call,
+            _result(call, "contents"),
+            step_index=step,
+            plan=None,
+            changed_paths=[],
+        )
+
+    write = ToolCall(id="write-source", name="write_file", arguments={"path": "src/a.py"})
+    memory.observe_tool(
+        write,
+        _result(write, "wrote src/a.py"),
+        step_index=2,
+        plan=None,
+        changed_paths=["src/a.py"],
+    )
+
+    assert not memory.has_read_call(source_read)
+    assert memory.has_read_call(test_read)
+    assert "src/a.py" not in {
+        item.text
+        for item in memory.snapshot().items
+        if item.kind is WorkingMemoryItemKind.ACCESSED_FILE
+    }
+
+
 def test_mandatory_items_fail_closed_when_they_exceed_budget() -> None:
     with pytest.raises(WorkingMemoryBudgetError, match="mandatory working memory"):
         WorkingMemoryManager(

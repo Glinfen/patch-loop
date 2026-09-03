@@ -119,6 +119,32 @@ def test_runtime_recovers_after_invalid_tool_call(tmp_path: Path) -> None:
     assert first_result["error_kind"] == "invalid_arguments"
 
 
+def test_runtime_skips_duplicate_read_of_an_unchanged_file(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "app.py").write_text("VALUE = 42\n", encoding="utf-8")
+    trace = EventLogger(tmp_path / "trace.jsonl")
+    gateway = ToolGateway(ToolContext(repository), [ReadFileTool()], trace)
+    repeated_read = {"path": "app.py"}
+    provider = FakeProvider(
+        [
+            ModelResponse(tool_calls=[ToolCall(name="read_file", arguments=repeated_read)]),
+            ModelResponse(tool_calls=[ToolCall(name="read_file", arguments=repeated_read)]),
+            ModelResponse(content="Used the earlier observation."),
+        ]
+    )
+
+    result = AgentRuntime(provider, gateway, trace).run(
+        Task(goal="Read app.py without duplicate work", repository=str(repository))
+    )
+
+    assert result.status is TaskStatus.COMPLETED
+    assert gateway.history[0].output.startswith("1: VALUE = 42")
+    assert gateway.history[1].output.startswith("Skipped duplicate read")
+    skipped = [event for event in trace.read() if event.type == "tool.duplicate_read_skipped"]
+    assert len(skipped) == 1
+
+
 @pytest.mark.parametrize(
     ("usage", "budget", "expected_error"),
     [

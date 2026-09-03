@@ -27,6 +27,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [端到端代码任务评测](docs/CODING_BENCHMARK.md)：真实修改、独立测试、变更范围约束和模型运行方式。
 - [DeepSeek V4 Flash 评测结果](docs/CODING_BENCHMARK_RESULTS.md)：6 个代码任务的优化前后成功率、成本、时延与限制。
 - [Hard Suite 评测结果](docs/CODING_BENCHMARK_HARD_RESULTS.md)：5 个隐藏测试任务从 40% 到 100% 的失败分析与运行时优化证据。
+- [真实 Agent 长上下文记忆首场景验收](docs/milestones/LCM_REAL_AGENT_ACCEPTANCE.md)：DeepSeek V4 Flash 在冲突、噪声和提示注入证据下的真实修改、隐藏测试、记忆指标与失败驱动优化。
 
 ## 推荐项目周期
 
@@ -92,6 +93,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - Memory Store 已接入共享 SQLite，支持原子迁移、写前脱敏、恢复去重、内容与步骤索引、压缩谱系、可选向量评分协议和任务级联清理；默认路径不依赖网络或外部向量数据库。
 - `memory` CLI 可按类型、状态、步骤和查询检查记忆，逐条展示总分、评分分量、来源与召回原因；`metrics` 和 `replay` 同步展示库存、耗时、压缩比、安全过滤及每个模型步骤使用的记忆。
 - `experiment-memory` 运行 LCM-10 的六种记忆消融，输出失败 taxonomy、结果指纹和仅针对最高频两类失败的优化阶段。
+- 首个 DeepSeek V4 Flash 真实长上下文场景已完成：12/12 份证据读取、仅修改目标文件、公开测试 1/1、隐藏测试 5/5，并记录 20 次记忆检索、3 次压缩、10 条语义替代、0 条过期命中和 15 次安全过滤。
 
 ## 本地开发
 

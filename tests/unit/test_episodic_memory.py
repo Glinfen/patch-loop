@@ -173,6 +173,30 @@ def test_checkpoint_and_tool_observation_are_idempotent_across_snapshot_restore(
     assert restored.observe_checkpoint(step_index=1, plan=None, changed_paths=[]) is None
 
 
+def test_long_unplanned_goal_is_bounded_without_losing_final_constraints() -> None:
+    goal = (
+        "Inspect repository. " + ("Read evidence carefully. " * 40) + "Run tests before finishing."
+    )
+    memory = EpisodicMemoryManager("task-long-goal", goal)
+    call = ToolCall(id="list-first", name="list_files", arguments={})
+
+    write = memory.observe_tool(
+        call,
+        _result(call, success=True, output="src/a.py"),
+        step_index=0,
+        plan=None,
+        changed_paths=[],
+    )
+    checkpoint = memory.observe_checkpoint(step_index=1, plan=None, changed_paths=[])
+
+    assert write is not None
+    assert checkpoint is not None
+    assert len(write.reference.intent) == 500
+    assert write.reference.intent.startswith("Inspect repository.")
+    assert write.reference.intent.endswith("Run tests before finishing.")
+    assert checkpoint.reference.intent == write.reference.intent
+
+
 def test_manager_can_rebuild_recovery_state_from_persisted_episode_records() -> None:
     memory = EpisodicMemoryManager("task-rebuild", "Fix parser")
     failed = ToolCall(id="failed", name="apply_patch", arguments={"path": "src/a.py"})

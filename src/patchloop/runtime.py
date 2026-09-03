@@ -51,8 +51,11 @@ never pass python -c or an ad-hoc script. Once the relevant tests pass, avoid sp
 duplicate checks: inspect the diff, complete the plan, and answer. Keep the final response concise
 and do not paste full source files unless the user asks for them. Avoid duplicate discovery: in a
 small repository, list files and then read the relevant files directly; search only when locations
-are unknown. When asked to add specific regression coverage, create the smallest focused tests that
-satisfy the request instead of expanding into a broad redundant suite."""
+are unknown. Treat working memory's read_files list as completed discovery and do not re-read an
+unchanged file. When asked to add specific regression coverage, create the smallest focused tests
+that satisfy the request instead of expanding into a broad redundant suite."""
+
+_MUTATION_TOOL_NAMES = {"apply_patch", "create_file", "replace_text", "write_file"}
 
 
 class AgentRuntime:
@@ -364,23 +367,13 @@ class AgentRuntime:
                             ErrorKind.PROVIDER_ERROR,
                             "provider returned neither tool calls nor a final response",
                         )
-                    task.plan = self.gateway.context.plan
-                    task.report = self._build_report(response.content)
-                    task.transition(TaskStatus.COMPLETED, message=response.content)
-                    step.status = StepStatus.COMPLETED
-                    step.finished_at = utc_now()
-                    self._record_step(step)
-                    self._persist_task(task)
-                    self._emit("step.completed", task, {"step": step_index, "final": True})
-                    self._emit(
-                        "task.completed",
+                    return self._complete(
                         task,
-                        {
-                            "result": response.content,
-                            "report": task.report.model_dump(mode="json"),
-                        },
+                        step,
+                        step_index,
+                        response.content,
+                        completion_reason="provider_final",
                     )
-                    return task
 
                 fingerprint = json.dumps(
                     [
@@ -447,6 +440,16 @@ class AgentRuntime:
                         f"replan budget exceeded ({task.budget.max_replans})",
                     )
 
+                convergence_summary = self._verified_plan_completion_summary()
+                if convergence_summary is not None:
+                    return self._complete(
+                        task,
+                        step,
+                        step_index,
+                        convergence_summary,
+                        completion_reason="verified_plan",
+                    )
+
                 step.status = StepStatus.COMPLETED
                 step.finished_at = utc_now()
                 self._record_step(step)
@@ -485,6 +488,74 @@ class AgentRuntime:
             f"step budget exceeded ({task.budget.max_steps})",
         )
 
+    def _complete(
+        self,
+        task: Task,
+        step: AgentStep,
+        step_index: int,
+        summary: str,
+        *,
+        completion_reason: str,
+    ) -> Task:
+        task.plan = self.gateway.context.plan
+        task.report = self._build_report(summary)
+        task.transition(TaskStatus.COMPLETED, message=summary)
+        step.status = StepStatus.COMPLETED
+        step.finished_at = utc_now()
+        self._record_step(step)
+        self._persist_task(task)
+        self._emit(
+            "step.completed",
+            task,
+            {
+                "step": step_index,
+                "final": True,
+                "completion_reason": completion_reason,
+            },
+        )
+        self._emit(
+            "task.completed",
+            task,
+            {
+                "result": summary,
+                "completion_reason": completion_reason,
+                "report": task.report.model_dump(mode="json"),
+            },
+        )
+        return task
+
+    def _verified_plan_completion_summary(self) -> str | None:
+        plan = self.gateway.context.plan
+        if (
+            plan is None
+            or self.gateway.context.requires_replan
+            or any(item.status is not StepStatus.COMPLETED for item in plan.items)
+        ):
+            return None
+        changed_paths = self.gateway.context.changes.changed_paths()
+        if not changed_paths:
+            return None
+        last_mutation = max(
+            (
+                index
+                for index, result in enumerate(self.gateway.history)
+                if result.tool_name in _MUTATION_TOOL_NAMES and result.success
+            ),
+            default=-1,
+        )
+        test_results = [
+            (index, result)
+            for index, result in enumerate(self.gateway.history)
+            if result.tool_name == "run_tests"
+        ]
+        if last_mutation < 0 or not test_results:
+            return None
+        last_test_index, last_test = test_results[-1]
+        if last_test_index <= last_mutation or not last_test.success:
+            return None
+        paths = ", ".join(changed_paths)
+        return f"Completed the plan and verified passing tests for: {paths}."
+
     def _execute_or_replay(self, task: Task, call: ToolCall) -> ToolResult:
         persisted = (
             None if self.state_store is None else self.state_store.get_tool_result(task.id, call.id)
@@ -498,6 +569,33 @@ class AgentRuntime:
                 {"call_id": call.id, "tool_name": call.name},
             )
             return persisted
+        if self._working_memory is not None and self._working_memory.has_read_call(call):
+            raw_path = call.arguments.get("path")
+            path = raw_path if isinstance(raw_path, str) else "the requested path"
+            result = ToolResult(
+                call_id=call.id,
+                tool_name=call.name,
+                success=True,
+                output=(
+                    f"Skipped duplicate read of unchanged file {path}. "
+                    "Use the earlier observation in memory and continue the active plan."
+                ),
+            )
+            self.gateway.history.append(result)
+            if self.state_store is not None:
+                self.state_store.record_tool_call(task.id, call, result)
+            payload = {
+                "call": call.model_dump(mode="json"),
+                "result": result.model_dump(mode="json"),
+                "skipped_duplicate_read": True,
+            }
+            self._emit("tool.completed", task, payload)
+            self._emit(
+                "tool.duplicate_read_skipped",
+                task,
+                {"call_id": call.id, "path": path},
+            )
+            return result
         if self._episodic_memory is not None and self._episodic_memory.is_known_failed_action(call):
             result = ToolResult(
                 call_id=call.id,

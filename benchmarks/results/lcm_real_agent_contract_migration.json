@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "generated_on": "2026-09-04",
+  "scenario_id": "contract-migration-with-noisy-evidence",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "successful_run": {
+    "task_id": "8ca37d15-c846-43b3-ae16-b2dc8787fa8f",
+    "status": "completed",
+    "completion_reason": "verified_plan",
+    "runtime": {
+      "max_steps": 30,
+      "max_context_tokens": 16000,
+      "max_working_memory_tokens": 2000,
+      "max_tool_output_chars": 1800,
+      "context_recent_steps": 1
+    },
+    "outcome": {
+      "steps": 20,
+      "tool_calls": 24,
+      "failed_tool_calls": 0,
+      "changed_files": [
+        "order_service.py"
+      ],
+      "public_tests_passed": 1,
+      "hidden_tests_passed": 5,
+      "unique_evidence_files_read": 12
+    },
+    "usage": {
+      "input_tokens": 215100,
+      "output_tokens": 3909,
+      "cost_usd": 0.0301021392,
+      "context_windows": 20,
+      "context_compactions": 5,
+      "max_context_tokens_used": 15930
+    },
+    "memory": {
+      "working_memory_evictions": 20,
+      "max_working_memory_tokens_used": 1993,
+      "retrievals": 20,
+      "retrieval_hits": 167,
+      "retrieval_tokens": 100908,
+      "compactions": 3,
+      "compression_ratio": 0.981297976273552,
+      "semantic_facts_superseded": 10,
+      "stale_hits": 0,
+      "security_filters": 15,
+      "episodes_created": 43
+    },
+    "observability": {
+      "trace_final_event": "task.completed",
+      "replay_frames": 348,
+      "replay_memory_decisions": 20,
+      "synthetic_credential_leaks": 0
+    }
+  },
+  "failure_driven_optimizations": [
+    {
+      "finding": "An unplanned goal longer than 500 characters crashed EpisodeReference validation after the first tool call.",
+      "change": "Bound episodic intent deterministically while retaining both the beginning and final constraints."
+    },
+    {
+      "finding": "DeepSeek could continue exploring after the plan and tests had already completed.",
+      "change": "Complete deterministically only when changed files exist, every plan item is complete, and the latest test passed after the latest mutation."
+    },
+    {
+      "finding": "Successful file reads were not represented as compact progress and the model repeatedly reopened evidence.",
+      "change": "Persist a bounded read_files index and skip exact duplicate reads until a matching file mutation invalidates the read signature."
+    },
+    {
+      "finding": "At 8000 total context tokens, tool schemas and layered memory left too little useful history and the model still looped through equivalent searches.",
+      "change": "Classify 3500 and 8000 tokens as pressure-floor diagnostics for this tool set and use 16000 tokens for the valid scenario configuration."
+    }
+  ],
+  "limitations": [
+    "This artifact records one successful stochastic sample, not the three repetitions required by the final real-model exit criteria.",
+    "Only the first of the planned eight long-context scenarios has been exercised with a real provider.",
+    "The compression ratio is high because protected active records dominate this short synthetic repository; it should not be generalized to larger repositories."
+  ]
+}

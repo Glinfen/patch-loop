@@ -121,7 +121,7 @@ class EpisodicMemoryManager:
         redactor: SecretRedactor | None = None,
     ) -> None:
         self.task_id = task_id
-        self.goal = " ".join(goal.split())
+        self.goal = _bounded_text(goal, 500)
         self.redactor = redactor or SecretRedactor()
         self._recorded_call_ids: list[str]
         self._recorded_checkpoint_steps: list[int]
@@ -503,6 +503,17 @@ def _summary(output: str, redactor: SecretRedactor) -> str:
     if len(compact) <= 320:
         return compact
     return compact[:220] + " ... " + compact[-90:]
+
+
+def _bounded_text(value: str, max_length: int) -> str:
+    compact = " ".join(value.split())
+    if len(compact) <= max_length:
+        return compact
+    separator = " ... "
+    available = max_length - len(separator)
+    prefix_length = available * 2 // 3
+    suffix_length = available - prefix_length
+    return compact[:prefix_length] + separator + compact[-suffix_length:]
 
 
 def _hash_payload(payload: object) -> str:

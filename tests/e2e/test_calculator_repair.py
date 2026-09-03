@@ -116,7 +116,7 @@ def test_agent_repairs_calculator_fixture_and_runs_tests(tmp_path: Path) -> None
                     )
                 ]
             ),
-            ModelResponse(content="Fixed integer floor division and verified the regression test."),
+            ModelResponse(content="This response should not be needed after verified convergence."),
         ]
     )
     task = Task(goal="Fix divide and run tests", repository=str(repository))
@@ -131,6 +131,8 @@ def test_agent_repairs_calculator_fixture_and_runs_tests(tmp_path: Path) -> None
     assert result.report is not None
     assert result.report.changed_files == ["calculator.py"]
     assert result.report.validations[0].passed
+    assert result.result == "Completed the plan and verified passing tests for: calculator.py."
+    assert len(provider.requests) == 6
     assert {path.name for path in artifacts} == {"report.json", "changes.diff"}
     tool_events = [event for event in trace.read() if event.type == "tool.completed"]
     test_event = next(event for event in tool_events if event.data["call"]["name"] == "run_tests")
@@ -139,3 +141,6 @@ def test_agent_repairs_calculator_fixture_and_runs_tests(tmp_path: Path) -> None
     assert '"exit_code": 0' in str(test_result["output"])
     diff_event = next(event for event in tool_events if event.data["call"]["name"] == "get_diff")
     assert "+    return dividend / divisor" in str(diff_event.data["result"])
+    completion = trace.read()[-1]
+    assert completion.type == "task.completed"
+    assert completion.data["completion_reason"] == "verified_plan"

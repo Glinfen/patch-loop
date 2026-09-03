@@ -1,0 +1,590 @@
+{
+  "suite_id": "patchloop-long-context-v1",
+  "suite_revision": "lcm00-2026-08-30",
+  "mode": "deterministic",
+  "provider": "deterministic-context-inspection",
+  "repeats": 3,
+  "variants": [
+    {
+      "variant": "recent_only",
+      "role": "baseline",
+      "runs": [
+        {
+          "variant": "recent_only",
+          "repeat": 1,
+          "passed": 0,
+          "total": 8,
+          "success_rate": 0.0,
+          "critical_fact_recall": 0.0,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 1.0,
+          "estimated_cumulative_input_tokens": 1084844,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 32.876300072530285,
+          "context_overflows": 0,
+          "total_context_compactions": 538,
+          "max_context_tokens_used": 2057,
+          "result_fingerprint": "da4efe441101af98163640b7c4b5388c952425e2bedaf6088555e78adfd27072"
+        },
+        {
+          "variant": "recent_only",
+          "repeat": 2,
+          "passed": 0,
+          "total": 8,
+          "success_rate": 0.0,
+          "critical_fact_recall": 0.0,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 1.0,
+          "estimated_cumulative_input_tokens": 1084844,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 32.572399970376864,
+          "context_overflows": 0,
+          "total_context_compactions": 538,
+          "max_context_tokens_used": 2057,
+          "result_fingerprint": "da4efe441101af98163640b7c4b5388c952425e2bedaf6088555e78adfd27072"
+        },
+        {
+          "variant": "recent_only",
+          "repeat": 3,
+          "passed": 0,
+          "total": 8,
+          "success_rate": 0.0,
+          "critical_fact_recall": 0.0,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 1.0,
+          "estimated_cumulative_input_tokens": 1084844,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 32.707199978176504,
+          "context_overflows": 0,
+          "total_context_compactions": 538,
+          "max_context_tokens_used": 2057,
+          "result_fingerprint": "da4efe441101af98163640b7c4b5388c952425e2bedaf6088555e78adfd27072"
+        }
+      ],
+      "mean_success_rate": 0.0,
+      "min_success_rate": 0.0,
+      "max_success_rate": 0.0,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": -1.0,
+      "failures": {
+        "early_fact_not_recalled": 21,
+        "episodic_fact_not_recalled": 6
+      },
+      "failure_examples": {
+        "early_fact_not_recalled": [
+          "recent_only:checkpoint-memory-resume:repeat-1",
+          "recent_only:checkpoint-memory-resume:repeat-2",
+          "recent_only:checkpoint-memory-resume:repeat-3",
+          "recent_only:delayed-cross-file-evidence:repeat-1",
+          "recent_only:delayed-cross-file-evidence:repeat-2"
+        ],
+        "episodic_fact_not_recalled": [
+          "recent_only:failed-strategy-avoidance:repeat-1",
+          "recent_only:failed-strategy-avoidance:repeat-2",
+          "recent_only:failed-strategy-avoidance:repeat-3",
+          "recent_only:repetitive-test-output:repeat-1",
+          "recent_only:repetitive-test-output:repeat-2"
+        ]
+      }
+    },
+    {
+      "variant": "task_memory_v1",
+      "role": "baseline",
+      "runs": [
+        {
+          "variant": "task_memory_v1",
+          "repeat": 1,
+          "passed": 7,
+          "total": 8,
+          "success_rate": 0.875,
+          "critical_fact_recall": 1.0,
+          "stale_fact_rate": 1.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 2107189,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 1414.1500874829944,
+          "context_overflows": 0,
+          "total_context_compactions": 498,
+          "max_context_tokens_used": 3970,
+          "result_fingerprint": "82f393604463b07736d73c004df076a4ddf6edc5e3a0136b8b4deceba31eaee9"
+        },
+        {
+          "variant": "task_memory_v1",
+          "repeat": 2,
+          "passed": 7,
+          "total": 8,
+          "success_rate": 0.875,
+          "critical_fact_recall": 1.0,
+          "stale_fact_rate": 1.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 2107189,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 1551.1724000098184,
+          "context_overflows": 0,
+          "total_context_compactions": 498,
+          "max_context_tokens_used": 3970,
+          "result_fingerprint": "82f393604463b07736d73c004df076a4ddf6edc5e3a0136b8b4deceba31eaee9"
+        },
+        {
+          "variant": "task_memory_v1",
+          "repeat": 3,
+          "passed": 7,
+          "total": 8,
+          "success_rate": 0.875,
+          "critical_fact_recall": 1.0,
+          "stale_fact_rate": 1.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 2107189,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 1546.8521624570712,
+          "context_overflows": 0,
+          "total_context_compactions": 498,
+          "max_context_tokens_used": 3970,
+          "result_fingerprint": "82f393604463b07736d73c004df076a4ddf6edc5e3a0136b8b4deceba31eaee9"
+        }
+      ],
+      "mean_success_rate": 0.875,
+      "min_success_rate": 0.875,
+      "max_success_rate": 0.875,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": -0.125,
+      "failures": {
+        "stale_fact_recalled": 3
+      },
+      "failure_examples": {
+        "stale_fact_recalled": [
+          "task_memory_v1:superseded-api-contract:repeat-1",
+          "task_memory_v1:superseded-api-contract:repeat-2",
+          "task_memory_v1:superseded-api-contract:repeat-3"
+        ]
+      }
+    },
+    {
+      "variant": "hierarchical_no_semantic",
+      "role": "ablation",
+      "runs": [
+        {
+          "variant": "hierarchical_no_semantic",
+          "repeat": 1,
+          "passed": 1,
+          "total": 8,
+          "success_rate": 0.125,
+          "critical_fact_recall": 0.15384615384615385,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 1193968,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 111.08360002981499,
+          "context_overflows": 0,
+          "total_context_compactions": 0,
+          "max_context_tokens_used": 2468,
+          "result_fingerprint": "bf270f393f3619219449480fa8971b5ff04002cf42dcc0bb42bbcadabc634875"
+        },
+        {
+          "variant": "hierarchical_no_semantic",
+          "repeat": 2,
+          "passed": 1,
+          "total": 8,
+          "success_rate": 0.125,
+          "critical_fact_recall": 0.15384615384615385,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 1193968,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 111.72503753914498,
+          "context_overflows": 0,
+          "total_context_compactions": 0,
+          "max_context_tokens_used": 2468,
+          "result_fingerprint": "bf270f393f3619219449480fa8971b5ff04002cf42dcc0bb42bbcadabc634875"
+        },
+        {
+          "variant": "hierarchical_no_semantic",
+          "repeat": 3,
+          "passed": 1,
+          "total": 8,
+          "success_rate": 0.125,
+          "critical_fact_recall": 0.15384615384615385,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 1193968,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 116.16757503361441,
+          "context_overflows": 0,
+          "total_context_compactions": 0,
+          "max_context_tokens_used": 2468,
+          "result_fingerprint": "bf270f393f3619219449480fa8971b5ff04002cf42dcc0bb42bbcadabc634875"
+        }
+      ],
+      "mean_success_rate": 0.125,
+      "min_success_rate": 0.125,
+      "max_success_rate": 0.125,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": -0.875,
+      "failures": {
+        "early_fact_not_recalled": 18,
+        "semantic_fact_not_recalled": 9
+      },
+      "failure_examples": {
+        "early_fact_not_recalled": [
+          "hierarchical_no_semantic:checkpoint-memory-resume:repeat-1",
+          "hierarchical_no_semantic:checkpoint-memory-resume:repeat-2",
+          "hierarchical_no_semantic:checkpoint-memory-resume:repeat-3",
+          "hierarchical_no_semantic:delayed-cross-file-evidence:repeat-1",
+          "hierarchical_no_semantic:delayed-cross-file-evidence:repeat-2"
+        ],
+        "semantic_fact_not_recalled": [
+          "hierarchical_no_semantic:delayed-cross-file-evidence:repeat-1",
+          "hierarchical_no_semantic:delayed-cross-file-evidence:repeat-2",
+          "hierarchical_no_semantic:delayed-cross-file-evidence:repeat-3",
+          "hierarchical_no_semantic:multi-generation-compression:repeat-1",
+          "hierarchical_no_semantic:multi-generation-compression:repeat-2"
+        ]
+      }
+    },
+    {
+      "variant": "hierarchical_no_episodic",
+      "role": "ablation",
+      "runs": [
+        {
+          "variant": "hierarchical_no_episodic",
+          "repeat": 1,
+          "passed": 6,
+          "total": 8,
+          "success_rate": 0.75,
+          "critical_fact_recall": 0.8461538461538461,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 1.0,
+          "estimated_cumulative_input_tokens": 1348557,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 137.03964996966533,
+          "context_overflows": 0,
+          "total_context_compactions": 0,
+          "max_context_tokens_used": 2951,
+          "result_fingerprint": "c58ace1d967579d6a51452e883b1f3a9d0da880bbc1fac9c70e23f12f93b9ed0"
+        },
+        {
+          "variant": "hierarchical_no_episodic",
+          "repeat": 2,
+          "passed": 6,
+          "total": 8,
+          "success_rate": 0.75,
+          "critical_fact_recall": 0.8461538461538461,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 1.0,
+          "estimated_cumulative_input_tokens": 1348557,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 128.427824965911,
+          "context_overflows": 0,
+          "total_context_compactions": 0,
+          "max_context_tokens_used": 2951,
+          "result_fingerprint": "c58ace1d967579d6a51452e883b1f3a9d0da880bbc1fac9c70e23f12f93b9ed0"
+        },
+        {
+          "variant": "hierarchical_no_episodic",
+          "repeat": 3,
+          "passed": 6,
+          "total": 8,
+          "success_rate": 0.75,
+          "critical_fact_recall": 0.8461538461538461,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 1.0,
+          "estimated_cumulative_input_tokens": 1348557,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 123.1861250125803,
+          "context_overflows": 0,
+          "total_context_compactions": 0,
+          "max_context_tokens_used": 2951,
+          "result_fingerprint": "c58ace1d967579d6a51452e883b1f3a9d0da880bbc1fac9c70e23f12f93b9ed0"
+        }
+      ],
+      "mean_success_rate": 0.75,
+      "min_success_rate": 0.75,
+      "max_success_rate": 0.75,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": -0.25,
+      "failures": {
+        "episodic_fact_not_recalled": 3,
+        "failed_strategy_not_recalled": 3
+      },
+      "failure_examples": {
+        "episodic_fact_not_recalled": [
+          "hierarchical_no_episodic:repetitive-test-output:repeat-1",
+          "hierarchical_no_episodic:repetitive-test-output:repeat-2",
+          "hierarchical_no_episodic:repetitive-test-output:repeat-3"
+        ],
+        "failed_strategy_not_recalled": [
+          "hierarchical_no_episodic:failed-strategy-avoidance:repeat-1",
+          "hierarchical_no_episodic:failed-strategy-avoidance:repeat-2",
+          "hierarchical_no_episodic:failed-strategy-avoidance:repeat-3"
+        ]
+      }
+    },
+    {
+      "variant": "hierarchical_no_compression",
+      "role": "ablation",
+      "runs": [
+        {
+          "variant": "hierarchical_no_compression",
+          "repeat": 1,
+          "passed": 8,
+          "total": 8,
+          "success_rate": 1.0,
+          "critical_fact_recall": 1.0,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 1785164,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 950.3964499745052,
+          "context_overflows": 0,
+          "total_context_compactions": 522,
+          "max_context_tokens_used": 3722,
+          "result_fingerprint": "801981f3a202ac977b516db481c27f1b9f54adca4439ff0bde5d3a2c23ee41ea"
+        },
+        {
+          "variant": "hierarchical_no_compression",
+          "repeat": 2,
+          "passed": 8,
+          "total": 8,
+          "success_rate": 1.0,
+          "critical_fact_recall": 1.0,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 1785164,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 918.5863499587867,
+          "context_overflows": 0,
+          "total_context_compactions": 522,
+          "max_context_tokens_used": 3722,
+          "result_fingerprint": "801981f3a202ac977b516db481c27f1b9f54adca4439ff0bde5d3a2c23ee41ea"
+        },
+        {
+          "variant": "hierarchical_no_compression",
+          "repeat": 3,
+          "passed": 8,
+          "total": 8,
+          "success_rate": 1.0,
+          "critical_fact_recall": 1.0,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 1785164,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 980.6308125262149,
+          "context_overflows": 0,
+          "total_context_compactions": 522,
+          "max_context_tokens_used": 3722,
+          "result_fingerprint": "801981f3a202ac977b516db481c27f1b9f54adca4439ff0bde5d3a2c23ee41ea"
+        }
+      ],
+      "mean_success_rate": 1.0,
+      "min_success_rate": 1.0,
+      "max_success_rate": 1.0,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": 0.0,
+      "failures": {},
+      "failure_examples": {}
+    },
+    {
+      "variant": "hierarchical_memory",
+      "role": "full_memory_2",
+      "runs": [
+        {
+          "variant": "hierarchical_memory",
+          "repeat": 1,
+          "passed": 8,
+          "total": 8,
+          "success_rate": 1.0,
+          "critical_fact_recall": 1.0,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 1785164,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 854.2382000596263,
+          "context_overflows": 0,
+          "total_context_compactions": 522,
+          "max_context_tokens_used": 3722,
+          "result_fingerprint": "801981f3a202ac977b516db481c27f1b9f54adca4439ff0bde5d3a2c23ee41ea"
+        },
+        {
+          "variant": "hierarchical_memory",
+          "repeat": 2,
+          "passed": 8,
+          "total": 8,
+          "success_rate": 1.0,
+          "critical_fact_recall": 1.0,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 1785164,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 621.0431875661016,
+          "context_overflows": 0,
+          "total_context_compactions": 522,
+          "max_context_tokens_used": 3722,
+          "result_fingerprint": "801981f3a202ac977b516db481c27f1b9f54adca4439ff0bde5d3a2c23ee41ea"
+        },
+        {
+          "variant": "hierarchical_memory",
+          "repeat": 3,
+          "passed": 8,
+          "total": 8,
+          "success_rate": 1.0,
+          "critical_fact_recall": 1.0,
+          "stale_fact_rate": 0.0,
+          "repeated_failure_risk_rate": 0.0,
+          "estimated_cumulative_input_tokens": 1785164,
+          "provider_input_tokens": 0,
+          "provider_output_tokens": 0,
+          "total_cost_usd": 0.0,
+          "mean_duration_ms": 913.9991000120062,
+          "context_overflows": 0,
+          "total_context_compactions": 522,
+          "max_context_tokens_used": 3722,
+          "result_fingerprint": "801981f3a202ac977b516db481c27f1b9f54adca4439ff0bde5d3a2c23ee41ea"
+        }
+      ],
+      "mean_success_rate": 1.0,
+      "min_success_rate": 1.0,
+      "max_success_rate": 1.0,
+      "success_rate_stddev": 0.0,
+      "deterministic_results": true,
+      "delta_vs_full": 0.0,
+      "failures": {},
+      "failure_examples": {}
+    }
+  ],
+  "failure_taxonomy": {
+    "early_fact_not_recalled": 39,
+    "episodic_fact_not_recalled": 9,
+    "failed_strategy_not_recalled": 3,
+    "semantic_fact_not_recalled": 9,
+    "stale_fact_recalled": 3
+  },
+  "failure_examples": {
+    "early_fact_not_recalled": [
+      "hierarchical_no_semantic:checkpoint-memory-resume:repeat-1",
+      "hierarchical_no_semantic:checkpoint-memory-resume:repeat-2",
+      "hierarchical_no_semantic:checkpoint-memory-resume:repeat-3",
+      "hierarchical_no_semantic:delayed-cross-file-evidence:repeat-1",
+      "hierarchical_no_semantic:delayed-cross-file-evidence:repeat-2"
+    ],
+    "episodic_fact_not_recalled": [
+      "hierarchical_no_episodic:repetitive-test-output:repeat-1",
+      "hierarchical_no_episodic:repetitive-test-output:repeat-2",
+      "hierarchical_no_episodic:repetitive-test-output:repeat-3",
+      "recent_only:failed-strategy-avoidance:repeat-1",
+      "recent_only:failed-strategy-avoidance:repeat-2"
+    ],
+    "failed_strategy_not_recalled": [
+      "hierarchical_no_episodic:failed-strategy-avoidance:repeat-1",
+      "hierarchical_no_episodic:failed-strategy-avoidance:repeat-2",
+      "hierarchical_no_episodic:failed-strategy-avoidance:repeat-3"
+    ],
+    "semantic_fact_not_recalled": [
+      "hierarchical_no_semantic:delayed-cross-file-evidence:repeat-1",
+      "hierarchical_no_semantic:delayed-cross-file-evidence:repeat-2",
+      "hierarchical_no_semantic:delayed-cross-file-evidence:repeat-3",
+      "hierarchical_no_semantic:multi-generation-compression:repeat-1",
+      "hierarchical_no_semantic:multi-generation-compression:repeat-2"
+    ],
+    "stale_fact_recalled": [
+      "task_memory_v1:superseded-api-contract:repeat-1",
+      "task_memory_v1:superseded-api-contract:repeat-2",
+      "task_memory_v1:superseded-api-contract:repeat-3"
+    ]
+  },
+  "ranked_failure_categories": [
+    "early_fact_not_recalled",
+    "episodic_fact_not_recalled",
+    "semantic_fact_not_recalled",
+    "failed_strategy_not_recalled",
+    "stale_fact_recalled"
+  ],
+  "optimization_targets": [
+    "early_fact_not_recalled",
+    "episodic_fact_not_recalled"
+  ],
+  "optimization_stages": [
+    {
+      "name": "baseline-task-memory-v1",
+      "target_categories": [],
+      "enabled_components": [],
+      "variant": "task_memory_v1",
+      "success_rate": 0.875,
+      "improvement_vs_task_memory_v1": 0.0,
+      "rationale": "Use the locked TaskMemory V1 result as the optimization baseline."
+    },
+    {
+      "name": "targeted-1-early_fact_not_recalled",
+      "target_categories": [
+        "early_fact_not_recalled"
+      ],
+      "enabled_components": [
+        "semantic_memory",
+        "episodic_memory"
+      ],
+      "variant": "hierarchical_memory",
+      "success_rate": 1.0,
+      "improvement_vs_task_memory_v1": 0.125,
+      "rationale": "Target only the observed early_fact_not_recalled failures; validate against the full layered policy without changing unrelated components."
+    },
+    {
+      "name": "targeted-2-episodic_fact_not_recalled",
+      "target_categories": [
+        "episodic_fact_not_recalled"
+      ],
+      "enabled_components": [
+        "episodic_memory"
+      ],
+      "variant": "hierarchical_memory",
+      "success_rate": 1.0,
+      "improvement_vs_task_memory_v1": 0.125,
+      "rationale": "Target only the observed episodic_fact_not_recalled failures; validate against the full layered policy without changing unrelated components."
+    }
+  ],
+  "conclusions": [
+    "Failure categories are ranked by observed failed task probes, not by one success sample.",
+    "Only the two highest-frequency failure categories are selected for targeted optimization: early_fact_not_recalled, episodic_fact_not_recalled.",
+    "Full Memory 2.0 changes TaskMemory V1 mean success by +0.125.",
+    "Disabling compression produced no observed quality regression; compression is not selected for optimization.",
+    "All repeated ablation outcomes are deterministic by result fingerprint."
+  ],
+  "generated_at": "2026-09-03T14:27:00.315457Z"
+}

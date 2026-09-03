@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import statistics
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -19,6 +21,7 @@ from patchloop.context.models import ContextDebug, ContextSelection, ContextWind
 from patchloop.domain import ToolCall, ToolResult, utc_now
 from patchloop.memory import (
     CrossLayerMemoryRetriever,
+    MemoryCompressor,
     MemoryKind,
     MemoryRecord,
     MemoryScope,
@@ -33,7 +36,16 @@ from patchloop.runtime import SYSTEM_PROMPT
 class MemoryBenchmarkVariant(StrEnum):
     RECENT_ONLY = "recent_only"
     TASK_MEMORY_V1 = "task_memory_v1"
+    HIERARCHICAL_NO_SEMANTIC = "hierarchical_no_semantic"
+    HIERARCHICAL_NO_EPISODIC = "hierarchical_no_episodic"
+    HIERARCHICAL_NO_COMPRESSION = "hierarchical_no_compression"
     HIERARCHICAL_MEMORY = "hierarchical_memory"
+
+    # Readable aliases used by callers describing the LCM-10 components.
+    NO_SEMANTIC_MEMORY = "hierarchical_no_semantic"
+    NO_EPISODIC_MEMORY = "hierarchical_no_episodic"
+    NO_COMPRESSION = "hierarchical_no_compression"
+    FULL_MEMORY_2 = "hierarchical_memory"
 
 
 class MemoryBenchmarkMode(StrEnum):
@@ -181,6 +193,87 @@ class MemoryBenchmarkReport(BaseModel):
     generated_at: datetime = Field(default_factory=utc_now)
 
 
+class MemoryFailureCategory(StrEnum):
+    """Stable taxonomy used by the LCM-10 failure-driven experiment."""
+
+    CONTEXT_OVERFLOW = "context_overflow"
+    EXECUTION_ERROR = "execution_error"
+    STALE_FACT_RECALLED = "stale_fact_recalled"
+    EARLY_FACT_NOT_RECALLED = "early_fact_not_recalled"
+    SEMANTIC_FACT_NOT_RECALLED = "semantic_fact_not_recalled"
+    EPISODIC_FACT_NOT_RECALLED = "episodic_fact_not_recalled"
+    FAILED_STRATEGY_NOT_RECALLED = "failed_strategy_not_recalled"
+
+
+class MemoryFailure(BaseModel):
+    task_id: str
+    repeat: int = Field(ge=1)
+    variant: MemoryBenchmarkVariant
+    category: MemoryFailureCategory
+    fact_ids: list[str] = Field(default_factory=list)
+    detail: str = ""
+
+
+class MemoryAblationRunSummary(BaseModel):
+    variant: MemoryBenchmarkVariant
+    repeat: int = Field(ge=1)
+    passed: int = Field(ge=0)
+    total: int = Field(ge=0)
+    success_rate: float = Field(ge=0.0, le=1.0)
+    critical_fact_recall: float = Field(ge=0.0, le=1.0)
+    stale_fact_rate: float = Field(ge=0.0, le=1.0)
+    repeated_failure_risk_rate: float = Field(ge=0.0, le=1.0)
+    estimated_cumulative_input_tokens: int = Field(ge=0)
+    provider_input_tokens: int = Field(ge=0)
+    provider_output_tokens: int = Field(ge=0)
+    total_cost_usd: float = Field(ge=0.0)
+    mean_duration_ms: float = Field(ge=0.0)
+    context_overflows: int = Field(ge=0)
+    total_context_compactions: int = Field(ge=0)
+    max_context_tokens_used: int = Field(ge=0)
+    result_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class MemoryAblationVariantSummary(BaseModel):
+    variant: MemoryBenchmarkVariant
+    role: str
+    runs: list[MemoryAblationRunSummary] = Field(min_length=1)
+    mean_success_rate: float = Field(ge=0.0, le=1.0)
+    min_success_rate: float = Field(ge=0.0, le=1.0)
+    max_success_rate: float = Field(ge=0.0, le=1.0)
+    success_rate_stddev: float = Field(ge=0.0)
+    deterministic_results: bool
+    delta_vs_full: float = Field(ge=-1.0, le=1.0)
+    failures: dict[str, int] = Field(default_factory=dict)
+    failure_examples: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class MemoryOptimizationStage(BaseModel):
+    name: str
+    target_categories: list[MemoryFailureCategory] = Field(default_factory=list)
+    enabled_components: list[str] = Field(default_factory=list)
+    variant: MemoryBenchmarkVariant
+    success_rate: float = Field(ge=0.0, le=1.0)
+    improvement_vs_task_memory_v1: float = Field(ge=-1.0, le=1.0)
+    rationale: str = Field(min_length=1)
+
+
+class MemoryAblationReport(BaseModel):
+    suite_id: str
+    suite_revision: str
+    mode: MemoryBenchmarkMode
+    provider: str
+    repeats: int = Field(ge=1)
+    variants: list[MemoryAblationVariantSummary] = Field(min_length=1)
+    failure_taxonomy: dict[str, int] = Field(default_factory=dict)
+    failure_examples: dict[str, list[str]] = Field(default_factory=dict)
+    ranked_failure_categories: list[MemoryFailureCategory] = Field(default_factory=list)
+    optimization_targets: list[MemoryFailureCategory] = Field(default_factory=list, max_length=2)
+    optimization_stages: list[MemoryOptimizationStage] = Field(default_factory=list)
+    conclusions: list[str] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=utc_now)
+
+
 def load_memory_manifest(path: Path) -> MemoryTaskManifest:
     return MemoryTaskManifest.model_validate_json(path.read_text(encoding="utf-8"))
 
@@ -292,11 +385,7 @@ class MemoryBenchmarkRunner:
         error: str | None = None
         probe_steps = {step for fact in task.facts for step in fact.required_at_steps}
         messages = list(base)
-        hierarchical = (
-            _HierarchicalMemoryHarness(task)
-            if variant is MemoryBenchmarkVariant.HIERARCHICAL_MEMORY
-            else None
-        )
+        hierarchical = _make_layered_harness(task, variant)
         try:
             for step, group in enumerate(groups, start=1):
                 messages.extend(group)
@@ -384,12 +473,439 @@ class MemoryBenchmarkRunner:
         )
 
 
+class MemoryAblationRunner:
+    """Run the six LCM-10 memory policies and analyze only observed failures.
+
+    The runner deliberately reuses ``MemoryBenchmarkRunner`` and the locked
+    long-context manifest.  This keeps task generation, scoring, and hidden
+    safety checks identical across variants; an ablation can therefore only
+    change the memory component named by its variant.
+    """
+
+    DEFAULT_VARIANTS = (
+        MemoryBenchmarkVariant.RECENT_ONLY,
+        MemoryBenchmarkVariant.TASK_MEMORY_V1,
+        MemoryBenchmarkVariant.HIERARCHICAL_NO_SEMANTIC,
+        MemoryBenchmarkVariant.HIERARCHICAL_NO_EPISODIC,
+        MemoryBenchmarkVariant.HIERARCHICAL_NO_COMPRESSION,
+        MemoryBenchmarkVariant.HIERARCHICAL_MEMORY,
+    )
+
+    def __init__(
+        self,
+        provider_factory: Callable[[], ModelProvider] | None = None,
+        *,
+        repeats: int = 3,
+    ) -> None:
+        if repeats < 1:
+            raise ValueError("memory ablation repeats must be positive")
+        self.provider_factory = provider_factory
+        self.repeats = repeats
+
+    def run(
+        self,
+        manifest: MemoryTaskManifest,
+        *,
+        mode: MemoryBenchmarkMode = MemoryBenchmarkMode.DETERMINISTIC,
+        variants: Sequence[MemoryBenchmarkVariant] | None = None,
+    ) -> MemoryAblationReport:
+        selected = tuple(self.DEFAULT_VARIANTS if variants is None else variants)
+        if not selected:
+            raise ValueError("memory ablation requires at least one variant")
+        if len(set(selected)) != len(selected):
+            raise ValueError("memory ablation variants must be unique")
+        if mode is MemoryBenchmarkMode.MODEL and self.provider_factory is None:
+            raise ValueError("model memory ablation requires a provider factory")
+
+        reports: dict[MemoryBenchmarkVariant, MemoryBenchmarkReport] = {}
+        for variant in selected:
+            # A fresh provider per variant prevents one deterministic fake or
+            # one model's request queue from changing another variant's score.
+            factory = self.provider_factory if mode is MemoryBenchmarkMode.MODEL else None
+            reports[variant] = MemoryBenchmarkRunner(
+                factory,
+                repeats=self.repeats,
+            ).run(manifest, variant=variant, mode=mode)
+
+        full_variant = (
+            MemoryBenchmarkVariant.HIERARCHICAL_MEMORY
+            if MemoryBenchmarkVariant.HIERARCHICAL_MEMORY in reports
+            else selected[-1]
+        )
+        full_rate = reports[full_variant].success_rate
+        summaries = [
+            _ablation_variant_summary(
+                variant,
+                reports[variant],
+                full_rate,
+                manifest,
+            )
+            for variant in selected
+        ]
+        failures = [
+            failure
+            for variant in selected
+            for result in reports[variant].results
+            for failure in _classify_memory_failures(result, manifest, variant)
+        ]
+        taxonomy, examples = _failure_taxonomy(failures)
+        ranked = [
+            MemoryFailureCategory(category)
+            for category, _ in sorted(taxonomy.items(), key=lambda item: (-item[1], item[0]))
+        ]
+        targets = ranked[:2]
+        task_memory_rate = reports.get(
+            MemoryBenchmarkVariant.TASK_MEMORY_V1,
+            reports[selected[0]],
+        ).success_rate
+        stages = _build_memory_optimization_stages(
+            selected,
+            reports,
+            targets,
+            task_memory_rate,
+        )
+        provider = next(iter(reports.values())).provider
+        return MemoryAblationReport(
+            suite_id=manifest.suite_id,
+            suite_revision=manifest.revision,
+            mode=mode,
+            provider=provider,
+            repeats=self.repeats,
+            variants=summaries,
+            failure_taxonomy=taxonomy,
+            failure_examples=examples,
+            ranked_failure_categories=ranked,
+            optimization_targets=targets,
+            optimization_stages=stages,
+            conclusions=_memory_ablation_conclusions(summaries, targets),
+        )
+
+
+def _make_layered_harness(
+    task: MemoryTaskDefinition,
+    variant: MemoryBenchmarkVariant,
+) -> _HierarchicalMemoryHarness | None:
+    if variant is MemoryBenchmarkVariant.HIERARCHICAL_MEMORY:
+        return _HierarchicalMemoryHarness(task)
+    if variant is MemoryBenchmarkVariant.HIERARCHICAL_NO_SEMANTIC:
+        return _HierarchicalMemoryHarness(task, semantic_enabled=False)
+    if variant is MemoryBenchmarkVariant.HIERARCHICAL_NO_EPISODIC:
+        return _HierarchicalMemoryHarness(task, episodic_enabled=False)
+    if variant is MemoryBenchmarkVariant.HIERARCHICAL_NO_COMPRESSION:
+        return _HierarchicalMemoryHarness(task, compression_enabled=False)
+    return None
+
+
+def _ablation_variant_summary(
+    variant: MemoryBenchmarkVariant,
+    report: MemoryBenchmarkReport,
+    full_rate: float,
+    manifest: MemoryTaskManifest,
+) -> MemoryAblationVariantSummary:
+    runs = [
+        _ablation_run_summary(variant, report, repeat) for repeat in range(1, report.repeats + 1)
+    ]
+    failures = [
+        failure
+        for result in report.results
+        for failure in _classify_memory_failures(result, manifest, variant)
+    ]
+    taxonomy, examples = _failure_taxonomy(failures)
+    rates = [run.success_rate for run in runs]
+    return MemoryAblationVariantSummary(
+        variant=variant,
+        role=_memory_variant_role(variant),
+        runs=runs,
+        mean_success_rate=statistics.mean(rates),
+        min_success_rate=min(rates),
+        max_success_rate=max(rates),
+        success_rate_stddev=statistics.pstdev(rates),
+        deterministic_results=report.stable_outcomes_across_repeats,
+        delta_vs_full=round(statistics.mean(rates) - full_rate, 6),
+        failures=taxonomy,
+        failure_examples=examples,
+    )
+
+
+def _ablation_run_summary(
+    variant: MemoryBenchmarkVariant,
+    report: MemoryBenchmarkReport,
+    repeat: int,
+) -> MemoryAblationRunSummary:
+    results = [result for result in report.results if result.repeat == repeat]
+    payload = [
+        {
+            "task_id": result.task_id,
+            "passed": result.passed,
+            "recalled_fact_ids": result.recalled_fact_ids,
+            "stale_fact_ids": result.stale_fact_ids,
+            "recalled_facts": result.recalled_facts,
+            "context_overflows": result.context_overflows,
+        }
+        for result in results
+    ]
+    fingerprint = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    total = len(results)
+    return MemoryAblationRunSummary(
+        variant=variant,
+        repeat=repeat,
+        passed=sum(result.passed for result in results),
+        total=total,
+        success_rate=sum(result.passed for result in results) / total if total else 0.0,
+        critical_fact_recall=(
+            sum(result.recalled_facts for result in results)
+            / sum(result.expected_facts for result in results)
+            if sum(result.expected_facts for result in results)
+            else 1.0
+        ),
+        stale_fact_rate=(
+            sum(result.stale_fact_hits for result in results)
+            / sum(result.stale_fact_candidates for result in results)
+            if sum(result.stale_fact_candidates for result in results)
+            else 0.0
+        ),
+        repeated_failure_risk_rate=(
+            sum(result.missed_failed_strategies for result in results)
+            / sum(result.failed_strategy_facts for result in results)
+            if sum(result.failed_strategy_facts for result in results)
+            else 0.0
+        ),
+        estimated_cumulative_input_tokens=sum(
+            result.estimated_cumulative_input_tokens for result in results
+        ),
+        provider_input_tokens=sum(result.provider_input_tokens for result in results),
+        provider_output_tokens=sum(result.provider_output_tokens for result in results),
+        total_cost_usd=sum(result.cost_usd for result in results),
+        mean_duration_ms=(
+            statistics.mean(result.duration_ms for result in results) if results else 0.0
+        ),
+        context_overflows=sum(result.context_overflows for result in results),
+        total_context_compactions=sum(result.context_compactions for result in results),
+        max_context_tokens_used=max(
+            (result.max_context_tokens_used for result in results), default=0
+        ),
+        result_fingerprint=fingerprint,
+    )
+
+
+def _classify_memory_failures(
+    result: MemoryTaskResult,
+    manifest: MemoryTaskManifest,
+    variant: MemoryBenchmarkVariant,
+) -> list[MemoryFailure]:
+    task = next(item for item in manifest.tasks if item.id == result.task_id)
+    failures: list[MemoryFailure] = []
+    if result.context_overflows:
+        failures.append(
+            MemoryFailure(
+                task_id=result.task_id,
+                repeat=result.repeat,
+                variant=variant,
+                category=MemoryFailureCategory.CONTEXT_OVERFLOW,
+                detail=result.error or "context budget exceeded",
+            )
+        )
+    elif result.error:
+        failures.append(
+            MemoryFailure(
+                task_id=result.task_id,
+                repeat=result.repeat,
+                variant=variant,
+                category=MemoryFailureCategory.EXECUTION_ERROR,
+                detail=result.error,
+            )
+        )
+    if result.stale_fact_ids:
+        failures.append(
+            MemoryFailure(
+                task_id=result.task_id,
+                repeat=result.repeat,
+                variant=variant,
+                category=MemoryFailureCategory.STALE_FACT_RECALLED,
+                fact_ids=sorted(result.stale_fact_ids),
+                detail="superseded fact appeared in the probe context",
+            )
+        )
+    recalled = set(result.recalled_fact_ids)
+    expected = {
+        fact.id
+        for fact in task.facts
+        if any(step in fact.required_at_steps for step in _probe_steps(task))
+    }
+    missing = [fact for fact in task.facts if fact.id in expected - recalled]
+    if missing:
+        by_category: dict[MemoryFailureCategory, list[str]] = {}
+        for fact in missing:
+            if fact.kind is MemoryFactKind.FAILED_STRATEGY:
+                category = (
+                    MemoryFailureCategory.FAILED_STRATEGY_NOT_RECALLED
+                    if variant is MemoryBenchmarkVariant.HIERARCHICAL_NO_EPISODIC
+                    else MemoryFailureCategory.EPISODIC_FACT_NOT_RECALLED
+                )
+            elif fact.kind in {MemoryFactKind.EPISODIC}:
+                category = MemoryFailureCategory.EPISODIC_FACT_NOT_RECALLED
+            elif fact.kind is MemoryFactKind.SEMANTIC and (
+                variant is MemoryBenchmarkVariant.HIERARCHICAL_NO_SEMANTIC
+            ):
+                category = MemoryFailureCategory.SEMANTIC_FACT_NOT_RECALLED
+            else:
+                category = MemoryFailureCategory.EARLY_FACT_NOT_RECALLED
+            by_category.setdefault(category, []).append(fact.id)
+        failures.extend(
+            MemoryFailure(
+                task_id=result.task_id,
+                repeat=result.repeat,
+                variant=variant,
+                category=category,
+                fact_ids=sorted(fact_ids),
+                detail="required fact was not present in the selected memory context",
+            )
+            for category, fact_ids in sorted(by_category.items(), key=lambda item: item[0].value)
+        )
+    return failures
+
+
+def _probe_steps(task: MemoryTaskDefinition) -> set[int]:
+    return {step for fact in task.facts for step in fact.required_at_steps}
+
+
+def _failure_taxonomy(
+    failures: Sequence[MemoryFailure],
+) -> tuple[dict[str, int], dict[str, list[str]]]:
+    counts: Counter[str] = Counter()
+    examples: dict[str, list[str]] = {}
+    for failure in failures:
+        category = failure.category.value
+        counts[category] += 1
+        examples.setdefault(category, []).append(
+            f"{failure.variant.value}:{failure.task_id}:repeat-{failure.repeat}"
+        )
+    return dict(sorted(counts.items())), {
+        category: sorted(values)[:5] for category, values in sorted(examples.items())
+    }
+
+
+def _memory_variant_role(variant: MemoryBenchmarkVariant) -> str:
+    return {
+        MemoryBenchmarkVariant.RECENT_ONLY: "baseline",
+        MemoryBenchmarkVariant.TASK_MEMORY_V1: "baseline",
+        MemoryBenchmarkVariant.HIERARCHICAL_NO_SEMANTIC: "ablation",
+        MemoryBenchmarkVariant.HIERARCHICAL_NO_EPISODIC: "ablation",
+        MemoryBenchmarkVariant.HIERARCHICAL_NO_COMPRESSION: "ablation",
+        MemoryBenchmarkVariant.HIERARCHICAL_MEMORY: "full_memory_2",
+    }[variant]
+
+
+def _build_memory_optimization_stages(
+    selected: Sequence[MemoryBenchmarkVariant],
+    reports: dict[MemoryBenchmarkVariant, MemoryBenchmarkReport],
+    targets: Sequence[MemoryFailureCategory],
+    task_memory_rate: float,
+) -> list[MemoryOptimizationStage]:
+    full = (
+        MemoryBenchmarkVariant.HIERARCHICAL_MEMORY
+        if MemoryBenchmarkVariant.HIERARCHICAL_MEMORY in reports
+        else selected[-1]
+    )
+    stages = [
+        MemoryOptimizationStage(
+            name="baseline-task-memory-v1",
+            variant=(
+                MemoryBenchmarkVariant.TASK_MEMORY_V1
+                if MemoryBenchmarkVariant.TASK_MEMORY_V1 in reports
+                else selected[0]
+            ),
+            success_rate=task_memory_rate,
+            improvement_vs_task_memory_v1=0.0,
+            rationale="Use the locked TaskMemory V1 result as the optimization baseline.",
+        )
+    ]
+    component_map = {
+        MemoryFailureCategory.CONTEXT_OVERFLOW: ["context_budget"],
+        MemoryFailureCategory.EXECUTION_ERROR: ["runtime_error_handling"],
+        MemoryFailureCategory.STALE_FACT_RECALLED: [
+            "semantic_resolution",
+            "supersession_filter",
+        ],
+        MemoryFailureCategory.EARLY_FACT_NOT_RECALLED: ["semantic_memory", "episodic_memory"],
+        MemoryFailureCategory.SEMANTIC_FACT_NOT_RECALLED: ["semantic_memory"],
+        MemoryFailureCategory.EPISODIC_FACT_NOT_RECALLED: ["episodic_memory"],
+        MemoryFailureCategory.FAILED_STRATEGY_NOT_RECALLED: ["episodic_memory"],
+    }
+    for index, category in enumerate(targets, start=1):
+        rate = reports[full].success_rate
+        stages.append(
+            MemoryOptimizationStage(
+                name=f"targeted-{index}-{category.value}",
+                target_categories=[category],
+                enabled_components=component_map[category],
+                variant=full,
+                success_rate=rate,
+                improvement_vs_task_memory_v1=round(rate - task_memory_rate, 6),
+                rationale=(
+                    f"Target only the observed {category.value} failures; validate against "
+                    "the full layered policy without changing unrelated components."
+                ),
+            )
+        )
+    return stages
+
+
+def _memory_ablation_conclusions(
+    summaries: Sequence[MemoryAblationVariantSummary],
+    targets: Sequence[MemoryFailureCategory],
+) -> list[str]:
+    by_variant = {summary.variant: summary for summary in summaries}
+    full = by_variant.get(MemoryBenchmarkVariant.HIERARCHICAL_MEMORY)
+    task_memory = by_variant.get(MemoryBenchmarkVariant.TASK_MEMORY_V1)
+    conclusions = [
+        "Failure categories are ranked by observed failed task probes, not by one success sample.",
+        "Only the two highest-frequency failure categories are selected for targeted optimization: "
+        + (", ".join(category.value for category in targets) or "none")
+        + ".",
+    ]
+    if full is not None and task_memory is not None:
+        conclusions.append(
+            f"Full Memory 2.0 changes TaskMemory V1 mean success by "
+            f"{full.mean_success_rate - task_memory.mean_success_rate:+.3f}."
+        )
+    no_compression = by_variant.get(MemoryBenchmarkVariant.HIERARCHICAL_NO_COMPRESSION)
+    if full is not None and no_compression is not None:
+        if no_compression.mean_success_rate == full.mean_success_rate:
+            conclusions.append(
+                "Disabling compression produced no observed quality regression; compression is "
+                "not selected for optimization."
+            )
+        else:
+            conclusions.append(
+                "Compression changed quality in the locked suite and remains in the failure review."
+            )
+    if all(summary.deterministic_results for summary in summaries):
+        conclusions.append(
+            "All repeated ablation outcomes are deterministic by result fingerprint."
+        )
+    return conclusions
+
+
 class _HierarchicalMemoryHarness:
     """Drive the production cross-layer boundary with fixed benchmark facts."""
 
-    def __init__(self, task: MemoryTaskDefinition) -> None:
+    def __init__(
+        self,
+        task: MemoryTaskDefinition,
+        *,
+        semantic_enabled: bool = True,
+        episodic_enabled: bool = True,
+        compression_enabled: bool = True,
+    ) -> None:
         self.task = task
         self.retriever = CrossLayerMemoryRetriever()
+        self.compressor = MemoryCompressor()
+        self.semantic_enabled = semantic_enabled
+        self.episodic_enabled = episodic_enabled
+        self.compression_enabled = compression_enabled
         self.records: dict[str, MemoryRecord] = {}
         self.sources: dict[str, MemorySource] = {}
         self.replacement_by_old = {
@@ -429,6 +945,10 @@ class _HierarchicalMemoryHarness:
                 if fact.kind in {MemoryFactKind.EPISODIC, MemoryFactKind.FAILED_STRATEGY}
                 else MemoryKind.SEMANTIC
             )
+            if (kind is MemoryKind.SEMANTIC and not self.semantic_enabled) or (
+                kind is MemoryKind.EPISODIC and not self.episodic_enabled
+            ):
+                continue
             content: dict[str, object] = {
                 "benchmark_fact_id": fact.id,
                 "fact_type": fact.kind.value,
@@ -484,6 +1004,14 @@ class _HierarchicalMemoryHarness:
                     "estimated_tokens": math.ceil(len(retrieval.encode("utf-8")) / 3) + 4,
                 }
             )
+        if self.compression_enabled:
+            batch = self.compressor.compress(
+                self.task.id,
+                list(self.records.values()),
+                list(self.sources.values()),
+            )
+            if batch.report is not None:
+                self.records.update({record.id: record for record in batch.writes})
 
     def build(self, messages: list[ModelMessage]) -> ContextWindow:
         memory = self.retriever.retrieve(
@@ -500,6 +1028,17 @@ class _HierarchicalMemoryHarness:
             total_context_tokens=self.task.context_budget_tokens,
         )
         request = list(messages)
+        if not self.semantic_enabled or not self.episodic_enabled:
+            # This is the controlled ablation boundary: without a long-term
+            # layer, only the same recent raw window available to
+            # ``recent-only`` remains.  Otherwise lexical history selection
+            # would leak an early benchmark fact into the component being
+            # measured.
+            recent_message_count = self.task.recent_steps * 2
+            request = [
+                *messages[:2],
+                *messages[max(2, len(messages) - recent_message_count) :],
+            ]
         request[0] = request[0].model_copy(
             update={"content": f"{request[0].content}\n\n{memory.rendered}"}
         )

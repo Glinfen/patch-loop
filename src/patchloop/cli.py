@@ -16,6 +16,7 @@ from patchloop.evaluation import (
     EvaluationRunner,
     EvaluationVariant,
     ExperimentRunner,
+    MemoryAblationRunner,
     MemoryBenchmarkMode,
     MemoryBenchmarkRunner,
     MemoryBenchmarkVariant,
@@ -351,7 +352,12 @@ def benchmark_memory(
     ] = Path("benchmarks/results/lcm00_memory_baseline.json"),
     variant: Annotated[
         str,
-        typer.Option(help="recent_only, task_memory_v1, or hierarchical_memory."),
+        typer.Option(
+            help=(
+                "recent_only, task_memory_v1, hierarchical_no_semantic, "
+                "hierarchical_no_episodic, hierarchical_no_compression, or hierarchical_memory."
+            )
+        ),
     ] = "task_memory_v1",
     mode: Annotated[
         str,
@@ -387,6 +393,50 @@ def benchmark_memory(
             variant=MemoryBenchmarkVariant(variant),
             mode=benchmark_mode,
         )
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    typer.echo(report.model_dump_json(indent=2))
+
+
+@app.command("experiment-memory")
+def run_memory_ablation(
+    manifest: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/memory_tasks.json"),
+    root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/results/lcm10_memory_ablation.json"),
+    mode: Annotated[str, typer.Option(help="deterministic or model.")] = "deterministic",
+    repeats: Annotated[int, typer.Option(min=1, max=20)] = 3,
+    variant: Annotated[
+        str,
+        typer.Option(help="Comma-separated memory variants; omit to run all six LCM-10 variants."),
+    ] = "",
+) -> None:
+    try:
+        task_manifest = load_memory_manifest(manifest)
+        benchmark_mode = MemoryBenchmarkMode(mode)
+        selected = None
+        if variant:
+            selected = [MemoryBenchmarkVariant(item.strip()) for item in variant.split(",")]
+        runner = MemoryAblationRunner(
+            (
+                (lambda: DeepSeekProvider.from_env(root / ".env"))
+                if benchmark_mode is MemoryBenchmarkMode.MODEL
+                else None
+            ),
+            repeats=repeats,
+        )
+        report = runner.run(task_manifest, mode=benchmark_mode, variants=selected)
     except (OSError, ValueError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None

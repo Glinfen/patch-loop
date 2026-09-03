@@ -4,11 +4,13 @@ from pathlib import Path
 import pytest
 
 from patchloop.evaluation import (
+    MemoryAblationRunner,
     MemoryBenchmarkMode,
     MemoryBenchmarkRunner,
     MemoryBenchmarkVariant,
     MemoryFactDefinition,
     MemoryFactKind,
+    MemoryFailureCategory,
     MemoryTaskDefinition,
     MemoryTaskManifest,
     load_memory_manifest,
@@ -191,3 +193,31 @@ def test_published_hierarchical_memory_result_meets_lcm08_gate() -> None:
     assert result["repeated_failure_risk_rate"] == 0.0
     assert result["context_overflows"] == 0
     assert result["stable_outcomes_across_repeats"] is True
+
+
+def test_lcm10_runs_six_variants_and_limits_optimization_to_two_observed_failures() -> None:
+    task_manifest = manifest(memory_task())
+
+    report = MemoryAblationRunner(repeats=2).run(task_manifest)
+
+    assert [item.variant.value for item in report.variants] == [
+        "recent_only",
+        "task_memory_v1",
+        "hierarchical_no_semantic",
+        "hierarchical_no_episodic",
+        "hierarchical_no_compression",
+        "hierarchical_memory",
+    ]
+    by_variant = {item.variant.value: item for item in report.variants}
+    assert by_variant["recent_only"].mean_success_rate == 0.0
+    assert by_variant["task_memory_v1"].mean_success_rate == 1.0
+    assert by_variant["hierarchical_no_semantic"].mean_success_rate == 0.0
+    assert by_variant["hierarchical_memory"].mean_success_rate == 1.0
+    assert len(report.optimization_targets) <= 2
+    assert report.ranked_failure_categories
+    assert report.optimization_targets == report.ranked_failure_categories[:2]
+    assert report.optimization_targets[0] in {
+        MemoryFailureCategory.EARLY_FACT_NOT_RECALLED,
+        MemoryFailureCategory.SEMANTIC_FACT_NOT_RECALLED,
+    }
+    assert all(item.deterministic_results for item in report.variants)

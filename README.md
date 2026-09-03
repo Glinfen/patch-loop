@@ -91,6 +91,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - 分层记忆 V1 契约已固定工作、语义、情景三类记忆，以及不可变来源、双向替代链、预算化召回和可追踪压缩报告；Runtime 自动抽取与集成将在后续 LCM 任务完成。
 - Memory Store 已接入共享 SQLite，支持原子迁移、写前脱敏、恢复去重、内容与步骤索引、压缩谱系、可选向量评分协议和任务级联清理；默认路径不依赖网络或外部向量数据库。
 - `memory` CLI 可按类型、状态、步骤和查询检查记忆，逐条展示总分、评分分量、来源与召回原因；`metrics` 和 `replay` 同步展示库存、耗时、压缩比、安全过滤及每个模型步骤使用的记忆。
+- `experiment-memory` 运行 LCM-10 的六种记忆消融，输出失败 taxonomy、结果指纹和仅针对最高频两类失败的优化阶段。
 
 ## 本地开发
 
@@ -135,6 +136,9 @@ patchloop benchmark-code --manifest benchmarks/coding_tasks.json --root . \
 patchloop benchmark-memory --manifest benchmarks/memory_tasks.json --root . \
   --variant task_memory_v1 --mode deterministic --repeats 3 \
   --output benchmarks/results/lcm00_task_memory_v1.json
+patchloop experiment-memory --manifest benchmarks/memory_tasks.json --root . \
+  --mode deterministic --repeats 3 \
+  --output benchmarks/results/lcm10_memory_ablation.json
 ```
 
 运行 DeepSeek V4 Flash Agent：

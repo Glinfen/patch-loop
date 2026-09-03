@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,6 +87,8 @@ class ContextEngine:
         plan: Plan | None,
         *,
         history_token_budget: int | None = None,
+        enable_task_memory: bool = True,
+        excluded_history_values: Sequence[str] = (),
     ) -> ContextWindow:
         messages = [
             ModelMessage.model_validate(self.redactor.redact(message.model_dump(mode="json")))
@@ -94,6 +97,7 @@ class ContextEngine:
         if len(messages) < 2:
             raise ValueError("context requires system and user messages")
         normalized, truncated_messages = self._normalize_messages(messages)
+        normalized = self._exclude_history_values(normalized, excluded_history_values)
         base = normalized[:2]
         groups = self._groups(normalized[2:], base[1].content, plan)
         tool_spec_tokens = self.estimate_tools(tools)
@@ -113,7 +117,7 @@ class ContextEngine:
         needs_compaction = sum(group.estimated_tokens for group in groups) > history_budget
         reserve = (
             min(768, max(96, history_budget // 3))
-            if needs_compaction and history_budget >= 96
+            if enable_task_memory and needs_compaction and history_budget >= 96
             else 0
         )
         group_budget = max(0, history_budget - reserve)
@@ -135,11 +139,15 @@ class ContextEngine:
         selected = [group for group in groups if group.step_index in selected_indices]
         dropped = [group for group in groups if group.step_index not in selected_indices]
         memory_budget = reserve + remaining
-        memory, memory_message = self._build_memory(
-            dropped,
-            plan,
-            base[1].content,
-            memory_budget,
+        memory, memory_message = (
+            self._build_memory(
+                dropped,
+                plan,
+                base[1].content,
+                memory_budget,
+            )
+            if enable_task_memory
+            else (None, None)
         )
         memory_tokens = self.estimate_messages([memory_message]) if memory_message else 0
         output = [*base]
@@ -207,6 +215,22 @@ class ContextEngine:
             truncated_count += int(truncated)
             normalized.append(message.model_copy(update={"content": content}, deep=True))
         return normalized, truncated_count
+
+    @staticmethod
+    def _exclude_history_values(
+        messages: list[ModelMessage],
+        values: Sequence[str],
+    ) -> list[ModelMessage]:
+        excluded = sorted({value for value in values if value}, key=lambda value: -len(value))
+        if not excluded:
+            return messages
+        output = list(messages[:2])
+        for message in messages[2:]:
+            content = message.content
+            for value in excluded:
+                content = content.replace(value, "[SUPERSEDED_MEMORY_OMITTED]")
+            output.append(message.model_copy(update={"content": content}, deep=True))
+        return output
 
     @staticmethod
     def _compact_message_content(content: str, max_chars: int) -> tuple[str, bool]:

@@ -266,9 +266,15 @@ class MemoryCompressor:
 
     @staticmethod
     def _generation_groups(records: Sequence[MemoryRecord]) -> list[_CompressionGroup]:
-        buckets: dict[tuple[str, str, str], list[MemoryRecord]] = defaultdict(list)
+        buckets: dict[tuple[str, str, str, str], list[MemoryRecord]] = defaultdict(list)
         for record in records:
-            buckets[(record.kind.value, record.scope.value, record.scope_id)].append(record)
+            boundary = ""
+            if record.kind is MemoryKind.SEMANTIC:
+                slot = record.content.get("slot_key")
+                boundary = slot if isinstance(slot, str) and slot else record.id
+            buckets[(record.kind.value, record.scope.value, record.scope_id, boundary)].append(
+                record
+            )
         groups: list[_CompressionGroup] = []
         for bucket in buckets.values():
             ordered = sorted(bucket, key=_record_order)
@@ -337,6 +343,7 @@ class MemoryCompressor:
                 {"records": direct_ids, "sources": source_ids, "level": group.level.value}
             ),
         }
+        content.update(_shared_semantic_fields(records))
         retrieval = f"Compressed {group.level.value}: {summary}"
         identifier = _stable_id(
             "compressed-memory",
@@ -428,6 +435,34 @@ def _always_protected(record: MemoryRecord) -> bool:
     if record.kind is MemoryKind.EPISODIC and _episode_outcome(record) == "failed":
         return True
     return bool(record.importance >= 0.99 and record.confidence >= 0.99)
+
+
+def _shared_semantic_fields(records: Sequence[MemoryRecord]) -> dict[str, JsonValue]:
+    if not records or any(record.kind is not MemoryKind.SEMANTIC for record in records):
+        return {}
+    slots = {record.content.get("slot_key") for record in records}
+    values = {record.content.get("normalized_value") for record in records}
+    if (
+        len(slots) != 1
+        or len(values) != 1
+        or not all(isinstance(value, str) and value for value in (*slots, *values))
+    ):
+        return {}
+    latest = max(records, key=_record_order)
+    if not isinstance(latest.content.get("semantic_schema"), str):
+        return {}
+    fields = (
+        "semantic_schema",
+        "fact_type",
+        "subject",
+        "predicate",
+        "value",
+        "normalized_value",
+        "epistemic_status",
+        "authority",
+        "slot_key",
+    )
+    return {field: latest.content[field] for field in fields if field in latest.content}
 
 
 def _semantic_merge_key(record: MemoryRecord) -> tuple[str, str, str] | None:

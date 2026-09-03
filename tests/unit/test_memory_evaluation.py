@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -137,7 +138,7 @@ def test_model_probe_records_provider_usage_and_exact_recall() -> None:
     assert "MEMORY_BENCHMARK_TRANSCRIPT_V1" in provider.requests[0][0][1].content
 
 
-def test_manifest_rejects_invalid_lifecycle_and_reserved_variant() -> None:
+def test_manifest_rejects_invalid_lifecycle_and_hierarchical_variant_runs() -> None:
     with pytest.raises(ValueError, match="after it becomes invalid"):
         MemoryFactDefinition(
             id="invalid",
@@ -148,12 +149,15 @@ def test_manifest_rejects_invalid_lifecycle_and_reserved_variant() -> None:
             recall_queries=["What is invalid?"],
         )
 
-    with pytest.raises(ValueError, match="reserved for LCM-08"):
-        MemoryBenchmarkRunner().run(
-            manifest(memory_task()),
-            variant=MemoryBenchmarkVariant.HIERARCHICAL_MEMORY,
-            mode=MemoryBenchmarkMode.DETERMINISTIC,
-        )
+    hierarchical = MemoryBenchmarkRunner().run(
+        manifest(memory_task()),
+        variant=MemoryBenchmarkVariant.HIERARCHICAL_MEMORY,
+        mode=MemoryBenchmarkMode.DETERMINISTIC,
+    )
+
+    assert hierarchical.success_rate == 1.0
+    assert hierarchical.critical_fact_recall == 1.0
+    assert hierarchical.stale_fact_rate == 0.0
 
 
 def test_published_manifest_covers_all_required_history_lengths() -> None:
@@ -168,3 +172,22 @@ def test_published_manifest_covers_all_required_history_lengths() -> None:
         for task in published.tasks
         for fact in task.facts
     )
+
+
+def test_published_hierarchical_memory_result_meets_lcm08_gate() -> None:
+    root = Path(__file__).parents[2]
+    result = json.loads(
+        (root / "benchmarks" / "results" / "lcm08_hierarchical_memory.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert result["variant"] == MemoryBenchmarkVariant.HIERARCHICAL_MEMORY.value
+    assert result["repeats"] == 3
+    assert result["total_runs"] == 24
+    assert result["success_rate"] == 1.0
+    assert result["critical_fact_recall"] == 1.0
+    assert result["stale_fact_rate"] == 0.0
+    assert result["repeated_failure_risk_rate"] == 0.0
+    assert result["context_overflows"] == 0
+    assert result["stable_outcomes_across_repeats"] is True

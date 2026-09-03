@@ -14,6 +14,14 @@ from patchloop.memory.episodic import (
     EpisodicMemoryManager,
     EpisodicMemorySnapshot,
 )
+from patchloop.memory.manager import (
+    ManagedMemoryRetrieval,
+    MemoryCompressionPolicy,
+    MemoryEventCursor,
+    MemoryManager,
+    MemoryManagerSnapshot,
+    MemoryManagerUpdate,
+)
 from patchloop.memory.models import (
     MEMORY_SCHEMA_VERSION,
     CompressionOperation,
@@ -96,11 +104,17 @@ __all__ = [
     "EpisodicMemorySnapshot",
     "FactEpistemicStatus",
     "LayeredMemoryContext",
+    "ManagedMemoryRetrieval",
     "MemoryBudgetPolicy",
     "MemoryBundle",
+    "MemoryCompressionPolicy",
     "MemoryCompressor",
+    "MemoryEventCursor",
     "MemoryHit",
     "MemoryKind",
+    "MemoryManager",
+    "MemoryManagerSnapshot",
+    "MemoryManagerUpdate",
     "MemoryPromotionBatch",
     "MemoryQuery",
     "MemoryRecord",

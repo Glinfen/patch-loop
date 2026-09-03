@@ -105,6 +105,12 @@ class TaskReport(BaseModel):
     memory_retrievals: int = Field(default=0, ge=0)
     memory_retrieval_hits: int = Field(default=0, ge=0)
     memory_retrieval_tokens: int = Field(default=0, ge=0)
+    memory_events_ingested: int = Field(default=0, ge=0)
+    memory_records_written: int = Field(default=0, ge=0)
+    memory_compactions: int = Field(default=0, ge=0)
+    memory_compression_input_tokens: int = Field(default=0, ge=0)
+    memory_compression_output_tokens: int = Field(default=0, ge=0)
+    memory_fallbacks: int = Field(default=0, ge=0)
     generated_at: datetime = Field(default_factory=utc_now)
 
 

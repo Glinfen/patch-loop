@@ -7,6 +7,7 @@ import json
 import math
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -416,6 +417,13 @@ class SemanticMemoryManager:
             (record for record in self._records.values() if record.status is MemoryStatus.ACTIVE),
             key=lambda record: record.id,
         )
+
+    def synchronize_records(self, records: Sequence[MemoryRecord]) -> None:
+        """Refresh lifecycle state after an external transactional compression."""
+
+        self._records = {
+            record.id: record for record in records if _is_typed_semantic_record(record)
+        }
 
     def _resolve(
         self,

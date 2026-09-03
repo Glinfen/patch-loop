@@ -215,7 +215,7 @@ LCM-06 已于 2026-08-30 完成。Runtime 现在以目标、计划、错误、�
 
 LCM-07 已于 2026-08-30 完成。确定性四级压缩会保护关键记录，仅失效派生原记录并保留完整来源与跨代谱系；固定任务达到约 12.40:1 压缩、关键记录存活率 100%，重放结果幂等。详见 [LCM-07 验收记录](milestones/LCM_07_ACCEPTANCE.md) 和 [ADR-016](adr/ADR-016-safe-generational-memory-compression.md)。
 
-### LCM-08：集成 Runtime、Context Engine 与恢复流程
+### LCM-08：集成 Runtime、Context Engine 与恢复流程（已完成）
 
 开发内容：
 
@@ -226,6 +226,8 @@ LCM-07 已于 2026-08-30 完成。确定性四级压缩会保护关键记录，�
 - 保持 assistant/tool 原子消息组和现有 Token、费用、时间预算不变量。
 
 完成标准：中断恢复前后的记忆集合和最终召回结果一致，不重复工具副作用。
+
+LCM-08 已于 2026-09-03 完成。统一 `MemoryManager` 以 checkpoint 事件水位驱动摄取、检索和自动压缩；正常路径只使用 Memory 2.0，持久化或压缩失败时回退到 `TaskMemory V1`，不影响工具与工作区。三轮固定评测达到 24/24、关键事实召回率 100%、过期事实暴露率 0、上下文越界 0。详见 [LCM-08 验收记录](milestones/LCM_08_ACCEPTANCE.md) 和 [ADR-017](adr/ADR-017-watermarked-memory-runtime-integration.md)。
 
 ### LCM-09：补齐可观测性、安全与 CLI
 

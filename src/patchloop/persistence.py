@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from patchloop.domain import AgentStep, Plan, Task, TaskStatus, ToolCall, ToolResult
 from patchloop.memory.episodic import EpisodicMemorySnapshot
+from patchloop.memory.manager import MemoryManagerSnapshot
 from patchloop.memory.store import SQLiteMemoryStore, initialize_memory_schema
 from patchloop.memory.working import WorkingMemorySnapshot
 from patchloop.providers.base import ModelMessage
@@ -50,6 +51,7 @@ class RuntimeCheckpoint(BaseModel):
     memory_retrievals: int = Field(default=0, ge=0)
     memory_retrieval_hits: int = Field(default=0, ge=0)
     memory_retrieval_tokens: int = Field(default=0, ge=0)
+    memory_manager: MemoryManagerSnapshot | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

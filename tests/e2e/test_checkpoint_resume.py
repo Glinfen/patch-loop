@@ -96,6 +96,10 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
 
     persisted = store.get_task(task.id)
     checkpoint = store.get_checkpoint(task.id)
+    assert checkpoint.memory_manager is not None
+    before_memory_ids = {record.id for record in store.memory.list_records(task.id)}
+    assert checkpoint.memory_manager.cursor.pending_event_ids == []
+    assert checkpoint.memory_manager.cursor.processed_event_ids.count("tool:write-call") == 1
     assert persisted.status is TaskStatus.RUNNING
     assert checkpoint.next_step_index == 2
     assert "return dividend / divisor" in (repository / "calculator.py").read_text(encoding="utf-8")
@@ -146,3 +150,7 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
         if event.type == "tool.completed" and event.data["call"]["name"] == "apply_patch"
     ]
     assert len(write_events) == 1
+    final_checkpoint = store.get_checkpoint(task.id)
+    assert final_checkpoint.memory_manager is not None
+    assert before_memory_ids.issubset({record.id for record in store.memory.list_records(task.id)})
+    assert final_checkpoint.memory_manager.cursor.processed_event_ids.count("tool:write-call") == 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import statistics
 from collections.abc import Callable
 from datetime import datetime
@@ -16,6 +17,15 @@ from pydantic import BaseModel, Field, model_validator
 from patchloop.context import ContextBudgetError, ContextEngine
 from patchloop.context.models import ContextDebug, ContextSelection, ContextWindow
 from patchloop.domain import ToolCall, ToolResult, utc_now
+from patchloop.memory import (
+    CrossLayerMemoryRetriever,
+    MemoryKind,
+    MemoryRecord,
+    MemoryScope,
+    MemorySource,
+    MemorySourceKind,
+    MemoryStatus,
+)
 from patchloop.providers.base import ModelMessage, ModelProvider
 from patchloop.runtime import SYSTEM_PROMPT
 
@@ -194,8 +204,6 @@ class MemoryBenchmarkRunner:
         variant: MemoryBenchmarkVariant,
         mode: MemoryBenchmarkMode,
     ) -> MemoryBenchmarkReport:
-        if variant is MemoryBenchmarkVariant.HIERARCHICAL_MEMORY:
-            raise ValueError("hierarchical_memory is reserved for LCM-08 and is not implemented")
         if mode is MemoryBenchmarkMode.MODEL and self.provider_factory is None:
             raise ValueError("model memory benchmark requires a provider factory")
         provider = self.provider_factory() if self.provider_factory is not None else None
@@ -284,10 +292,19 @@ class MemoryBenchmarkRunner:
         error: str | None = None
         probe_steps = {step for fact in task.facts for step in fact.required_at_steps}
         messages = list(base)
+        hierarchical = (
+            _HierarchicalMemoryHarness(task)
+            if variant is MemoryBenchmarkVariant.HIERARCHICAL_MEMORY
+            else None
+        )
         try:
             for step, group in enumerate(groups, start=1):
                 messages.extend(group)
-                window = _build_window(task, messages, variant)
+                if hierarchical is not None:
+                    hierarchical.ingest(step)
+                    window = hierarchical.build(messages)
+                else:
+                    window = _build_window(task, messages, variant)
                 cumulative_tokens += window.debug.estimated_tokens
                 max_context_tokens = max(max_context_tokens, window.debug.estimated_tokens)
                 context_compactions += int(bool(window.debug.dropped_steps))
@@ -367,6 +384,154 @@ class MemoryBenchmarkRunner:
         )
 
 
+class _HierarchicalMemoryHarness:
+    """Drive the production cross-layer boundary with fixed benchmark facts."""
+
+    def __init__(self, task: MemoryTaskDefinition) -> None:
+        self.task = task
+        self.retriever = CrossLayerMemoryRetriever()
+        self.records: dict[str, MemoryRecord] = {}
+        self.sources: dict[str, MemorySource] = {}
+        self.replacement_by_old = {
+            fact.id: fact.superseded_by for fact in task.facts if fact.superseded_by is not None
+        }
+        self.old_by_replacement = {
+            replacement: old for old, replacement in self.replacement_by_old.items()
+        }
+
+    def ingest(self, step: int) -> None:
+        for fact in self.task.facts:
+            if fact.valid_until_step == step:
+                current = self.records.get(fact.id)
+                replacement = self.replacement_by_old.get(fact.id)
+                if current is not None and replacement is not None:
+                    self.records[fact.id] = current.model_copy(
+                        update={
+                            "status": MemoryStatus.SUPERSEDED,
+                            "superseded_by_id": f"benchmark-memory-{replacement}",
+                        }
+                    )
+        for fact in self.task.facts:
+            if fact.introduced_at_step != step:
+                continue
+            source = MemorySource(
+                id=f"benchmark-source-{fact.id}",
+                task_id=self.task.id,
+                kind=MemorySourceKind.EVENT,
+                evidence_hash=hashlib.sha256(
+                    f"{self.task.id}:{fact.id}:{step}".encode()
+                ).hexdigest(),
+                event_id=f"benchmark:{self.task.id}:{step}:{fact.id}",
+                step_index=step,
+            )
+            kind = (
+                MemoryKind.EPISODIC
+                if fact.kind in {MemoryFactKind.EPISODIC, MemoryFactKind.FAILED_STRATEGY}
+                else MemoryKind.SEMANTIC
+            )
+            content: dict[str, object] = {
+                "benchmark_fact_id": fact.id,
+                "fact_type": fact.kind.value,
+                "value": fact.value,
+                "epistemic_status": "verified"
+                if fact.kind is MemoryFactKind.VERIFICATION
+                else "observed",
+            }
+            if kind is MemoryKind.EPISODIC:
+                content.update(
+                    {
+                        "outcome": (
+                            "failed" if fact.kind is MemoryFactKind.FAILED_STRATEGY else "succeeded"
+                        ),
+                        "reference": {
+                            "plan_phase": "benchmark",
+                            "outcome": (
+                                "failed"
+                                if fact.kind is MemoryFactKind.FAILED_STRATEGY
+                                else "succeeded"
+                            ),
+                        },
+                    }
+                )
+            retrieval = (
+                f"Fact id={fact.id}; kind={fact.kind.value}; value={fact.value}; "
+                f"queries={' | '.join(fact.recall_queries)}"
+            )
+            previous = self.old_by_replacement.get(fact.id)
+            self.sources[source.id] = source
+            self.records[fact.id] = MemoryRecord.model_validate(
+                {
+                    "id": f"benchmark-memory-{fact.id}",
+                    "task_id": self.task.id,
+                    "kind": kind,
+                    "scope": MemoryScope.TASK,
+                    "scope_id": self.task.id,
+                    "content": content,
+                    "retrieval_text": retrieval,
+                    "source_ids": [source.id],
+                    "importance": 1.0
+                    if fact.kind
+                    in {
+                        MemoryFactKind.CONSTRAINT,
+                        MemoryFactKind.FAILED_STRATEGY,
+                        MemoryFactKind.VERIFICATION,
+                    }
+                    else 0.8,
+                    "confidence": 1.0,
+                    "supersedes_id": (
+                        f"benchmark-memory-{previous}" if previous is not None else None
+                    ),
+                    "estimated_tokens": math.ceil(len(retrieval.encode("utf-8")) / 3) + 4,
+                }
+            )
+
+    def build(self, messages: list[ModelMessage]) -> ContextWindow:
+        memory = self.retriever.retrieve(
+            task_id=self.task.id,
+            repository_scope_id="benchmark",
+            goal=self.task.goal,
+            plan=None,
+            working=None,
+            working_render=None,
+            episodic_render=None,
+            changed_paths=[],
+            records=list(self.records.values()),
+            sources=list(self.sources.values()),
+            total_context_tokens=self.task.context_budget_tokens,
+        )
+        request = list(messages)
+        request[0] = request[0].model_copy(
+            update={"content": f"{request[0].content}\n\n{memory.rendered}"}
+        )
+        return ContextEngine(
+            max_tokens=self.task.context_budget_tokens,
+            max_tool_output_chars=self.task.max_tool_output_chars,
+            recent_steps=self.task.recent_steps,
+        ).build(
+            request,
+            [],
+            None,
+            history_token_budget=memory.allocation.recent_history_tokens,
+            enable_task_memory=False,
+            excluded_history_values=self.inactive_values(),
+        )
+
+    def inactive_values(self) -> list[str]:
+        active = {
+            fact.value
+            for fact in self.task.facts
+            if (record := self.records.get(fact.id)) is not None
+            and record.status is MemoryStatus.ACTIVE
+        }
+        return [
+            fact.value
+            for fact in self.task.facts
+            if (record := self.records.get(fact.id)) is not None
+            and record.status is not MemoryStatus.ACTIVE
+            and fact.value not in active
+        ]
+
+
 def _history_groups(task: MemoryTaskDefinition) -> list[list[ModelMessage]]:
     engine = ContextEngine(
         max_tokens=task.context_budget_tokens,
@@ -431,6 +596,8 @@ def _build_window(
         ).build(messages, [], None)
     if variant is MemoryBenchmarkVariant.RECENT_ONLY:
         return _recent_only_window(task, messages)
+    if variant is MemoryBenchmarkVariant.HIERARCHICAL_MEMORY:
+        raise ValueError("hierarchical memory requires its stateful benchmark harness")
     raise ValueError(f"unsupported memory benchmark variant: {variant}")
 
 

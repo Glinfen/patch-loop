@@ -88,10 +88,18 @@ def test_runtime_keeps_working_state_bounded_for_100_steps(tmp_path: Path) -> No
     assert result.report.tool_calls == 100
     assert result.report.working_memory_evictions > 0
     assert result.report.max_working_memory_tokens_used <= 600
+    assert result.report.memory_compactions > 0
+    assert result.report.memory_compression_output_tokens < (
+        result.report.memory_compression_input_tokens
+    )
     checkpoint = store.get_checkpoint(task.id)
     assert checkpoint.next_step_index == 100
     assert checkpoint.working_memory is not None
     assert checkpoint.working_memory.estimated_tokens <= 600
+    assert checkpoint.memory_manager is not None
+    assert checkpoint.memory_manager.cursor.next_event_index == 201
+    assert checkpoint.memory_manager.cursor.pending_event_ids == []
+    assert checkpoint.memory_manager.compactions == result.report.memory_compactions
     assert any(
         item.kind is WorkingMemoryItemKind.ACTIVE_ERROR for item in checkpoint.working_memory.items
     )
@@ -102,6 +110,8 @@ def test_runtime_keeps_working_state_bounded_for_100_steps(tmp_path: Path) -> No
     assert metrics.working_memory_updates == 100
     assert metrics.working_memory_evictions == result.report.working_memory_evictions
     assert metrics.max_working_memory_tokens_used <= 600
+    compacted = [event for event in trace.read() if event.type == "memory.compacted"]
+    assert len(compacted) == result.report.memory_compactions
 
 
 def test_runtime_persists_completed_phase_promotions(tmp_path: Path) -> None:

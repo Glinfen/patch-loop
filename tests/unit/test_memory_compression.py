@@ -157,8 +157,15 @@ def test_record_merge_and_episode_aggregation_are_distinct_levels() -> None:
             f"Evidence {index} says retry_limit is three",
             kind=MemoryKind.SEMANTIC,
             content={
+                "semantic_schema": "1.0",
+                "fact_type": "code_symbol",
+                "subject": "config.py:retry_limit",
+                "predicate": "value",
+                "value": "3",
                 "slot_key": "retry_limit",
                 "normalized_value": "3",
+                "epistemic_status": "observed",
+                "authority": 50,
                 "evidence": f"config-{index}.toml",
             },
         )
@@ -196,6 +203,14 @@ def test_record_merge_and_episode_aggregation_are_distinct_levels() -> None:
         CompressionLevel.RECORD_MERGE.value,
         CompressionLevel.EPISODE_AGGREGATE.value,
     }
+    semantic_summary = next(
+        summary
+        for summary in batch.summary_records
+        if summary.content["level"] == CompressionLevel.RECORD_MERGE.value
+    )
+    assert semantic_summary.content["semantic_schema"] == "1.0"
+    assert semantic_summary.content["slot_key"] == "retry_limit"
+    assert semantic_summary.content["value"] == "3"
 
 
 def test_compression_is_deterministic_persistent_and_replay_safe(tmp_path: Path) -> None:
@@ -230,8 +245,12 @@ def test_generation_rollup_preserves_complete_raw_lineage(tmp_path: Path) -> Non
             task_id,
             index,
             f"stable fact group {index // 8}",
-            kind=MemoryKind.SEMANTIC,
-            content={"fact": f"stable fact group {index // 8}"},
+            content={
+                "plan_phase": f"phase-{index // 8}",
+                "paths": ["src/service.py"],
+                "outcome": "unknown",
+                "reference": {"tool_name": "inspect", "step_index": index},
+            },
         )
         for index in range(48)
     ]

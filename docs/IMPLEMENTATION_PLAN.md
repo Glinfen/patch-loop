@@ -244,6 +244,10 @@ LCM-05 已完成：Runtime 现在从用户约束、计划、文件、diff 和验
 
 LCM-06 已完成：Runtime 在每次模型调用前执行跨层检索，以查询信号、混合排序和多样性选择活动事实，并为工作、语义、情景和最近历史执行可收缩硬预算；固定标注任务达到 Recall@5 1.00、Precision@5 0.80、过期事实召回率 0，验证见 [LCM-06 验收记录](milestones/LCM_06_ACCEPTANCE.md)。
 
+LCM-07 已完成：四级确定性压缩保护关键事实、保留原始证据和多代谱系，固定冗余任务达到约 12.40:1 压缩且关键记录存活率 100%；验证见 [LCM-07 验收记录](milestones/LCM_07_ACCEPTANCE.md)。
+
+LCM-08 已完成：统一 MemoryManager 负责事件水位、增量写入、检索和自动压缩，checkpoint 恢复不重复工具副作用，记忆故障安全回退到 TaskMemory V1；三轮固定长上下文任务达到 24/24，验证见 [LCM-08 验收记录](milestones/LCM_08_ACCEPTANCE.md)。
+
 ## 6. 推荐仓库结构
 
 ```text

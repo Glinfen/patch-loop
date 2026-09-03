@@ -40,4 +40,4 @@ LCM-07 专项测试覆盖四级压缩、保护规则、SQLite 事务持久化、
 
 ## 下一任务
 
-LCM-08 将把压缩器接入统一的 MemoryManager，定义摄取与压缩水位、checkpoint 事件游标、恢复一致性和 TaskMemory V1 故障降级。
+LCM-08 已把压缩器接入统一 MemoryManager，并完成摄取与压缩水位、checkpoint 事件游标、恢复一致性和 TaskMemory V1 故障降级。下一步进入 LCM-09 的可观测性、安全与 CLI。

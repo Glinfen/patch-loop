@@ -122,3 +122,54 @@ def test_context_engine_enforces_explicit_recent_history_budget() -> None:
     assert window.debug.history_tokens <= 240
     assert window.debug.estimated_tokens <= 1_200
     assert window.debug.dropped_steps
+
+
+def test_layered_context_can_disable_legacy_task_memory_without_breaking_groups() -> None:
+    engine = ContextEngine(max_tokens=700, max_tool_output_chars=160, recent_steps=1)
+    messages = [
+        ModelMessage(role="system", content="layered memory already injected"),
+        ModelMessage(role="user", content="retain current evidence"),
+        *tool_group(0, "stale evidence " + "a" * 1_000),
+        *tool_group(1, "current evidence " + "b" * 1_000),
+        *tool_group(2, "latest evidence " + "c" * 1_000),
+    ]
+
+    window = engine.build(
+        messages,
+        [],
+        None,
+        history_token_budget=240,
+        enable_task_memory=False,
+    )
+
+    assert window.memory is None
+    assert window.debug.memory_tokens == 0
+    assert window.debug.history_tokens <= 240
+    assert window.debug.dropped_steps
+    assert all("PATCHLOOP_TASK_MEMORY_V1" not in item.content for item in window.messages)
+
+
+def test_layered_context_masks_superseded_values_only_from_audit_history() -> None:
+    old_value = "RETURN_NONE_ON_MISSING__OLD"
+    messages = [
+        ModelMessage(role="system", content="system"),
+        ModelMessage(role="user", content=f"Replace {old_value} with the new contract"),
+        *tool_group(0, f"MODE={old_value}"),
+    ]
+
+    window = ContextEngine(
+        max_tokens=800,
+        max_tool_output_chars=256,
+        recent_steps=1,
+    ).build(
+        messages,
+        [],
+        None,
+        enable_task_memory=False,
+        excluded_history_values=[old_value],
+    )
+
+    assert old_value in window.messages[1].content
+    history = "\n".join(message.content for message in window.messages[2:])
+    assert old_value not in history
+    assert "[SUPERSEDED_MEMORY_OMITTED]" in history

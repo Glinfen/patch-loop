@@ -23,7 +23,12 @@ from patchloop.memory.episodic import (
     EpisodeWrite,
     EpisodicMemoryManager,
 )
-from patchloop.memory.retrieval import CrossLayerMemoryRetriever, LayeredMemoryContext
+from patchloop.memory.manager import (
+    ManagedMemoryRetrieval,
+    MemoryManager,
+    MemoryManagerUpdate,
+)
+from patchloop.memory.retrieval import LayeredMemoryContext
 from patchloop.memory.semantic import SemanticMemoryManager, SemanticResolutionBatch
 from patchloop.memory.store import MemoryStoreError
 from patchloop.memory.working import (
@@ -73,11 +78,11 @@ class AgentRuntime:
         self._working_memory: WorkingMemoryManager | None = None
         self._episodic_memory: EpisodicMemoryManager | None = None
         self._semantic_memory: SemanticMemoryManager | None = None
+        self._memory_manager: MemoryManager | None = None
         self._semantic_facts_created = 0
         self._semantic_facts_superseded = 0
         self._semantic_conflicts_rejected = 0
         self._semantic_duplicates_suppressed = 0
-        self._memory_retriever = CrossLayerMemoryRetriever()
         self._memory_retrievals = 0
         self._memory_retrieval_hits = 0
         self._memory_retrieval_tokens = 0
@@ -99,19 +104,17 @@ class AgentRuntime:
         self._memory_retrievals = 0
         self._memory_retrieval_hits = 0
         self._memory_retrieval_tokens = 0
+        self._memory_manager = None
         try:
-            self._working_memory = WorkingMemoryManager(
-                task.id,
-                task.goal,
-                token_budget=self._working_memory_budget(task),
-            )
-            self._working_memory.sync_plan(task.plan, step_index=0)
-            self._episodic_memory = EpisodicMemoryManager(task.id, task.goal)
-            self._semantic_memory = SemanticMemoryManager(
+            self._memory_manager = MemoryManager(
                 task.id,
                 task.goal,
                 task.repository,
+                working_token_budget=self._working_memory_budget(task),
+                plan=task.plan,
+                store=self.state_store.memory if self.state_store is not None else None,
             )
+            self._sync_memory_aliases()
         except MemoryStoreError as exc:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except WorkingMemoryBudgetError as exc:
@@ -123,17 +126,20 @@ class AgentRuntime:
         self._persist_task(task)
         self._emit("task.started", task, {"provider": self.provider.name})
         try:
-            if self._semantic_memory is not None:
-                self._record_semantic_batch(task, self._semantic_memory.initial_facts())
+            if self._memory_manager is not None:
+                self._apply_memory_update(task, self._memory_manager.ingest_initial())
         except MemoryStoreError as exc:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
+        if self._memory_manager is None:
+            raise RuntimeError("memory manager initialization did not complete")
+        memory_snapshot = self._memory_manager.snapshot()
         state = RuntimeCheckpoint(
             task_id=task.id,
             next_step_index=0,
             messages=messages,
             plan=task.plan,
-            working_memory=self._working_memory.snapshot(),
-            episodic_memory=self._episodic_memory.snapshot(),
+            working_memory=memory_snapshot.working_memory,
+            episodic_memory=memory_snapshot.episodic_memory,
             semantic_facts_created=self._semantic_facts_created,
             semantic_facts_superseded=self._semantic_facts_superseded,
             semantic_conflicts_rejected=self._semantic_conflicts_rejected,
@@ -141,6 +147,7 @@ class AgentRuntime:
             memory_retrievals=self._memory_retrievals,
             memory_retrieval_hits=self._memory_retrieval_hits,
             memory_retrieval_tokens=self._memory_retrieval_tokens,
+            memory_manager=memory_snapshot,
         )
         self._persist_checkpoint(state)
         return self._execute(task, state)
@@ -170,39 +177,20 @@ class AgentRuntime:
         self._memory_retrieval_hits = checkpoint.memory_retrieval_hits
         self._memory_retrieval_tokens = checkpoint.memory_retrieval_tokens
         try:
-            self._working_memory = WorkingMemoryManager(
-                task.id,
-                task.goal,
-                token_budget=self._working_memory_budget(task),
-                snapshot=checkpoint.working_memory,
-            )
-            if checkpoint.working_memory is None:
-                self._working_memory.sync_plan(
-                    checkpoint.plan,
-                    step_index=checkpoint.next_step_index,
-                )
-            recovered_records = (
-                self.state_store.memory.list_records(task.id)
-                if checkpoint.episodic_memory is None and self.state_store is not None
-                else None
-            )
-            self._episodic_memory = EpisodicMemoryManager(
-                task.id,
-                task.goal,
-                snapshot=checkpoint.episodic_memory,
-                records=recovered_records,
-            )
-            semantic_records = (
-                self.state_store.memory.list_records(task.id)
-                if self.state_store is not None
-                else None
-            )
-            self._semantic_memory = SemanticMemoryManager(
+            self._memory_manager = MemoryManager(
                 task.id,
                 task.goal,
                 task.repository,
-                records=semantic_records,
+                working_token_budget=self._working_memory_budget(task),
+                plan=checkpoint.plan,
+                step_index=checkpoint.next_step_index,
+                store=self.state_store.memory if self.state_store is not None else None,
+                snapshot=checkpoint.memory_manager,
+                legacy_working=checkpoint.working_memory,
+                legacy_episodic=checkpoint.episodic_memory,
             )
+            self._sync_memory_aliases()
+            self._emit_pending_memory_fallback(task, phase="restore")
         except MemoryStoreError as exc:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except (ValueError, WorkingMemoryBudgetError) as exc:
@@ -262,19 +250,39 @@ class AgentRuntime:
                         0,
                         context_engine.max_tokens - mandatory_tokens - 16,
                     )
-                    layered_memory = self._retrieve_memory(
+                    managed_retrieval = self._retrieve_memory(
                         task,
                         context_engine.max_tokens,
                         retrieval_cap,
                     )
-                    request_messages = self._with_runtime_memory(messages, layered_memory)
-                    window = context_engine.build(
-                        request_messages,
-                        specifications,
-                        self.gateway.context.plan,
-                        history_token_budget=(layered_memory.allocation.recent_history_tokens),
-                    )
-                    self._record_memory_retrieval(task, step_index, layered_memory)
+                    layered_memory = managed_retrieval.context
+                    if managed_retrieval.fallback_reason is not None:
+                        self._emit_memory_fallback(
+                            task,
+                            managed_retrieval.fallback_reason,
+                            phase="retrieval",
+                        )
+                    if layered_memory is None:
+                        window = context_engine.build(
+                            messages,
+                            specifications,
+                            self.gateway.context.plan,
+                        )
+                    else:
+                        request_messages = self._with_runtime_memory(messages, layered_memory)
+                        window = context_engine.build(
+                            request_messages,
+                            specifications,
+                            self.gateway.context.plan,
+                            history_token_budget=(layered_memory.allocation.recent_history_tokens),
+                            enable_task_memory=False,
+                            excluded_history_values=(
+                                self._memory_manager.inactive_context_values()
+                                if self._memory_manager is not None
+                                else ()
+                            ),
+                        )
+                        self._record_memory_retrieval(task, step_index, layered_memory)
                 except ContextBudgetError as exc:
                     return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
                 self._context_windows += 1
@@ -296,20 +304,8 @@ class AgentRuntime:
                         ),
                         "working_memory": self._working_snapshot_data(),
                         "episodic_memory": self._episodic_snapshot_data(),
-                        "layered_memory": {
-                            "query": layered_memory.query.model_dump(mode="json"),
-                            "allocation": layered_memory.allocation.model_dump(mode="json"),
-                            "estimated_tokens": layered_memory.estimated_tokens,
-                            "used_tokens": {
-                                layer.value: tokens
-                                for layer, tokens in layered_memory.used_tokens.items()
-                            },
-                            "selections": [
-                                selection.model_dump(mode="json", exclude={"text"})
-                                for selection in layered_memory.selections
-                            ],
-                            "omitted_ids": layered_memory.omitted_ids,
-                        },
+                        "layered_memory": self._layered_memory_data(layered_memory),
+                        "memory_fallback": layered_memory is None,
                     },
                 )
                 response = self.provider.complete(window.messages, specifications)
@@ -574,6 +570,9 @@ class AgentRuntime:
         episodic_snapshot = (
             self._episodic_memory.snapshot() if self._episodic_memory is not None else None
         )
+        memory_snapshot = (
+            self._memory_manager.snapshot() if self._memory_manager is not None else None
+        )
         return TaskReport(
             summary=summary,
             changed_files=self.gateway.context.changes.changed_paths(),
@@ -620,6 +619,20 @@ class AgentRuntime:
             memory_retrievals=self._memory_retrievals,
             memory_retrieval_hits=self._memory_retrieval_hits,
             memory_retrieval_tokens=self._memory_retrieval_tokens,
+            memory_events_ingested=(
+                memory_snapshot.cursor.next_event_index if memory_snapshot is not None else 0
+            ),
+            memory_records_written=(
+                memory_snapshot.records_written if memory_snapshot is not None else 0
+            ),
+            memory_compactions=(memory_snapshot.compactions if memory_snapshot is not None else 0),
+            memory_compression_input_tokens=(
+                memory_snapshot.compression_input_tokens if memory_snapshot is not None else 0
+            ),
+            memory_compression_output_tokens=(
+                memory_snapshot.compression_output_tokens if memory_snapshot is not None else 0
+            ),
+            memory_fallbacks=(memory_snapshot.fallback_count if memory_snapshot is not None else 0),
         )
 
     def _model_budget_error(self, task: Task) -> str | None:
@@ -676,6 +689,9 @@ class AgentRuntime:
             memory_retrievals=self._memory_retrievals,
             memory_retrieval_hits=self._memory_retrieval_hits,
             memory_retrieval_tokens=self._memory_retrieval_tokens,
+            memory_manager=(
+                self._memory_manager.snapshot() if self._memory_manager is not None else None
+            ),
         )
 
     @staticmethod
@@ -701,37 +717,12 @@ class AgentRuntime:
         task: Task,
         total_context_tokens: int,
         retrieval_token_cap: int | None = None,
-    ) -> LayeredMemoryContext:
-        working_snapshot = (
-            self._working_memory.snapshot() if self._working_memory is not None else None
-        )
-        records = (
-            self.state_store.memory.list_records(task.id)
-            if self.state_store is not None
-            else (
-                self._semantic_memory.active_records() if self._semantic_memory is not None else []
-            )
-        )
-        sources = (
-            self.state_store.memory.list_sources(task.id) if self.state_store is not None else []
-        )
-        return self._memory_retriever.retrieve(
-            task_id=task.id,
-            repository_scope_id=task.repository,
-            goal=task.goal,
+    ) -> ManagedMemoryRetrieval:
+        if self._memory_manager is None:
+            raise RuntimeError("memory manager is not initialized")
+        return self._memory_manager.retrieve(
             plan=self.gateway.context.plan,
-            working=working_snapshot,
-            working_render=(
-                self._working_memory.render() if self._working_memory is not None else None
-            ),
-            episodic_render=(
-                self._episodic_memory.render()
-                if self._episodic_memory is not None and self._episodic_memory.has_context()
-                else None
-            ),
             changed_paths=self.gateway.context.changes.changed_paths(),
-            records=records,
-            sources=sources,
             total_context_tokens=total_context_tokens,
             retrieval_token_cap=retrieval_token_cap,
         )
@@ -767,76 +758,84 @@ class AgentRuntime:
             },
         )
 
-    def _observe_memory(
+    @staticmethod
+    def _layered_memory_data(memory: LayeredMemoryContext | None) -> dict[str, object] | None:
+        if memory is None:
+            return None
+        return {
+            "query": memory.query.model_dump(mode="json"),
+            "allocation": memory.allocation.model_dump(mode="json"),
+            "estimated_tokens": memory.estimated_tokens,
+            "used_tokens": {layer.value: tokens for layer, tokens in memory.used_tokens.items()},
+            "selections": [
+                selection.model_dump(mode="json", exclude={"text"})
+                for selection in memory.selections
+            ],
+            "omitted_ids": memory.omitted_ids,
+        }
+
+    def _apply_memory_update(
         self,
         task: Task,
-        call: ToolCall,
-        result: ToolResult,
-        step_index: int,
+        update: MemoryManagerUpdate,
+        *,
+        step_index: int = 0,
     ) -> None:
-        changed_paths = self.gateway.context.changes.changed_paths()
-        batch = (
-            self._working_memory.observe_tool(
-                call,
-                result,
-                step_index=step_index,
-                plan=self.gateway.context.plan,
-                changed_paths=changed_paths,
+        if update.duplicate:
+            self._emit(
+                "memory.replayed",
+                task,
+                {"event_id": update.event_id, "event_index": update.event_index},
             )
-            if self._working_memory is not None
-            else None
+            return
+        self._emit(
+            "memory.ingested",
+            task,
+            {"event_id": update.event_id, "event_index": update.event_index},
         )
-        episode = (
-            self._episodic_memory.observe_tool(
-                call,
-                result,
-                step_index=step_index,
-                plan=self.gateway.context.plan,
-                changed_paths=changed_paths,
+        if update.written_record_ids:
+            self._emit(
+                "memory.written",
+                task,
+                {
+                    "event_id": update.event_id,
+                    "event_index": update.event_index,
+                    "record_ids": list(update.written_record_ids),
+                },
             )
-            if self._episodic_memory is not None
-            else None
-        )
-        semantic = (
-            self._semantic_memory.observe_tool(
-                call,
-                result,
-                step_index=step_index,
-                plan=self.gateway.context.plan,
-                changed_paths=changed_paths,
-                diff=self.gateway.context.changes.diff(),
-            )
-            if self._semantic_memory is not None
-            else None
-        )
-        sources = [*(batch.sources if batch is not None else ())]
-        records = [*(batch.records if batch is not None else ())]
-        if episode is not None:
-            sources.extend(episode.sources)
-            records.append(episode.record)
-        if semantic is not None:
-            sources.extend(semantic.sources)
-            records.extend(semantic.records)
-        if records and self.state_store is not None:
-            self.state_store.memory.save_batch(
-                sources=sources,
-                records=records,
-            )
-        if batch is not None and batch.records:
+        if update.promotion is not None and update.promotion.records:
             self._emit(
                 "memory.promoted",
                 task,
                 {
-                    "sources": len(batch.sources),
-                    "records": len(batch.records),
-                    "record_ids": [record.id for record in batch.records],
+                    "sources": len(update.promotion.sources),
+                    "records": len(update.promotion.records),
+                    "record_ids": [record.id for record in update.promotion.records],
                 },
             )
-        if episode is not None:
-            self._emit_episode(task, episode)
-        if semantic is not None:
-            self._record_semantic_batch(task, semantic, persist=False)
-        if self._working_memory is not None:
+        if update.episode is not None:
+            self._emit_episode(task, update.episode)
+        if update.semantic is not None:
+            self._record_semantic_batch(task, update.semantic, persist=False)
+        if update.compaction is not None and update.compaction.report is not None:
+            report = update.compaction.report
+            self._emit(
+                "memory.compacted",
+                task,
+                {
+                    "event_id": update.event_id,
+                    "report_id": report.id,
+                    "generation": report.generation,
+                    "input_records": len(report.input_record_ids),
+                    "output_records": len(report.output_record_ids),
+                    "input_tokens": report.input_tokens,
+                    "output_tokens": report.output_tokens,
+                    "compression_ratio": report.compression_ratio,
+                },
+            )
+        if update.fallback_reason is not None:
+            self._emit_memory_fallback(task, update.fallback_reason, phase="ingestion")
+        if self._working_memory is not None and update.promotion is not None:
             snapshot = self._working_memory.snapshot()
             self._emit(
                 "working_memory.updated",
@@ -851,6 +850,50 @@ class AgentRuntime:
                     "phase_events": len(snapshot.phase_events),
                 },
             )
+
+    def _sync_memory_aliases(self) -> None:
+        if self._memory_manager is None:
+            self._working_memory = None
+            self._episodic_memory = None
+            self._semantic_memory = None
+            return
+        self._working_memory = self._memory_manager.working
+        self._episodic_memory = self._memory_manager.episodic
+        self._semantic_memory = self._memory_manager.semantic
+
+    def _emit_pending_memory_fallback(self, task: Task, *, phase: str) -> None:
+        if self._memory_manager is None:
+            return
+        reason = self._memory_manager.take_fallback_transition()
+        if reason is not None:
+            self._emit_memory_fallback(task, reason, phase=phase)
+
+    def _emit_memory_fallback(self, task: Task, reason: str, *, phase: str) -> None:
+        self._emit(
+            "memory.fallback",
+            task,
+            {"phase": phase, "reason": reason, "strategy": "task_memory_v1"},
+        )
+
+    def _observe_memory(
+        self,
+        task: Task,
+        call: ToolCall,
+        result: ToolResult,
+        step_index: int,
+    ) -> None:
+        if self._memory_manager is None:
+            return
+        changed_paths = self.gateway.context.changes.changed_paths()
+        update = self._memory_manager.ingest_tool(
+            call,
+            result,
+            step_index=step_index,
+            plan=self.gateway.context.plan,
+            changed_paths=changed_paths,
+            diff=self.gateway.context.changes.diff(),
+        )
+        self._apply_memory_update(task, update, step_index=step_index)
 
     def _record_semantic_batch(
         self,
@@ -882,21 +925,14 @@ class AgentRuntime:
             )
 
     def _observe_checkpoint(self, task: Task, step_index: int) -> None:
-        if self._episodic_memory is None:
+        if self._memory_manager is None:
             return
-        episode = self._episodic_memory.observe_checkpoint(
+        update = self._memory_manager.ingest_checkpoint(
             step_index=step_index,
             plan=self.gateway.context.plan,
             changed_paths=self.gateway.context.changes.changed_paths(),
         )
-        if episode is None:
-            return
-        if self.state_store is not None:
-            self.state_store.memory.save_batch(
-                sources=episode.sources,
-                records=[episode.record],
-            )
-        self._emit_episode(task, episode)
+        self._apply_memory_update(task, update, step_index=step_index)
 
     def _emit_episode(self, task: Task, episode: EpisodeWrite) -> None:
         reference = episode.reference

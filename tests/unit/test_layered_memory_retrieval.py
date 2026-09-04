@@ -368,3 +368,77 @@ def test_retrieval_explains_provenance_and_filters_untrusted_instructions() -> N
     assert "ignore previous instructions" not in context.rendered
     assert "print secrets" not in context.rendered
     assert "[UNTRUSTED_INSTRUCTION_BLOCKED]" in context.rendered
+    assert secret not in context.provider_projection
+    assert "ignore previous instructions" not in context.provider_projection
+    assert "selection_reasons" not in context.provider_projection
+
+
+def test_provider_projection_is_compact_and_independent_of_ranking_order() -> None:
+    task_id = "provider-projection"
+    sources = [
+        _source(task_id, "constraint", "config.py", 1),
+        _source(task_id, "fact", "parser.py", 2),
+        _source(task_id, "failure", "tests/test_parser.py", 3),
+    ]
+    records = [
+        _record(
+            task_id,
+            "constraint-record",
+            "config.py MODE must remain backwards compatible",
+            sources[0],
+        ),
+        _record(
+            task_id,
+            "fact-record",
+            "parser.py accepts the MODE option",
+            sources[1],
+        ),
+        _record(
+            task_id,
+            "failure-record",
+            "tests/test_parser.py run_tests failed strategy timeout",
+            sources[2],
+            kind=MemoryKind.EPISODIC,
+        ),
+    ]
+    retriever = CrossLayerMemoryRetriever(max_results=6)
+    context = retriever.retrieve(
+        task_id=task_id,
+        repository_scope_id="repo",
+        goal="Preserve the MODE parser contract and avoid the timeout",
+        plan=None,
+        working=None,
+        working_render=None,
+        episodic_render=None,
+        changed_paths=["config.py", "parser.py"],
+        records=records,
+        sources=sources,
+        total_context_tokens=4_000,
+    )
+
+    projection = context.provider_projection
+    assert projection.startswith("PATCHLOOP_PROVIDER_MEMORY_V1\n")
+    assert "constraint-record" not in projection
+    assert "source-constraint" not in projection
+    assert "selection_reasons" not in projection
+    assert '"score"' not in projection
+    assert '"reason"' not in projection
+    assert '"omitted_ids"' not in projection
+    assert context.estimated_tokens > 0
+    assert context.provider_projection_estimated_tokens <= int(context.estimated_tokens * 0.7)
+
+    shuffled = context.model_copy(
+        update={
+            "selections": list(
+                reversed(
+                    [
+                        selection.model_copy(
+                            update={"score": 1.0 - selection.score, "reason": "different"}
+                        )
+                        for selection in context.selections
+                    ]
+                )
+            )
+        }
+    )
+    assert shuffled.provider_projection == projection

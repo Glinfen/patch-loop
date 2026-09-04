@@ -338,7 +338,7 @@ class AgentRuntime:
                             self.gateway.context.plan,
                             stable_prefix_message_count=prefix_message_count,
                             runtime_memory_message=PromptLayout.runtime_memory_message(
-                                layered_memory.rendered
+                                layered_memory.provider_projection
                             ),
                             history_token_budget=(layered_memory.allocation.recent_history_tokens),
                             enable_task_memory=False,
@@ -408,7 +408,11 @@ class AgentRuntime:
                         "project_instructions": task.execution.project_instructions,
                     },
                     memory_projection=(
-                        layered_memory.rendered
+                        (
+                            layered_memory.provider_projection
+                            if stable_layout
+                            else layered_memory.rendered
+                        )
                         if layered_memory is not None
                         else (
                             window.memory.model_dump(mode="json")
@@ -1129,6 +1133,7 @@ class AgentRuntime:
                 for selection in memory.selections
             ],
             "omitted_ids": memory.omitted_ids,
+            "provider_projection": memory.provider_projection,
         }
 
     def _memory_inventory_data(self) -> dict[str, dict[str, int]]:

@@ -1051,7 +1051,7 @@ class _HierarchicalMemoryHarness:
             history_token_budget=memory.allocation.recent_history_tokens,
             enable_task_memory=False,
             excluded_history_values=self.inactive_values(),
-            runtime_memory_message=PromptLayout.runtime_memory_message(memory.rendered),
+            runtime_memory_message=PromptLayout.runtime_memory_message(memory.provider_projection),
         )
 
     def inactive_values(self) -> list[str]:

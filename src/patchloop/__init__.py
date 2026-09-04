@@ -17,6 +17,11 @@ from patchloop.domain import (
     ToolCall,
     ToolResult,
 )
+from patchloop.memory_publication import (
+    MemoryDeltaPublisher,
+    MemoryDeltaTooLarge,
+    MemoryPublicationSnapshot,
+)
 
 __all__ = [
     "AgentStep",
@@ -27,6 +32,9 @@ __all__ = [
     "CacheEpochSnapshot",
     "CacheLayoutReason",
     "CacheLayoutTrace",
+    "MemoryDeltaPublisher",
+    "MemoryDeltaTooLarge",
+    "MemoryPublicationSnapshot",
     "Plan",
     "PlanItem",
     "PromptCacheLayout",

@@ -1,4 +1,4 @@
-from patchloop.domain import PromptCacheLayout, Task, TaskExecutionConfig
+from patchloop.domain import PromptCacheLayout, Task, TaskExecutionConfig, ToolCall
 from patchloop.events import EventLogger
 from patchloop.prompt_layout import PromptLayout
 from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ToolSpec
@@ -63,3 +63,36 @@ def test_stable_runtime_keeps_project_snapshot_and_system_prefix_fixed(tmp_path)
     assert messages[0].content == SYSTEM_PROMPT
     assert messages[1].content.startswith("PATCHLOOP_PROJECT_INSTRUCTIONS_V1")
     assert messages[2].content == "inspect repository"
+
+
+def test_stable_runtime_publishes_memory_snapshot_once_then_deltas(tmp_path) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    provider = FakeProvider(
+        [
+            ModelResponse(
+                tool_calls=[ToolCall(id="list-call", name="list_files", arguments={})]
+            ),
+            ModelResponse(content="done"),
+        ]
+    )
+    gateway = ToolGateway(
+        ToolContext(repository),
+        [ListFilesTool()],
+        EventLogger(tmp_path / "trace.jsonl"),
+    )
+    task = Task(
+        goal="inspect repository",
+        repository=str(repository),
+        execution=TaskExecutionConfig(prompt_cache_layout=PromptCacheLayout.STABLE),
+    )
+
+    result = AgentRuntime(provider, gateway).run(task)
+
+    assert result.result == "done"
+    assert len(provider.requests) == 2
+    first_messages = [message.content for message in provider.requests[0][0]]
+    second_messages = [message.content for message in provider.requests[1][0]]
+    assert sum("PATCHLOOP_MEMORY_SNAPSHOT_V1" in content for content in first_messages) == 1
+    assert sum("PATCHLOOP_MEMORY_SNAPSHOT_V1" in content for content in second_messages) == 1
+    assert sum("PATCHLOOP_MEMORY_DELTA_V1" in content for content in second_messages) == 1

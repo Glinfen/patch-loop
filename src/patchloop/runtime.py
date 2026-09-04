@@ -39,6 +39,7 @@ from patchloop.memory.working import (
     WorkingMemoryBudgetError,
     WorkingMemoryManager,
 )
+from patchloop.memory_publication import MemoryDeltaPublisher, MemoryPublicationSnapshot
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
 from patchloop.prompt_layout import PromptLayout
 from patchloop.providers.base import ModelMessage, ModelProvider, ModelUsage, ToolSpec
@@ -158,11 +159,12 @@ class AgentRuntime:
             task.goal,
             project_instructions=task.execution.project_instructions,
         )
+        initial_prefix_message_count = len(messages)
         frozen_tools = PromptLayout.freeze_tools(self.gateway.specifications())
         epoch = (
             CacheEpoch.bootstrap(
                 messages,
-                prefix_message_count=prompt_layout.prefix_message_count,
+                prefix_message_count=initial_prefix_message_count,
                 epoch_id=task.execution.cache_epoch,
             )
             if task.execution.prompt_cache_layout is PromptCacheLayout.STABLE
@@ -183,7 +185,7 @@ class AgentRuntime:
             next_step_index=0,
             messages=messages,
             tool_specifications=frozen_tools,
-            prompt_prefix_message_count=prompt_layout.prefix_message_count,
+            prompt_prefix_message_count=initial_prefix_message_count,
             cache_epoch_state=epoch.snapshot if epoch is not None else None,
             plan=task.plan,
             working_memory=memory_snapshot.working_memory,
@@ -291,6 +293,11 @@ class AgentRuntime:
             if stable_layout and state.cache_epoch_state is not None
             else None
         )
+        publication = (
+            MemoryDeltaPublisher(state.memory_publication_state)
+            if stable_layout
+            else None
+        )
         started = monotonic()
         try:
             for step_index in range(state.next_step_index, task.budget.max_steps):
@@ -350,12 +357,25 @@ class AgentRuntime:
                             managed_retrieval.fallback_reason,
                             phase="retrieval",
                         )
+                    if stable_layout and publication is not None and layered_memory is not None:
+                        publication, _ = publication.publish(
+                            epoch.epoch_id if epoch is not None else task.execution.cache_epoch,
+                            layered_memory.provider_projection,
+                        )
+                        request_messages = [
+                            *request_messages[:prefix_message_count],
+                            *publication.messages,
+                            *request_messages[prefix_message_count:],
+                        ]
                     if layered_memory is None:
                         window = context_engine.build(
                             request_messages,
                             specifications,
                             self.gateway.context.plan,
                             stable_prefix_message_count=prefix_message_count,
+                            pinned_tail_message_count=(
+                                len(publication.messages) if publication is not None else 0
+                            ),
                             task_memory_in_system=not stable_layout,
                         )
                     elif stable_layout:
@@ -364,8 +384,8 @@ class AgentRuntime:
                             specifications,
                             self.gateway.context.plan,
                             stable_prefix_message_count=prefix_message_count,
-                            runtime_memory_message=PromptLayout.runtime_memory_message(
-                                layered_memory.provider_projection
+                            pinned_tail_message_count=(
+                                len(publication.messages) if publication is not None else 0
                             ),
                             history_token_budget=(layered_memory.allocation.recent_history_tokens),
                             enable_task_memory=False,
@@ -418,6 +438,16 @@ class AgentRuntime:
                         "working_memory": self._working_snapshot_data(),
                         "episodic_memory": self._episodic_snapshot_data(),
                         "layered_memory": self._layered_memory_data(layered_memory),
+                        "memory_publication": (
+                            {
+                                "snapshot_fingerprint": publication.snapshot.snapshot_fingerprint,
+                                "current_fingerprint": publication.snapshot.current_fingerprint,
+                                "message_count": len(publication.messages),
+                                "delta_count": publication.snapshot.delta_count,
+                            }
+                            if publication is not None and publication.snapshot is not None
+                            else None
+                        ),
                         "memory_fallback": layered_memory is None,
                     },
                 )
@@ -440,7 +470,9 @@ class AgentRuntime:
                     },
                     memory_projection=(
                         (
-                            layered_memory.provider_projection
+                            publication.rendered
+                            if stable_layout and publication is not None
+                            else layered_memory.provider_projection
                             if stable_layout
                             else layered_memory.rendered
                         )
@@ -592,6 +624,7 @@ class AgentRuntime:
                         step_index,
                     )
                     prefix_message_count = epoch.prefix_message_count
+                    publication = MemoryDeltaPublisher()
                 state = self._checkpoint(
                     task,
                     step_index + 1,
@@ -604,6 +637,7 @@ class AgentRuntime:
                     tool_specifications=specifications,
                     prompt_prefix_message_count=prefix_message_count,
                     cache_epoch=epoch.snapshot if epoch is not None else None,
+                    memory_publication=publication.snapshot if publication is not None else None,
                 )
                 self._persist_checkpoint(state)
                 self._persist_task(task)
@@ -1069,6 +1103,7 @@ class AgentRuntime:
         tool_specifications: list[ToolSpec] | None = None,
         prompt_prefix_message_count: int = 2,
         cache_epoch: CacheEpochSnapshot | None = None,
+        memory_publication: MemoryPublicationSnapshot | None = None,
     ) -> RuntimeCheckpoint:
         return RuntimeCheckpoint(
             task_id=task.id,
@@ -1081,6 +1116,7 @@ class AgentRuntime:
             ),
             prompt_prefix_message_count=prompt_prefix_message_count,
             cache_epoch_state=cache_epoch,
+            memory_publication_state=memory_publication,
             plan=self.gateway.context.plan,
             requires_replan=self.gateway.context.requires_replan,
             replan_count=self.gateway.context.replan_count,

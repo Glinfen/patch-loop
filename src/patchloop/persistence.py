@@ -18,6 +18,7 @@ from patchloop.memory.episodic import EpisodicMemorySnapshot
 from patchloop.memory.manager import MemoryManagerSnapshot
 from patchloop.memory.store import SQLiteMemoryStore, initialize_memory_schema
 from patchloop.memory.working import WorkingMemorySnapshot
+from patchloop.memory_publication import MemoryPublicationSnapshot
 from patchloop.providers.base import ModelMessage, ToolSpec
 from patchloop.security import SecretRedactor
 from patchloop.storage import TaskNotFoundError
@@ -30,6 +31,7 @@ class RuntimeCheckpoint(BaseModel):
     tool_specifications: list[ToolSpec] | None = None
     prompt_prefix_message_count: int = Field(default=2, ge=2)
     cache_epoch_state: CacheEpochSnapshot | None = None
+    memory_publication_state: MemoryPublicationSnapshot | None = None
     plan: Plan | None = None
     requires_replan: bool = False
     replan_count: int = Field(default=0, ge=0)

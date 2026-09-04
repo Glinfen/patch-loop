@@ -91,6 +91,7 @@ class ContextEngine:
         enable_task_memory: bool = True,
         excluded_history_values: Sequence[str] = (),
         stable_prefix_message_count: int = 2,
+        pinned_tail_message_count: int = 0,
         runtime_memory_message: ModelMessage | None = None,
         task_memory_role: str = "system",
         task_memory_in_system: bool = True,
@@ -99,6 +100,8 @@ class ContextEngine:
             raise ValueError("stable prompt prefix must contain system and user messages")
         if task_memory_role not in {"system", "user"}:
             raise ValueError("task memory role must be system or user")
+        if pinned_tail_message_count < 0:
+            raise ValueError("pinned tail message count cannot be negative")
         messages = [
             ModelMessage.model_validate(self.redactor.redact(message.model_dump(mode="json")))
             for message in messages
@@ -106,16 +109,31 @@ class ContextEngine:
         if len(messages) < stable_prefix_message_count:
             raise ValueError("context requires system and user messages")
         normalized, truncated_messages = self._normalize_messages(messages)
-        normalized = self._exclude_history_values(normalized, excluded_history_values)
+        normalized = self._exclude_history_values(
+            normalized,
+            excluded_history_values,
+            stable_prefix_message_count=stable_prefix_message_count,
+            pinned_tail_message_count=pinned_tail_message_count,
+        )
         base = normalized[:stable_prefix_message_count]
-        groups = self._groups(normalized[stable_prefix_message_count:], base[-1].content, plan)
+        pinned_tail = normalized[
+            stable_prefix_message_count : stable_prefix_message_count + pinned_tail_message_count
+        ]
+        if len(pinned_tail) != pinned_tail_message_count:
+            raise ValueError("pinned tail messages exceed the available context")
+        groups = self._groups(
+            normalized[stable_prefix_message_count + pinned_tail_message_count :],
+            base[-1].content,
+            plan,
+        )
         tool_spec_tokens = self.estimate_tools(tools)
         base_tokens = self.estimate_messages(base)
         safe_runtime_memory = self._safe_runtime_memory_message(runtime_memory_message)
         runtime_memory_tokens = (
             self.estimate_messages([safe_runtime_memory]) if safe_runtime_memory is not None else 0
         )
-        fixed_tokens = tool_spec_tokens + base_tokens + runtime_memory_tokens
+        pinned_tail_tokens = self.estimate_messages(pinned_tail)
+        fixed_tokens = tool_spec_tokens + base_tokens + pinned_tail_tokens + runtime_memory_tokens
         if fixed_tokens > self.max_tokens:
             raise ContextBudgetError(
                 f"mandatory context requires {fixed_tokens} tokens, budget is {self.max_tokens}"
@@ -164,7 +182,7 @@ class ContextEngine:
             else (None, None)
         )
         task_memory_tokens = self.estimate_messages([memory_message]) if memory_message else 0
-        output = [*base]
+        output = [*base, *pinned_tail]
         if memory_message is not None:
             if task_memory_in_system:
                 output[0] = output[0].model_copy(
@@ -172,9 +190,12 @@ class ContextEngine:
                     deep=True,
                 )
             else:
-                output.insert(stable_prefix_message_count, memory_message)
+                output.insert(stable_prefix_message_count + len(pinned_tail), memory_message)
         if safe_runtime_memory is not None:
-            output.insert(stable_prefix_message_count, safe_runtime_memory)
+            output.insert(
+                stable_prefix_message_count + len(pinned_tail),
+                safe_runtime_memory,
+            )
         for group in selected:
             output.extend(group.messages)
 
@@ -260,12 +281,16 @@ class ContextEngine:
     def _exclude_history_values(
         messages: list[ModelMessage],
         values: Sequence[str],
+        *,
+        stable_prefix_message_count: int = 2,
+        pinned_tail_message_count: int = 0,
     ) -> list[ModelMessage]:
         excluded = sorted({value for value in values if value}, key=lambda value: -len(value))
         if not excluded:
             return messages
-        output = list(messages[:2])
-        for message in messages[2:]:
+        protected_count = stable_prefix_message_count + pinned_tail_message_count
+        output = list(messages[:protected_count])
+        for message in messages[protected_count:]:
             content = message.content
             for value in excluded:
                 content = content.replace(value, "[SUPERSEDED_MEMORY_OMITTED]")

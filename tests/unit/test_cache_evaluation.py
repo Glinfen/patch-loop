@@ -2,7 +2,6 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from patchloop.cache import CacheLayoutReason, CacheLayoutTrace
 from patchloop.cli import app
 from patchloop.evaluation import (
     ALL_CACHE_SCENARIOS,
@@ -13,6 +12,7 @@ from patchloop.evaluation import (
     serialize_cache_controls,
 )
 from patchloop.events import Event
+from patchloop.prompt_cache import CacheLayoutReason, CacheLayoutTrace
 from patchloop.providers import (
     DeterministicPrefixCacheSimulator,
     FakeProvider,

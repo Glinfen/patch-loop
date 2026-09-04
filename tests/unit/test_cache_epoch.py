@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from patchloop.cache_epoch import (
+from patchloop.prompt_cache import (
     COMPRESSION_INSTRUCTION,
     SUMMARY_PREFIX,
     CacheEpoch,

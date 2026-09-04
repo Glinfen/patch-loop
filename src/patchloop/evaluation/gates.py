@@ -8,7 +8,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from patchloop.cache import CacheLayoutReason
 from patchloop.domain import PromptCacheLayout
 from patchloop.evaluation.cache import (
     CacheEvaluationReport,
@@ -16,6 +15,7 @@ from patchloop.evaluation.cache import (
     CacheEvaluationVariant,
     CacheRunReport,
 )
+from patchloop.prompt_cache import CacheLayoutReason
 
 
 class GateStatus(StrEnum):

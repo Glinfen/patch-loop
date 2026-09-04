@@ -1,12 +1,12 @@
-from patchloop.cache import (
+from patchloop.domain import Task
+from patchloop.events import EventLogger
+from patchloop.observability import TaskMetrics, TaskReplay
+from patchloop.prompt_cache import (
     CacheDiagnostics,
     CacheLayoutReason,
     fingerprint_request,
     fingerprint_text,
 )
-from patchloop.domain import Task
-from patchloop.events import EventLogger
-from patchloop.observability import TaskMetrics, TaskReplay
 from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ModelUsage, ToolSpec
 from patchloop.runtime import AgentRuntime
 from patchloop.tools import ListFilesTool, ToolContext, ToolGateway

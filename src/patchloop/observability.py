@@ -9,8 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from patchloop.cache import CacheLayoutTrace
 from patchloop.events import Event
+from patchloop.prompt_cache import CacheLayoutTrace
 
 
 class TaskMetrics(BaseModel):

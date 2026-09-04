@@ -29,7 +29,7 @@ from patchloop.memory import (
     MemorySourceKind,
     MemoryStatus,
 )
-from patchloop.prompt_layout import PromptLayout
+from patchloop.prompt_cache import PromptLayout
 from patchloop.providers.base import ModelMessage, ModelProvider
 from patchloop.runtime import SYSTEM_PROMPT
 

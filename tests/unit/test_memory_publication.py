@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from patchloop.memory_publication import (
+from patchloop.prompt_cache import (
     MEMORY_DELTA_PREFIX,
     MEMORY_SNAPSHOT_PREFIX,
     MemoryDeltaPublisher,
@@ -73,11 +73,5 @@ def test_large_delta_is_rejected_without_replacing_the_previous_state() -> None:
     with pytest.raises(MemoryDeltaTooLarge):
         publisher.publish(
             "epoch-1",
-            _projection(
-                {
-                    "facts": [
-                        {"text": "new " * 100, "type": "fact", "scope": "task"}
-                    ]
-                }
-            ),
+            _projection({"facts": [{"text": "new " * 100, "type": "fact", "scope": "task"}]}),
         )

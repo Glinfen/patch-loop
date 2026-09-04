@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from time import monotonic
 
-from patchloop.cache import CacheDiagnostics
-from patchloop.cache_epoch import CacheEpoch, CacheEpochBoundary, CacheEpochSnapshot
 from patchloop.context import ContextBudgetError, ContextEngine
 from patchloop.domain import (
     AgentStep,
@@ -39,9 +37,16 @@ from patchloop.memory.working import (
     WorkingMemoryBudgetError,
     WorkingMemoryManager,
 )
-from patchloop.memory_publication import MemoryDeltaPublisher, MemoryPublicationSnapshot
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
-from patchloop.prompt_layout import PromptLayout
+from patchloop.prompt_cache import (
+    CacheDiagnostics,
+    CacheEpoch,
+    CacheEpochBoundary,
+    CacheEpochSnapshot,
+    MemoryDeltaPublisher,
+    MemoryPublicationSnapshot,
+    PromptLayout,
+)
 from patchloop.providers.base import ModelMessage, ModelProvider, ModelUsage, ToolSpec
 from patchloop.tools.gateway import ToolGateway
 
@@ -294,9 +299,7 @@ class AgentRuntime:
             else None
         )
         publication = (
-            MemoryDeltaPublisher(state.memory_publication_state)
-            if stable_layout
-            else None
+            MemoryDeltaPublisher(state.memory_publication_state) if stable_layout else None
         )
         started = monotonic()
         try:

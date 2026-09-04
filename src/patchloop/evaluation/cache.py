@@ -17,9 +17,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from patchloop.cache import CacheLayoutReason, CacheLayoutTrace
-from patchloop.cache_epoch import CacheEpoch, CacheEpochBoundary
 from patchloop.events import Event
+from patchloop.prompt_cache import (
+    CacheEpoch,
+    CacheEpochBoundary,
+    CacheLayoutReason,
+    CacheLayoutTrace,
+)
 from patchloop.providers import DeterministicPrefixCacheSimulator
 from patchloop.providers.base import ModelMessage, ModelUsage, ToolSpec
 

@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from patchloop.cache_epoch import CacheEpoch
 from patchloop.domain import AgentStep, StepStatus, Task, TaskReport, ToolCall, ToolResult
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
+from patchloop.prompt_cache import CacheEpoch
 from patchloop.providers import ModelMessage
 from patchloop.storage import ArtifactStore, JsonTaskStore, TaskNotFoundError
 

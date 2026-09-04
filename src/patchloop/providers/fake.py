@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from patchloop.providers.base import ModelMessage, ModelResponse, ModelUsage, ToolSpec
 
 if TYPE_CHECKING:
-    from patchloop.cache import CacheDiagnosticsSnapshot, CacheLayoutTrace
+    from patchloop.prompt_cache import CacheDiagnosticsSnapshot, CacheLayoutTrace
 
 
 class FakeProvider:
@@ -56,7 +56,7 @@ class DeterministicPrefixCacheSimulator:
     """
 
     def __init__(self, *, miss_threshold_tokens: int = 70_000) -> None:
-        from patchloop.cache import CacheDiagnostics
+        from patchloop.prompt_cache import CacheDiagnostics
 
         self.diagnostics = CacheDiagnostics(miss_threshold_tokens=miss_threshold_tokens)
         self._previous_wire: bytes | None = None
@@ -89,7 +89,7 @@ class DeterministicPrefixCacheSimulator:
         task_project_snapshot: object | None = None,
         memory_projection: object | None = None,
     ) -> tuple[CacheLayoutTrace, ModelUsage]:
-        from patchloop.cache import fingerprint_request
+        from patchloop.prompt_cache import fingerprint_request
 
         _, wire = fingerprint_request(
             messages,

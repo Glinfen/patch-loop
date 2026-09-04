@@ -1,6 +1,6 @@
 from patchloop.domain import PromptCacheLayout, Task, TaskExecutionConfig, ToolCall
 from patchloop.events import EventLogger
-from patchloop.prompt_layout import PromptLayout
+from patchloop.prompt_cache import PromptLayout
 from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ToolSpec
 from patchloop.runtime import SYSTEM_PROMPT, AgentRuntime
 from patchloop.tools import ListFilesTool, ToolContext, ToolGateway
@@ -70,9 +70,7 @@ def test_stable_runtime_publishes_memory_snapshot_once_then_deltas(tmp_path) -> 
     repository.mkdir()
     provider = FakeProvider(
         [
-            ModelResponse(
-                tool_calls=[ToolCall(id="list-call", name="list_files", arguments={})]
-            ),
+            ModelResponse(tool_calls=[ToolCall(id="list-call", name="list_files", arguments={})]),
             ModelResponse(content="done"),
         ]
     )

@@ -34,6 +34,7 @@ from patchloop.prompt_cache.publication import (
     MemoryDeltaTooLarge,
     MemoryPublicationSnapshot,
 )
+from patchloop.prompt_cache.usage import CacheUsageAccumulator, CacheUsageAccumulatorSnapshot
 
 __all__ = [
     "COMPRESSION_INSTRUCTION",
@@ -51,6 +52,8 @@ __all__ = [
     "CacheLayoutTrace",
     "CacheRequestFingerprint",
     "CacheSectionFingerprint",
+    "CacheUsageAccumulator",
+    "CacheUsageAccumulatorSnapshot",
     "MemoryDeltaPublisher",
     "MemoryDeltaTooLarge",
     "MemoryPublicationSnapshot",

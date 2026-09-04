@@ -43,6 +43,7 @@ from patchloop.prompt_cache import (
     CacheEpoch,
     CacheEpochBoundary,
     CacheEpochSnapshot,
+    CacheUsageAccumulator,
     MemoryDeltaPublisher,
     MemoryPublicationSnapshot,
     PromptLayout,
@@ -87,13 +88,7 @@ class AgentRuntime:
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
-        self._cache_hit_tokens = 0
-        self._cache_miss_tokens = 0
-        self._cache_write_tokens = 0
-        self._cache_usage_reported_calls = 0
-        self._cache_usage_unreported_calls = 0
-        self._cache_usage_inconsistent_calls = 0
-        self._cache_write_reported_calls = 0
+        self._cache_usage = CacheUsageAccumulator()
         self._context_windows = 0
         self._context_compactions = 0
         self._max_context_tokens_used = 0
@@ -120,13 +115,7 @@ class AgentRuntime:
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
-        self._cache_hit_tokens = 0
-        self._cache_miss_tokens = 0
-        self._cache_write_tokens = 0
-        self._cache_usage_reported_calls = 0
-        self._cache_usage_unreported_calls = 0
-        self._cache_usage_inconsistent_calls = 0
-        self._cache_write_reported_calls = 0
+        self._cache_usage = CacheUsageAccumulator()
         self._context_windows = 0
         self._context_compactions = 0
         self._max_context_tokens_used = 0
@@ -224,13 +213,15 @@ class AgentRuntime:
         self._input_tokens = checkpoint.input_tokens
         self._output_tokens = checkpoint.output_tokens
         self._cost_usd = checkpoint.cost_usd
-        self._cache_hit_tokens = checkpoint.cache_hit_tokens
-        self._cache_miss_tokens = checkpoint.cache_miss_tokens
-        self._cache_write_tokens = checkpoint.cache_write_tokens
-        self._cache_usage_reported_calls = checkpoint.cache_usage_reported_calls
-        self._cache_usage_unreported_calls = checkpoint.cache_usage_unreported_calls
-        self._cache_usage_inconsistent_calls = checkpoint.cache_usage_inconsistent_calls
-        self._cache_write_reported_calls = checkpoint.cache_write_reported_calls
+        self._cache_usage = CacheUsageAccumulator.from_legacy(
+            cache_hit_tokens=checkpoint.cache_hit_tokens,
+            cache_miss_tokens=checkpoint.cache_miss_tokens,
+            cache_write_tokens=checkpoint.cache_write_tokens,
+            cache_usage_reported_calls=checkpoint.cache_usage_reported_calls,
+            cache_usage_unreported_calls=checkpoint.cache_usage_unreported_calls,
+            cache_usage_inconsistent_calls=checkpoint.cache_usage_inconsistent_calls,
+            cache_write_reported_calls=checkpoint.cache_write_reported_calls,
+        )
         self._context_windows = checkpoint.context_windows
         self._context_compactions = checkpoint.context_compactions
         self._max_context_tokens_used = checkpoint.max_context_tokens_used
@@ -861,6 +852,7 @@ class AgentRuntime:
         memory_snapshot = (
             self._memory_manager.snapshot() if self._memory_manager is not None else None
         )
+        cache_usage = self._cache_usage.report_fields()
         return TaskReport(
             summary=summary,
             changed_files=self.gateway.context.changes.changed_paths(),
@@ -873,18 +865,14 @@ class AgentRuntime:
             input_tokens=self._input_tokens,
             output_tokens=self._output_tokens,
             cost_usd=self._cost_usd,
-            cache_hit_tokens=(self._cache_hit_tokens if self._cache_usage_reported_calls else None),
-            cache_miss_tokens=(
-                self._cache_miss_tokens if self._cache_usage_reported_calls else None
-            ),
-            cache_write_tokens=(
-                self._cache_write_tokens if self._cache_write_reported_calls else None
-            ),
-            cache_hit_rate=self._cache_hit_rate(),
-            cache_usage_reported_calls=self._cache_usage_reported_calls,
-            cache_usage_unreported_calls=self._cache_usage_unreported_calls,
-            cache_usage_inconsistent_calls=self._cache_usage_inconsistent_calls,
-            cache_write_reported_calls=self._cache_write_reported_calls,
+            cache_hit_tokens=cache_usage["cache_hit_tokens"],
+            cache_miss_tokens=cache_usage["cache_miss_tokens"],
+            cache_write_tokens=cache_usage["cache_write_tokens"],
+            cache_hit_rate=cache_usage["cache_hit_rate"],
+            cache_usage_reported_calls=cache_usage["cache_usage_reported_calls"],
+            cache_usage_unreported_calls=cache_usage["cache_usage_unreported_calls"],
+            cache_usage_inconsistent_calls=cache_usage["cache_usage_inconsistent_calls"],
+            cache_write_reported_calls=cache_usage["cache_write_reported_calls"],
             context_windows=self._context_windows,
             context_compactions=self._context_compactions,
             max_context_tokens_used=self._max_context_tokens_used,
@@ -972,28 +960,7 @@ class AgentRuntime:
         self._input_tokens += usage.input_tokens
         self._output_tokens += usage.output_tokens
         self._cost_usd += usage.cost_usd
-        hit_tokens = usage.cache_hit_tokens
-        miss_tokens = usage.cache_miss_tokens
-        if hit_tokens is None and miss_tokens is None:
-            self._cache_usage_unreported_calls += 1
-        elif hit_tokens is None or miss_tokens is None:
-            self._cache_usage_unreported_calls += 1
-            self._cache_usage_inconsistent_calls += 1
-        else:
-            self._cache_usage_reported_calls += 1
-            self._cache_hit_tokens += hit_tokens
-            self._cache_miss_tokens += miss_tokens
-            if hit_tokens + miss_tokens != usage.input_tokens:
-                self._cache_usage_inconsistent_calls += 1
-        if usage.cache_write_tokens is not None:
-            self._cache_write_tokens += usage.cache_write_tokens
-            self._cache_write_reported_calls += 1
-
-    def _cache_hit_rate(self) -> float | None:
-        cache_tokens = self._cache_hit_tokens + self._cache_miss_tokens
-        if not self._cache_usage_reported_calls or cache_tokens == 0:
-            return None
-        return self._cache_hit_tokens / cache_tokens
+        self._cache_usage.record(usage)
 
     def _compress_epoch(
         self,
@@ -1132,13 +1099,7 @@ class AgentRuntime:
             input_tokens=self._input_tokens,
             output_tokens=self._output_tokens,
             cost_usd=self._cost_usd,
-            cache_hit_tokens=self._cache_hit_tokens,
-            cache_miss_tokens=self._cache_miss_tokens,
-            cache_write_tokens=self._cache_write_tokens,
-            cache_usage_reported_calls=self._cache_usage_reported_calls,
-            cache_usage_unreported_calls=self._cache_usage_unreported_calls,
-            cache_usage_inconsistent_calls=self._cache_usage_inconsistent_calls,
-            cache_write_reported_calls=self._cache_write_reported_calls,
+            **self._cache_usage.checkpoint_fields(),
             cache_diagnostics=self._cache_diagnostics.snapshot(),
             elapsed_seconds=elapsed_seconds,
             context_windows=self._context_windows,

@@ -31,6 +31,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [提示缓存优化开发计划](docs/PROMPT_CACHE_OPTIMIZATION_PLAN.md)：针对真实场景约 36.2% 的提示缓存命中率，规划逐步观测、稳定前缀、精简记忆投影、cache epoch 与冷热验收。
 - [PCO-00 验收](docs/milestones/PCO_00_ACCEPTANCE.md)：缓存用量已贯通报告、检查点、metrics 与 replay；新真实基线命中率为 4.31%，下一步进入请求指纹诊断。
 - [PCO-01 验收](docs/milestones/PCO_01_ACCEPTANCE.md)：新增安全请求指纹、区段级前缀诊断、缓存布局归因及恢复安全快照。
+- [PCO-02 验收](docs/milestones/PCO_02_ACCEPTANCE.md)：新增 legacy/stable 布局开关、冻结工具面和独立动态记忆消息。
 
 ## 推荐项目周期
 

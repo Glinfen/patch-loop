@@ -22,6 +22,13 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class PromptCacheLayout(StrEnum):
+    """Prompt assembly mode used for cache-layout experiments and rollback."""
+
+    LEGACY = "legacy"
+    STABLE = "stable"
+
+
 class StepStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
@@ -158,6 +165,9 @@ class TaskExecutionConfig(BaseModel):
         default="patchloop-sandbox:py313",
         pattern=r"^[A-Za-z0-9._/:@-]+$",
     )
+    prompt_cache_layout: PromptCacheLayout = PromptCacheLayout.LEGACY
+    project_instructions: str = ""
+    cache_epoch: str = Field(default="initial", min_length=1, max_length=128)
 
 
 class Task(BaseModel):

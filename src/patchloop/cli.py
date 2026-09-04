@@ -10,7 +10,13 @@ from typing import Annotated
 import typer
 
 from patchloop.context import ContextDebug
-from patchloop.domain import Task, TaskBudget, TaskExecutionConfig, TaskStatus
+from patchloop.domain import (
+    PromptCacheLayout,
+    Task,
+    TaskBudget,
+    TaskExecutionConfig,
+    TaskStatus,
+)
 from patchloop.evaluation import (
     CodingBenchmarkRunner,
     EvaluationRunner,
@@ -729,6 +735,10 @@ def run_task(
         str,
         typer.Option(help="Docker image used by the command sandbox."),
     ] = "patchloop-sandbox:py313",
+    prompt_cache_layout: Annotated[
+        str,
+        typer.Option(help="Prompt layout: legacy (rollback) or stable (PCO-02)."),
+    ] = "legacy",
 ) -> None:
     try:
         provider = DeepSeekProvider.from_env()
@@ -746,6 +756,11 @@ def run_task(
         command_sandbox = _create_sandbox(sandbox, sandbox_image)
     except (ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    try:
+        cache_layout = PromptCacheLayout(prompt_cache_layout)
+    except ValueError:
+        typer.echo("prompt_cache_layout must be legacy or stable", err=True)
         raise typer.Exit(code=2) from None
     task = Task(
         goal=goal,
@@ -766,6 +781,7 @@ def run_task(
             non_interactive=non_interactive,
             sandbox_backend=sandbox,
             sandbox_image=sandbox_image,
+            prompt_cache_layout=cache_layout,
         ),
     )
     state = _state_dir(repository)

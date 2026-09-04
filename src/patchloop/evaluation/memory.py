@@ -29,6 +29,7 @@ from patchloop.memory import (
     MemorySourceKind,
     MemoryStatus,
 )
+from patchloop.prompt_layout import PromptLayout
 from patchloop.providers.base import ModelMessage, ModelProvider
 from patchloop.runtime import SYSTEM_PROMPT
 
@@ -1039,9 +1040,6 @@ class _HierarchicalMemoryHarness:
                 *messages[:2],
                 *messages[max(2, len(messages) - recent_message_count) :],
             ]
-        request[0] = request[0].model_copy(
-            update={"content": f"{request[0].content}\n\n{memory.rendered}"}
-        )
         return ContextEngine(
             max_tokens=self.task.context_budget_tokens,
             max_tool_output_chars=self.task.max_tool_output_chars,
@@ -1053,6 +1051,7 @@ class _HierarchicalMemoryHarness:
             history_token_budget=memory.allocation.recent_history_tokens,
             enable_task_memory=False,
             excluded_history_values=self.inactive_values(),
+            runtime_memory_message=PromptLayout.runtime_memory_message(memory.rendered),
         )
 
     def inactive_values(self) -> list[str]:

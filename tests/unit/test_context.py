@@ -169,6 +169,30 @@ def test_layered_context_can_disable_legacy_task_memory_without_breaking_groups(
     assert all("PATCHLOOP_TASK_MEMORY_V1" not in item.content for item in window.messages)
 
 
+def test_stable_context_keeps_system_prefix_unchanged_and_appends_runtime_memory() -> None:
+    engine = ContextEngine(max_tokens=1_000, max_tool_output_chars=160, recent_steps=1)
+    messages = [
+        ModelMessage(role="system", content="fixed system"),
+        ModelMessage(role="user", content="task goal"),
+        *tool_group(0, "current evidence"),
+    ]
+
+    window = engine.build(
+        messages,
+        [],
+        None,
+        runtime_memory_message=ModelMessage(
+            role="system",
+            content="PATCHLOOP_LAYERED_MEMORY_V1\ncurrent runtime state",
+        ),
+        task_memory_in_system=False,
+    )
+
+    assert window.messages[0].content == "fixed system"
+    assert window.messages[1].content == "task goal"
+    assert window.messages[2].content.startswith("PATCHLOOP_LAYERED_MEMORY_V1")
+
+
 def test_layered_context_masks_superseded_values_only_from_audit_history() -> None:
     old_value = "RETURN_NONE_ON_MISSING__OLD"
     messages = [

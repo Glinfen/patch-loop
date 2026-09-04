@@ -90,20 +90,32 @@ class ContextEngine:
         history_token_budget: int | None = None,
         enable_task_memory: bool = True,
         excluded_history_values: Sequence[str] = (),
+        stable_prefix_message_count: int = 2,
+        runtime_memory_message: ModelMessage | None = None,
+        task_memory_role: str = "system",
+        task_memory_in_system: bool = True,
     ) -> ContextWindow:
+        if stable_prefix_message_count < 2:
+            raise ValueError("stable prompt prefix must contain system and user messages")
+        if task_memory_role not in {"system", "user"}:
+            raise ValueError("task memory role must be system or user")
         messages = [
             ModelMessage.model_validate(self.redactor.redact(message.model_dump(mode="json")))
             for message in messages
         ]
-        if len(messages) < 2:
+        if len(messages) < stable_prefix_message_count:
             raise ValueError("context requires system and user messages")
         normalized, truncated_messages = self._normalize_messages(messages)
         normalized = self._exclude_history_values(normalized, excluded_history_values)
-        base = normalized[:2]
-        groups = self._groups(normalized[2:], base[1].content, plan)
+        base = normalized[:stable_prefix_message_count]
+        groups = self._groups(normalized[stable_prefix_message_count:], base[-1].content, plan)
         tool_spec_tokens = self.estimate_tools(tools)
         base_tokens = self.estimate_messages(base)
-        fixed_tokens = tool_spec_tokens + base_tokens
+        safe_runtime_memory = self._safe_runtime_memory_message(runtime_memory_message)
+        runtime_memory_tokens = (
+            self.estimate_messages([safe_runtime_memory]) if safe_runtime_memory is not None else 0
+        )
+        fixed_tokens = tool_spec_tokens + base_tokens + runtime_memory_tokens
         if fixed_tokens > self.max_tokens:
             raise ContextBudgetError(
                 f"mandatory context requires {fixed_tokens} tokens, budget is {self.max_tokens}"
@@ -144,19 +156,25 @@ class ContextEngine:
             self._build_memory(
                 dropped,
                 plan,
-                base[1].content,
+                base[-1].content,
                 memory_budget,
+                role=task_memory_role,
             )
             if enable_task_memory
             else (None, None)
         )
-        memory_tokens = self.estimate_messages([memory_message]) if memory_message else 0
+        task_memory_tokens = self.estimate_messages([memory_message]) if memory_message else 0
         output = [*base]
         if memory_message is not None:
-            output[0] = output[0].model_copy(
-                update={"content": output[0].content + "\n\n" + memory_message.content},
-                deep=True,
-            )
+            if task_memory_in_system:
+                output[0] = output[0].model_copy(
+                    update={"content": output[0].content + "\n\n" + memory_message.content},
+                    deep=True,
+                )
+            else:
+                output.insert(stable_prefix_message_count, memory_message)
+        if safe_runtime_memory is not None:
+            output.insert(stable_prefix_message_count, safe_runtime_memory)
         for group in selected:
             output.extend(group.messages)
 
@@ -193,12 +211,28 @@ class ContextEngine:
                 selected_steps=selections,
                 dropped_steps=[group.step_index for group in dropped],
                 memory_budget_tokens=memory_budget,
-                memory_tokens=memory_tokens,
+                memory_tokens=runtime_memory_tokens + task_memory_tokens,
                 truncated_messages=truncated_messages,
                 history_budget_tokens=history_budget,
-                history_tokens=(sum(group.estimated_tokens for group in selected) + memory_tokens),
+                history_tokens=(
+                    sum(group.estimated_tokens for group in selected)
+                    + runtime_memory_tokens
+                    + task_memory_tokens
+                ),
             ),
         )
+
+    def _safe_runtime_memory_message(
+        self,
+        message: ModelMessage | None,
+    ) -> ModelMessage | None:
+        if message is None:
+            return None
+        payload = self.redactor.redact(message.model_dump(mode="json"))
+        if message.role in {"system", "user"}:
+            return ModelMessage.model_validate(payload)
+        safe = self.content_guard.inspect(message.content).safe_text
+        return message.model_copy(update={"content": safe}, deep=True)
 
     def _normalize_messages(self, messages: list[ModelMessage]) -> tuple[list[ModelMessage], int]:
         normalized: list[ModelMessage] = []
@@ -300,6 +334,8 @@ class ContextEngine:
         plan: Plan | None,
         goal: str,
         token_limit: int,
+        *,
+        role: str,
     ) -> tuple[TaskMemory | None, ModelMessage | None]:
         if not dropped or token_limit <= 0:
             return None, None
@@ -335,13 +371,17 @@ class ContextEngine:
                     )
         scored_evidence.sort(key=lambda item: (-item[0], item[1].step_index))
         memory.key_evidence = [evidence for _, evidence in scored_evidence[:12]]
-        return self._fit_memory(memory, token_limit)
+        return self._fit_memory(memory, token_limit, role=role)
 
     def _fit_memory(
-        self, memory: TaskMemory, token_limit: int
+        self,
+        memory: TaskMemory,
+        token_limit: int,
+        *,
+        role: str,
     ) -> tuple[TaskMemory | None, ModelMessage | None]:
         while True:
-            message = self._memory_message(memory)
+            message = self._memory_message(memory, role=role)
             if self.estimate_messages([message]) <= token_limit:
                 return memory, message
             if memory.decisions:
@@ -368,7 +408,7 @@ class ContextEngine:
                     unfinished_items=memory.unfinished_items[:1],
                 )
                 message = ModelMessage(
-                    role="system",
+                    role=role,
                     content=MEMORY_PREFIX + minimal.model_dump_json(exclude_defaults=True),
                 )
                 if self.estimate_messages([message]) <= token_limit:
@@ -376,9 +416,9 @@ class ContextEngine:
                 return None, None
 
     @staticmethod
-    def _memory_message(memory: TaskMemory) -> ModelMessage:
+    def _memory_message(memory: TaskMemory, *, role: str = "system") -> ModelMessage:
         return ModelMessage(
-            role="system",
+            role=role,
             content=MEMORY_PREFIX + memory.model_dump_json(exclude_defaults=True),
         )
 

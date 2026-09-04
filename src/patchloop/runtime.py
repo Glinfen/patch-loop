@@ -10,6 +10,7 @@ from patchloop.context import ContextBudgetError, ContextEngine
 from patchloop.domain import (
     AgentStep,
     ErrorKind,
+    PromptCacheLayout,
     StepStatus,
     Task,
     TaskReport,
@@ -38,7 +39,8 @@ from patchloop.memory.working import (
     WorkingMemoryManager,
 )
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
-from patchloop.providers.base import ModelMessage, ModelProvider, ModelUsage
+from patchloop.prompt_layout import PromptLayout
+from patchloop.providers.base import ModelMessage, ModelProvider, ModelUsage, ToolSpec
 from patchloop.tools.gateway import ToolGateway
 
 SYSTEM_PROMPT = """You are PatchLoop, a repository-scoped coding agent.
@@ -149,10 +151,13 @@ class AgentRuntime:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except WorkingMemoryBudgetError as exc:
             return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
-        messages = [
-            ModelMessage(role="system", content=SYSTEM_PROMPT),
-            ModelMessage(role="user", content=task.goal),
-        ]
+        prompt_layout = PromptLayout(task.execution.prompt_cache_layout)
+        messages = prompt_layout.initial_messages(
+            SYSTEM_PROMPT,
+            task.goal,
+            project_instructions=task.execution.project_instructions,
+        )
+        frozen_tools = PromptLayout.freeze_tools(self.gateway.specifications())
         self._persist_task(task)
         self._emit("task.started", task, {"provider": self.provider.name})
         try:
@@ -167,6 +172,8 @@ class AgentRuntime:
             task_id=task.id,
             next_step_index=0,
             messages=messages,
+            tool_specifications=frozen_tools,
+            prompt_prefix_message_count=prompt_layout.prefix_message_count,
             plan=task.plan,
             working_memory=memory_snapshot.working_memory,
             episodic_memory=memory_snapshot.episodic_memory,
@@ -288,9 +295,17 @@ class AgentRuntime:
                 )
                 self._record_step(step)
                 self._emit("step.started", task, {"step": step_index})
-                specifications = self.gateway.specifications()
+                specifications = (
+                    state.tool_specifications
+                    if state.tool_specifications is not None
+                    else self.gateway.specifications()
+                )
+                prefix_message_count = state.prompt_prefix_message_count
+                stable_layout = task.execution.prompt_cache_layout is PromptCacheLayout.STABLE
                 try:
-                    mandatory_tokens = context_engine.estimate_messages(messages[:2])
+                    mandatory_tokens = context_engine.estimate_messages(
+                        messages[:prefix_message_count]
+                    )
                     mandatory_tokens += context_engine.estimate_tools(specifications)
                     retrieval_cap = max(
                         0,
@@ -313,6 +328,25 @@ class AgentRuntime:
                             messages,
                             specifications,
                             self.gateway.context.plan,
+                            stable_prefix_message_count=prefix_message_count,
+                            task_memory_in_system=not stable_layout,
+                        )
+                    elif stable_layout:
+                        window = context_engine.build(
+                            messages,
+                            specifications,
+                            self.gateway.context.plan,
+                            stable_prefix_message_count=prefix_message_count,
+                            runtime_memory_message=PromptLayout.runtime_memory_message(
+                                layered_memory.rendered
+                            ),
+                            history_token_budget=(layered_memory.allocation.recent_history_tokens),
+                            enable_task_memory=False,
+                            excluded_history_values=(
+                                self._memory_manager.inactive_context_values()
+                                if self._memory_manager is not None
+                                else ()
+                            ),
                         )
                     else:
                         request_messages = self._with_runtime_memory(messages, layered_memory)
@@ -320,6 +354,7 @@ class AgentRuntime:
                             request_messages,
                             specifications,
                             self.gateway.context.plan,
+                            stable_prefix_message_count=prefix_message_count,
                             history_token_budget=(layered_memory.allocation.recent_history_tokens),
                             enable_task_memory=False,
                             excluded_history_values=(
@@ -366,8 +401,12 @@ class AgentRuntime:
                     provider=self.provider.name,
                     model=self._provider_model(),
                     thinking=self._provider_thinking(),
+                    epoch_snapshot=task.execution.cache_epoch,
                     system_instructions=SYSTEM_PROMPT,
-                    task_project_snapshot=task.goal,
+                    task_project_snapshot={
+                        "goal": task.goal,
+                        "project_instructions": task.execution.project_instructions,
+                    },
                     memory_projection=(
                         layered_memory.rendered
                         if layered_memory is not None
@@ -518,6 +557,8 @@ class AgentRuntime:
                     repeated_errors,
                     tool_failures,
                     elapsed_before + (monotonic() - started),
+                    tool_specifications=specifications,
+                    prompt_prefix_message_count=prefix_message_count,
                 )
                 self._persist_checkpoint(state)
                 self._persist_task(task)
@@ -898,11 +939,20 @@ class AgentRuntime:
         repeated_errors: dict[str, int],
         tool_failures: int,
         elapsed_seconds: float,
+        *,
+        tool_specifications: list[ToolSpec] | None = None,
+        prompt_prefix_message_count: int = 2,
     ) -> RuntimeCheckpoint:
         return RuntimeCheckpoint(
             task_id=task.id,
             next_step_index=next_step_index,
             messages=messages,
+            tool_specifications=(
+                PromptLayout.freeze_tools(tool_specifications)
+                if tool_specifications is not None
+                else None
+            ),
+            prompt_prefix_message_count=prompt_prefix_message_count,
             plan=self.gateway.context.plan,
             requires_replan=self.gateway.context.requires_replan,
             replan_count=self.gateway.context.replan_count,

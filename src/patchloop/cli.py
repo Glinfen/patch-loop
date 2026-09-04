@@ -18,9 +18,11 @@ from patchloop.domain import (
     TaskStatus,
 )
 from patchloop.evaluation import (
+    CacheAcceptanceEvaluator,
     CacheBenchmarkRunner,
     CacheEvaluationReport,
     CacheEvaluationVariant,
+    CacheRolloutPolicy,
     CodingBenchmarkRunner,
     EvaluationRunner,
     EvaluationVariant,
@@ -29,6 +31,7 @@ from patchloop.evaluation import (
     MemoryBenchmarkMode,
     MemoryBenchmarkRunner,
     MemoryBenchmarkVariant,
+    MemoryQualityEvidence,
     RealProviderCacheCollector,
     RetrievalBaseline,
     load_coding_manifest,
@@ -453,6 +456,66 @@ def _provider_cache_report(trace: Path) -> CacheEvaluationReport:
         runs=[run],
         summaries=[summary],
     )
+
+
+@app.command("validate-cache-gates")
+def validate_cache_gates(
+    report: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/results/pco06_cache_matrix.json"),
+    local_report: Annotated[
+        str,
+        typer.Option(help="Optional deterministic report for compression/input gates."),
+    ] = "",
+    quality: Annotated[
+        str,
+        typer.Option(help="JSON file containing PCO-07 memory/security evidence."),
+    ] = "",
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/results/pco07_acceptance.json"),
+    enable_stable: Annotated[
+        bool,
+        typer.Option(help="Evaluate the stable layout as the selected gray candidate."),
+    ] = False,
+    allow_simulated: Annotated[
+        bool,
+        typer.Option(help="Allow deterministic cache data for local dry-run gating."),
+    ] = False,
+) -> None:
+    try:
+        cache_report = CacheEvaluationReport.model_validate_json(report.read_text(encoding="utf-8"))
+        deterministic_report = (
+            CacheEvaluationReport.model_validate_json(
+                Path(local_report).read_text(encoding="utf-8")
+            )
+            if local_report
+            else None
+        )
+        quality_evidence = (
+            MemoryQualityEvidence.model_validate_json(Path(quality).read_text(encoding="utf-8"))
+            if quality
+            else None
+        )
+        acceptance = CacheAcceptanceEvaluator(
+            require_provider_reported=not allow_simulated
+        ).evaluate(
+            cache_report,
+            quality=quality_evidence,
+            local_report=deterministic_report,
+            rollout=CacheRolloutPolicy(enabled=enable_stable),
+        )
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(acceptance.model_dump_json(indent=2), encoding="utf-8")
+    typer.echo(acceptance.human_summary())
+    typer.echo(f"machine_report={output}")
+    if not acceptance.passed:
+        raise typer.Exit(code=1)
 
 
 @app.command("experiment-memory")

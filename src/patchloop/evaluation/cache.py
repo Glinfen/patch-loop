@@ -18,6 +18,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from patchloop.cache import CacheLayoutReason, CacheLayoutTrace
+from patchloop.cache_epoch import CacheEpoch, CacheEpochBoundary
 from patchloop.events import Event
 from patchloop.providers import DeterministicPrefixCacheSimulator
 from patchloop.providers.base import ModelMessage, ModelUsage, ToolSpec
@@ -198,6 +199,7 @@ class CacheEvaluationReport(BaseModel):
     scenarios: tuple[CacheEvaluationScenario, ...] = ALL_CACHE_SCENARIOS
     fixture_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     deterministic_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    compression_prefix_reusable: bool = False
     runs: list[CacheRunReport] = Field(min_length=1)
     summaries: list[CacheVariantSummary] = Field(min_length=1)
 
@@ -265,6 +267,7 @@ class CacheBenchmarkRunner:
             variants=ALL_CACHE_VARIANTS,
             fixture_fingerprint=fixture_fingerprint,
             deterministic_fingerprint=deterministic_fingerprint,
+            compression_prefix_reusable=_compression_prefix_reusable(),
             runs=runs,
             summaries=summaries,
         )
@@ -351,6 +354,12 @@ def build_cache_fixture(variant: CacheEvaluationVariant) -> list[CacheSimulation
     ]
     project = "project=cache-fixture-v1"
     requests: list[CacheSimulationRequest] = []
+    logical_tail: list[ModelMessage] = []
+    previous_history: list[ModelMessage] = []
+    stable_instructions = (
+        "You are PatchLoop's fixture agent. Follow repository and permission boundaries. "
+        + ("immutable-policy;" * 1_250)
+    )
 
     def add(
         scenario: CacheEvaluationScenario,
@@ -363,11 +372,23 @@ def build_cache_fixture(variant: CacheEvaluationVariant) -> list[CacheSimulation
         tools: list[ToolSpec] = base_tools,
         expected_full_invalidation: bool = False,
     ) -> None:
+        nonlocal logical_tail, previous_history
+        rendered_memory = _render_fixture_memory(variant, memory)
         system = (
-            "You are PatchLoop's fixture agent. Follow repository and permission boundaries."
+            stable_instructions
             if variant is not CacheEvaluationVariant.CURRENT_LAYOUT
-            else f"You are PatchLoop's fixture agent. runtime_memory={memory}"
+            else f"{stable_instructions}runtime_memory={rendered_memory}"
         )
+        if variant is not CacheEvaluationVariant.CURRENT_LAYOUT:
+            if not logical_tail or scenario is CacheEvaluationScenario.EXPLICIT_COMPRESSION:
+                logical_tail = [*current_history]
+            elif scenario is not CacheEvaluationScenario.CHECKPOINT_RESTORE:
+                logical_tail.extend(current_history[len(previous_history) :])
+            logical_tail.append(ModelMessage(role="system", content=rendered_memory))
+            request_tail = logical_tail
+        else:
+            request_tail = current_history
+        previous_history = [*current_history]
         requests.append(
             CacheSimulationRequest(
                 step=len(requests),
@@ -375,7 +396,7 @@ def build_cache_fixture(variant: CacheEvaluationVariant) -> list[CacheSimulation
                 messages=[
                     ModelMessage(role="system", content=system),
                     ModelMessage(role="user", content=current_project),
-                    *current_history,
+                    *request_tail,
                 ],
                 tools=tools,
                 model=model,
@@ -463,6 +484,39 @@ def build_cache_fixture(variant: CacheEvaluationVariant) -> list[CacheSimulation
         expected_full_invalidation=True,
     )
     return requests
+
+
+def _render_fixture_memory(variant: CacheEvaluationVariant, state: str) -> str:
+    lengths = {
+        CacheEvaluationVariant.CURRENT_LAYOUT: 1_600,
+        CacheEvaluationVariant.STABLE_PREFIX: 1_200,
+        CacheEvaluationVariant.FROZEN_TOOLS: 1_050,
+        CacheEvaluationVariant.PROVIDER_PROJECTION: 600,
+        CacheEvaluationVariant.EPOCH_COMPRESSION: 420,
+        CacheEvaluationVariant.FULL_OPTIMIZATION: 180,
+    }
+    prefix = f"memory_state={state}; "
+    return prefix + "diagnostic-detail=" + ("evidence;" * lengths[variant])
+
+
+def _compression_prefix_reusable() -> bool:
+    history = [
+        ModelMessage(role="system", content="stable instructions"),
+        ModelMessage(role="user", content="run the fixture"),
+        ModelMessage(role="assistant", content="inspect the fixture"),
+    ]
+    tools = [ToolSpec(name="read_file", description="Read a file.", parameters={"type": "object"})]
+    epoch = CacheEpoch.bootstrap(history, prefix_message_count=2, epoch_id="pco-07")
+    request = epoch.compression_request(
+        history,
+        tools,
+        boundary=CacheEpochBoundary.EXPLICIT_COMPRESSION,
+    )
+    return (
+        request.messages[: epoch.prefix_message_count] == epoch.frozen_prefix
+        and request.tools == tools
+        and request.source_prefix_fingerprint == epoch.snapshot.prefix_fingerprint
+    )
 
 
 def _simulation_step(

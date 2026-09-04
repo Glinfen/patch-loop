@@ -34,6 +34,14 @@ from patchloop.evaluation.experiments import (
     ExperimentReport,
     ExperimentRunner,
 )
+from patchloop.evaluation.gates import (
+    CacheAcceptanceEvaluator,
+    CacheAcceptanceReport,
+    CacheGateCheck,
+    CacheRolloutPolicy,
+    GateStatus,
+    MemoryQualityEvidence,
+)
 from patchloop.evaluation.manifest import load_evaluation_manifest, repository_tree_sha256
 from patchloop.evaluation.memory import (
     MemoryAblationReport,
@@ -74,11 +82,15 @@ __all__ = [
     "ALL_CACHE_VARIANTS",
     "DEFAULT_EXPERIMENTS",
     "PROVIDER_CACHE_CAPABILITIES",
+    "CacheAcceptanceEvaluator",
+    "CacheAcceptanceReport",
     "CacheBenchmarkRunner",
     "CacheEvaluationReport",
     "CacheEvaluationScenario",
     "CacheEvaluationVariant",
+    "CacheGateCheck",
     "CacheProviderCapability",
+    "CacheRolloutPolicy",
     "CacheRunReport",
     "CacheSimulationRequest",
     "CacheSimulationStep",
@@ -101,6 +113,7 @@ __all__ = [
     "ExperimentFeatures",
     "ExperimentReport",
     "ExperimentRunner",
+    "GateStatus",
     "HiddenTestDefinition",
     "MemoryAblationReport",
     "MemoryAblationRunSummary",
@@ -116,6 +129,7 @@ __all__ = [
     "MemoryFailureCategory",
     "MemoryNoiseStyle",
     "MemoryOptimizationStage",
+    "MemoryQualityEvidence",
     "MemoryTaskDefinition",
     "MemoryTaskManifest",
     "MemoryTaskResult",

@@ -54,6 +54,57 @@ def test_runtime_executes_multiple_tools_and_records_trace(tmp_path: Path) -> No
     assert events[-1].type == "task.completed"
 
 
+def test_runtime_reports_and_traces_provider_cache_usage(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    trace = EventLogger(tmp_path / "trace.jsonl")
+    gateway = ToolGateway(ToolContext(repository), [ListFilesTool()], trace)
+    provider = FakeProvider(
+        [
+            ModelResponse(
+                tool_calls=[ToolCall(name="list_files")],
+                usage=ModelUsage(
+                    input_tokens=10,
+                    output_tokens=2,
+                    cost_usd=0.01,
+                    cache_hit_tokens=10,
+                    cache_miss_tokens=0,
+                    cache_write_tokens=3,
+                ),
+            ),
+            ModelResponse(
+                content="Done",
+                usage=ModelUsage(
+                    input_tokens=20,
+                    output_tokens=4,
+                    cost_usd=0.02,
+                    cache_hit_tokens=0,
+                    cache_miss_tokens=20,
+                ),
+            ),
+        ]
+    )
+
+    result = AgentRuntime(provider, gateway, trace).run(
+        Task(goal="Measure cache usage", repository=str(repository))
+    )
+
+    assert result.status is TaskStatus.COMPLETED
+    assert result.report is not None
+    assert result.report.input_tokens == 30
+    assert result.report.cache_hit_tokens == 10
+    assert result.report.cache_miss_tokens == 20
+    assert result.report.cache_write_tokens == 3
+    assert result.report.cache_hit_rate == 1 / 3
+    assert result.report.cache_usage_reported_calls == 2
+    assert result.report.cache_usage_unreported_calls == 0
+    assert result.report.cache_usage_inconsistent_calls == 0
+    assert result.report.cache_write_reported_calls == 1
+    model_events = [event for event in trace.read() if event.type == "model.completed"]
+    assert model_events[0].data["usage"]["cache_hit_tokens"] == 10
+    assert model_events[1].data["usage"]["cache_miss_tokens"] == 20
+
+
 def test_runtime_stops_at_step_budget(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()

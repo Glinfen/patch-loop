@@ -12,7 +12,7 @@ from patchloop.memory import (
     MemorySourceKind,
 )
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
-from patchloop.providers import FakeProvider, ModelMessage, ModelResponse
+from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ModelUsage
 
 runner = CliRunner()
 
@@ -225,7 +225,18 @@ def test_memory_model_benchmark_requires_explicit_evaluation_credentials(
 
 
 def test_run_uses_provider_and_persists_result(tmp_path: Path, monkeypatch: object) -> None:
-    provider = FakeProvider([ModelResponse(content="Repository inspected.")])
+    provider = FakeProvider(
+        [
+            ModelResponse(
+                content="Repository inspected.",
+                usage=ModelUsage(
+                    input_tokens=10,
+                    cache_hit_tokens=8,
+                    cache_miss_tokens=2,
+                ),
+            )
+        ]
+    )
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "patchloop.cli.DeepSeekProvider.from_env",
         lambda *_: provider,
@@ -247,14 +258,21 @@ def test_run_uses_provider_and_persists_result(tmp_path: Path, monkeypatch: obje
     replay = runner.invoke(app, ["replay", payload["id"], "--repo", str(tmp_path)])
 
     assert status.exit_code == 0
-    assert json.loads(status.output)["status"] == "completed"
+    status_payload = json.loads(status.output)
+    assert status_payload["status"] == "completed"
+    assert status_payload["report"]["cache_hit_rate"] == 0.8
     assert diff.exit_code == 0 and "No changes." in diff.output
     assert context.exit_code == 0
     assert "context [" in context.output
     assert metrics.exit_code == 0
-    assert json.loads(metrics.output)["status"] == "completed"
+    metrics_payload = json.loads(metrics.output)
+    assert metrics_payload["status"] == "completed"
+    assert metrics_payload["cache_hit_tokens"] == 8
+    assert metrics_payload["cache_miss_tokens"] == 2
     assert replay.exit_code == 0
-    assert json.loads(replay.output)["frames"][-1]["type"] == "task.completed"
+    replay_payload = json.loads(replay.output)
+    assert replay_payload["frames"][-1]["type"] == "task.completed"
+    assert replay_payload["provider_usages"][0]["cache_hit_rate"] == 0.8
 
 
 def test_cli_cancels_created_task(tmp_path: Path) -> None:

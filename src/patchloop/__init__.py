@@ -1,9 +1,13 @@
 """PatchLoop public package."""
 
+from patchloop.cache import CacheDiagnostics, CacheLayoutReason, CacheLayoutTrace
 from patchloop.domain import AgentStep, Plan, PlanItem, Task, TaskReport, ToolCall, ToolResult
 
 __all__ = [
     "AgentStep",
+    "CacheDiagnostics",
+    "CacheLayoutReason",
+    "CacheLayoutTrace",
     "Plan",
     "PlanItem",
     "Task",

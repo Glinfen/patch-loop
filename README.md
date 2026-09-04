@@ -28,6 +28,9 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [DeepSeek V4 Flash 评测结果](docs/CODING_BENCHMARK_RESULTS.md)：6 个代码任务的优化前后成功率、成本、时延与限制。
 - [Hard Suite 评测结果](docs/CODING_BENCHMARK_HARD_RESULTS.md)：5 个隐藏测试任务从 40% 到 100% 的失败分析与运行时优化证据。
 - [真实 Agent 长上下文记忆首场景验收](docs/milestones/LCM_REAL_AGENT_ACCEPTANCE.md)：DeepSeek V4 Flash 在冲突、噪声和提示注入证据下的真实修改、隐藏测试、记忆指标与失败驱动优化。
+- [提示缓存优化开发计划](docs/PROMPT_CACHE_OPTIMIZATION_PLAN.md)：针对真实场景约 36.2% 的提示缓存命中率，规划逐步观测、稳定前缀、精简记忆投影、cache epoch 与冷热验收。
+- [PCO-00 验收](docs/milestones/PCO_00_ACCEPTANCE.md)：缓存用量已贯通报告、检查点、metrics 与 replay；新真实基线命中率为 4.31%，下一步进入请求指纹诊断。
+- [PCO-01 验收](docs/milestones/PCO_01_ACCEPTANCE.md)：新增安全请求指纹、区段级前缀诊断、缓存布局归因及恢复安全快照。
 
 ## 推荐项目周期
 
@@ -94,6 +97,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - `memory` CLI 可按类型、状态、步骤和查询检查记忆，逐条展示总分、评分分量、来源与召回原因；`metrics` 和 `replay` 同步展示库存、耗时、压缩比、安全过滤及每个模型步骤使用的记忆。
 - `experiment-memory` 运行 LCM-10 的六种记忆消融，输出失败 taxonomy、结果指纹和仅针对最高频两类失败的优化阶段。
 - 首个 DeepSeek V4 Flash 真实长上下文场景已完成：12/12 份证据读取、仅修改目标文件、公开测试 1/1、隐藏测试 5/5，并记录 20 次记忆检索、3 次压缩、10 条语义替代、0 条过期命中和 15 次安全过滤。
+- 后续真实记忆场景扩展现已悬挂：该运行约 80k 提示缓存 Token 命中、141k 未命中；项目先执行 PCO-00～PCO-07，完成缓存观测、稳定前缀与冷/热评测门禁后再恢复记忆开发。
 
 ## 本地开发
 

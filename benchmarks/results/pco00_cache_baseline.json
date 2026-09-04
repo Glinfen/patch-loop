@@ -1,0 +1,141 @@
+{
+  "schema_version": "1.0",
+  "generated_on": "2026-09-04",
+  "scenario_id": "contract-migration-with-noisy-evidence",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "task_id": "2483e3a8-a34b-40c8-a9fa-9f1b7489aab1",
+  "status": "completed",
+  "completion_reason": "verified_plan",
+  "runtime": {
+    "max_steps": 30,
+    "max_context_tokens": 16000,
+    "max_working_memory_tokens": 2000,
+    "max_tool_output_chars": 1800,
+    "context_recent_steps": 1
+  },
+  "outcome": {
+    "steps": 8,
+    "tool_calls": 21,
+    "failed_tool_calls": 0,
+    "changed_files": [
+      "order_service.py"
+    ],
+    "public_tests_passed": 1,
+    "hidden_tests_passed": 5,
+    "unique_evidence_files_read": 12,
+    "evidence_read_once": true,
+    "stale_memory_hits": 0,
+    "synthetic_credential_leaks": 0
+  },
+  "provider_usage": {
+    "input_tokens": 83061,
+    "output_tokens": 2104,
+    "cost_usd": 0.0117259352,
+    "cache_hit_tokens": 3584,
+    "cache_miss_tokens": 79477,
+    "cache_write_tokens": null,
+    "cache_hit_rate": 0.04314901096784291,
+    "reported_calls": 8,
+    "unreported_calls": 0,
+    "inconsistent_calls": 0,
+    "cache_write_reported_calls": 0
+  },
+  "step_usage": [
+    {
+      "step": 0,
+      "input_tokens": 3358,
+      "output_tokens": 257,
+      "cache_hit_tokens": 384,
+      "cache_miss_tokens": 2974,
+      "cache_write_tokens": null,
+      "cache_hit_rate": 0.11435378201310303,
+      "cost_usd": 0.0004893952,
+      "cache_usage_consistent": true
+    },
+    {
+      "step": 1,
+      "input_tokens": 8739,
+      "output_tokens": 273,
+      "cache_hit_tokens": 640,
+      "cache_miss_tokens": 8099,
+      "cache_write_tokens": null,
+      "cache_hit_rate": 0.07323492390433688,
+      "cost_usd": 0.001212092,
+      "cache_usage_consistent": true
+    },
+    {
+      "step": 2,
+      "input_tokens": 10686,
+      "output_tokens": 134,
+      "cache_hit_tokens": 640,
+      "cache_miss_tokens": 10046,
+      "cache_write_tokens": null,
+      "cache_hit_rate": 0.05989144675276062,
+      "cost_usd": 0.001445752,
+      "cache_usage_consistent": true
+    },
+    {
+      "step": 3,
+      "input_tokens": 11207,
+      "output_tokens": 360,
+      "cache_hit_tokens": 640,
+      "cache_miss_tokens": 10567,
+      "cache_write_tokens": null,
+      "cache_hit_rate": 0.05710716516462925,
+      "cost_usd": 0.001581972,
+      "cache_usage_consistent": true
+    },
+    {
+      "step": 4,
+      "input_tokens": 12551,
+      "output_tokens": 614,
+      "cache_hit_tokens": 384,
+      "cache_miss_tokens": 12167,
+      "cache_write_tokens": null,
+      "cache_hit_rate": 0.030595171699466177,
+      "cost_usd": 0.0018763752,
+      "cache_usage_consistent": true
+    },
+    {
+      "step": 5,
+      "input_tokens": 12541,
+      "output_tokens": 191,
+      "cache_hit_tokens": 256,
+      "cache_miss_tokens": 12285,
+      "cache_write_tokens": null,
+      "cache_hit_rate": 0.020413045211705606,
+      "cost_usd": 0.0017740968,
+      "cache_usage_consistent": true
+    },
+    {
+      "step": 6,
+      "input_tokens": 11997,
+      "output_tokens": 64,
+      "cache_hit_tokens": 256,
+      "cache_miss_tokens": 11741,
+      "cache_write_tokens": null,
+      "cache_hit_rate": 0.021338668000333415,
+      "cost_usd": 0.0016623768,
+      "cache_usage_consistent": true
+    },
+    {
+      "step": 7,
+      "input_tokens": 11982,
+      "output_tokens": 211,
+      "cache_hit_tokens": 384,
+      "cache_miss_tokens": 11598,
+      "cache_write_tokens": null,
+      "cache_hit_rate": 0.03204807210816224,
+      "cost_usd": 0.0016838752,
+      "cache_usage_consistent": true
+    }
+  ],
+  "diagnosis": {
+    "first_large_miss_step": 0,
+    "first_post_cold_start_large_miss_step": 1,
+    "lowest_hit_rate_step": 5,
+    "lowest_hit_rate": 0.020413045211705606,
+    "finding": "After the cold start, every request still missed more than 92% of its input tokens. PCO-01 must identify the first changing request section before layout changes begin."
+  }
+}

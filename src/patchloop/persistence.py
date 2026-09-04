@@ -11,6 +11,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from patchloop.cache import CacheDiagnosticsSnapshot
 from patchloop.domain import AgentStep, Plan, Task, TaskStatus, ToolCall, ToolResult
 from patchloop.memory.episodic import EpisodicMemorySnapshot
 from patchloop.memory.manager import MemoryManagerSnapshot
@@ -37,6 +38,14 @@ class RuntimeCheckpoint(BaseModel):
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0)
+    cache_hit_tokens: int = Field(default=0, ge=0)
+    cache_miss_tokens: int = Field(default=0, ge=0)
+    cache_write_tokens: int = Field(default=0, ge=0)
+    cache_usage_reported_calls: int = Field(default=0, ge=0)
+    cache_usage_unreported_calls: int = Field(default=0, ge=0)
+    cache_usage_inconsistent_calls: int = Field(default=0, ge=0)
+    cache_write_reported_calls: int = Field(default=0, ge=0)
+    cache_diagnostics: CacheDiagnosticsSnapshot | None = None
     elapsed_seconds: float = Field(default=0.0, ge=0)
     context_windows: int = Field(default=0, ge=0)
     context_compactions: int = Field(default=0, ge=0)

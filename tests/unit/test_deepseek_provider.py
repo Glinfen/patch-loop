@@ -48,6 +48,19 @@ def completion_response(arguments: str = '{"path":"app.py"}') -> dict[str, Any]:
     }
 
 
+def completion_response_with_cache(
+    *, cache_hit_tokens: int, cache_miss_tokens: int
+) -> dict[str, Any]:
+    response = completion_response()
+    response["usage"].update(
+        {
+            "prompt_cache_hit_tokens": cache_hit_tokens,
+            "prompt_cache_miss_tokens": cache_miss_tokens,
+        }
+    )
+    return response
+
+
 def make_provider(transport: FakeTransport) -> DeepSeekProvider:
     config = DeepSeekConfig(api_key=SecretStr("test-secret"), max_retries=0)
     return DeepSeekProvider(config, transport=transport)
@@ -70,6 +83,8 @@ def test_provider_maps_messages_tools_and_usage() -> None:
     assert response.tool_calls[0].arguments == {"path": "app.py"}
     assert response.usage.input_tokens == 12
     assert response.usage.output_tokens == 5
+    assert response.usage.cache_hit_tokens is None
+    assert response.usage.cache_miss_tokens is None
     assert response.usage.cost_usd == pytest.approx((12 * 0.14 + 5 * 0.28) / 1_000_000)
     url, headers, payload, _ = transport.requests[0]
     assert url == "https://api.deepseek.com/chat/completions"
@@ -78,6 +93,57 @@ def test_provider_maps_messages_tools_and_usage() -> None:
     assert payload["thinking"] == {"type": "enabled"}
     assert payload["reasoning_effort"] == "high"
     assert payload["tools"][0]["function"]["description"].startswith("[read]")
+
+
+def test_provider_preserves_cache_usage_and_prices_mixed_cache_tokens() -> None:
+    provider = make_provider(
+        FakeTransport([completion_response_with_cache(cache_hit_tokens=8, cache_miss_tokens=4)])
+    )
+
+    response = provider.complete([ModelMessage(role="user", content="Inspect")], [])
+
+    assert response.usage.cache_hit_tokens == 8
+    assert response.usage.cache_miss_tokens == 4
+    assert response.usage.cost_usd == pytest.approx((8 * 0.0028 + 4 * 0.14 + 5 * 0.28) / 1_000_000)
+
+
+@pytest.mark.parametrize(
+    ("hit_tokens", "miss_tokens", "expected_input_cost"),
+    [(12, 0, 12 * 0.0028), (0, 12, 12 * 0.14)],
+)
+def test_provider_prices_all_hit_and_all_miss_cache_usage(
+    hit_tokens: int,
+    miss_tokens: int,
+    expected_input_cost: float,
+) -> None:
+    provider = make_provider(
+        FakeTransport(
+            [
+                completion_response_with_cache(
+                    cache_hit_tokens=hit_tokens,
+                    cache_miss_tokens=miss_tokens,
+                )
+            ]
+        )
+    )
+
+    response = provider.complete([ModelMessage(role="user", content="Inspect")], [])
+
+    assert response.usage.cache_hit_tokens == hit_tokens
+    assert response.usage.cache_miss_tokens == miss_tokens
+    assert response.usage.cost_usd == pytest.approx((expected_input_cost + 5 * 0.28) / 1_000_000)
+
+
+def test_provider_preserves_inconsistent_cache_usage_but_prices_conservatively() -> None:
+    provider = make_provider(
+        FakeTransport([completion_response_with_cache(cache_hit_tokens=7, cache_miss_tokens=4)])
+    )
+
+    response = provider.complete([ModelMessage(role="user", content="Inspect")], [])
+
+    assert response.usage.cache_hit_tokens == 7
+    assert response.usage.cache_miss_tokens == 4
+    assert response.usage.cost_usd == pytest.approx((12 * 0.14 + 5 * 0.28) / 1_000_000)
 
 
 def test_config_loads_generic_llm_names_from_explicit_env_file(

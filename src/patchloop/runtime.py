@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from time import monotonic
 
+from patchloop.cache import CacheDiagnostics
 from patchloop.context import ContextBudgetError, ContextEngine
 from patchloop.domain import (
     AgentStep,
@@ -37,7 +38,7 @@ from patchloop.memory.working import (
     WorkingMemoryManager,
 )
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
-from patchloop.providers.base import ModelMessage, ModelProvider
+from patchloop.providers.base import ModelMessage, ModelProvider, ModelUsage
 from patchloop.tools.gateway import ToolGateway
 
 SYSTEM_PROMPT = """You are PatchLoop, a repository-scoped coding agent.
@@ -66,15 +67,24 @@ class AgentRuntime:
         event_logger: EventLogger | None = None,
         state_store: SQLiteStore | None = None,
         context_engine: ContextEngine | None = None,
+        cache_diagnostics: CacheDiagnostics | None = None,
     ) -> None:
         self.provider = provider
         self.gateway = gateway
         self.event_logger = event_logger
         self.state_store = state_store
         self.context_engine = context_engine
+        self._cache_diagnostics = cache_diagnostics or CacheDiagnostics()
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
+        self._cache_hit_tokens = 0
+        self._cache_miss_tokens = 0
+        self._cache_write_tokens = 0
+        self._cache_usage_reported_calls = 0
+        self._cache_usage_unreported_calls = 0
+        self._cache_usage_inconsistent_calls = 0
+        self._cache_write_reported_calls = 0
         self._context_windows = 0
         self._context_compactions = 0
         self._max_context_tokens_used = 0
@@ -101,6 +111,13 @@ class AgentRuntime:
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
+        self._cache_hit_tokens = 0
+        self._cache_miss_tokens = 0
+        self._cache_write_tokens = 0
+        self._cache_usage_reported_calls = 0
+        self._cache_usage_unreported_calls = 0
+        self._cache_usage_inconsistent_calls = 0
+        self._cache_write_reported_calls = 0
         self._context_windows = 0
         self._context_compactions = 0
         self._max_context_tokens_used = 0
@@ -117,6 +134,7 @@ class AgentRuntime:
         self._max_memory_context_tokens_used = 0
         self._max_memory_context_occupancy = 0.0
         self._memory_manager = None
+        self._cache_diagnostics.reset()
         try:
             self._memory_manager = MemoryManager(
                 task.id,
@@ -181,6 +199,13 @@ class AgentRuntime:
         self._input_tokens = checkpoint.input_tokens
         self._output_tokens = checkpoint.output_tokens
         self._cost_usd = checkpoint.cost_usd
+        self._cache_hit_tokens = checkpoint.cache_hit_tokens
+        self._cache_miss_tokens = checkpoint.cache_miss_tokens
+        self._cache_write_tokens = checkpoint.cache_write_tokens
+        self._cache_usage_reported_calls = checkpoint.cache_usage_reported_calls
+        self._cache_usage_unreported_calls = checkpoint.cache_usage_unreported_calls
+        self._cache_usage_inconsistent_calls = checkpoint.cache_usage_inconsistent_calls
+        self._cache_write_reported_calls = checkpoint.cache_write_reported_calls
         self._context_windows = checkpoint.context_windows
         self._context_compactions = checkpoint.context_compactions
         self._max_context_tokens_used = checkpoint.max_context_tokens_used
@@ -196,6 +221,7 @@ class AgentRuntime:
         self._memory_security_filters = checkpoint.memory_security_filters
         self._max_memory_context_tokens_used = checkpoint.max_memory_context_tokens_used
         self._max_memory_context_occupancy = checkpoint.max_memory_context_occupancy
+        self._cache_diagnostics.restore(checkpoint.cache_diagnostics)
         try:
             self._memory_manager = MemoryManager(
                 task.id,
@@ -333,10 +359,29 @@ class AgentRuntime:
                         "memory_fallback": layered_memory is None,
                     },
                 )
+                cache_layout = self._cache_diagnostics.observe(
+                    step_index,
+                    window.messages,
+                    specifications,
+                    provider=self.provider.name,
+                    model=self._provider_model(),
+                    thinking=self._provider_thinking(),
+                    system_instructions=SYSTEM_PROMPT,
+                    task_project_snapshot=task.goal,
+                    memory_projection=(
+                        layered_memory.rendered
+                        if layered_memory is not None
+                        else (
+                            window.memory.model_dump(mode="json")
+                            if window.memory is not None
+                            else ""
+                        )
+                    ),
+                )
                 response = self.provider.complete(window.messages, specifications)
-                self._input_tokens += response.usage.input_tokens
-                self._output_tokens += response.usage.output_tokens
-                self._cost_usd += response.usage.cost_usd
+                self._record_model_usage(response.usage)
+                cache_layout = self._cache_diagnostics.finalize(cache_layout, response.usage)
+                self._emit("cache.layout", task, cache_layout.model_dump(mode="json"))
                 budget_error = self._model_budget_error(task)
                 if budget_error is not None:
                     return self._fail(task, ErrorKind.BUDGET_EXCEEDED, budget_error)
@@ -705,6 +750,18 @@ class AgentRuntime:
             input_tokens=self._input_tokens,
             output_tokens=self._output_tokens,
             cost_usd=self._cost_usd,
+            cache_hit_tokens=(self._cache_hit_tokens if self._cache_usage_reported_calls else None),
+            cache_miss_tokens=(
+                self._cache_miss_tokens if self._cache_usage_reported_calls else None
+            ),
+            cache_write_tokens=(
+                self._cache_write_tokens if self._cache_write_reported_calls else None
+            ),
+            cache_hit_rate=self._cache_hit_rate(),
+            cache_usage_reported_calls=self._cache_usage_reported_calls,
+            cache_usage_unreported_calls=self._cache_usage_unreported_calls,
+            cache_usage_inconsistent_calls=self._cache_usage_inconsistent_calls,
+            cache_write_reported_calls=self._cache_write_reported_calls,
             context_windows=self._context_windows,
             context_compactions=self._context_compactions,
             max_context_tokens_used=self._max_context_tokens_used,
@@ -788,6 +845,49 @@ class AgentRuntime:
             return f"cost budget exceeded (${task.budget.max_cost_usd:.4f})"
         return None
 
+    def _record_model_usage(self, usage: ModelUsage) -> None:
+        self._input_tokens += usage.input_tokens
+        self._output_tokens += usage.output_tokens
+        self._cost_usd += usage.cost_usd
+        hit_tokens = usage.cache_hit_tokens
+        miss_tokens = usage.cache_miss_tokens
+        if hit_tokens is None and miss_tokens is None:
+            self._cache_usage_unreported_calls += 1
+        elif hit_tokens is None or miss_tokens is None:
+            self._cache_usage_unreported_calls += 1
+            self._cache_usage_inconsistent_calls += 1
+        else:
+            self._cache_usage_reported_calls += 1
+            self._cache_hit_tokens += hit_tokens
+            self._cache_miss_tokens += miss_tokens
+            if hit_tokens + miss_tokens != usage.input_tokens:
+                self._cache_usage_inconsistent_calls += 1
+        if usage.cache_write_tokens is not None:
+            self._cache_write_tokens += usage.cache_write_tokens
+            self._cache_write_reported_calls += 1
+
+    def _cache_hit_rate(self) -> float | None:
+        cache_tokens = self._cache_hit_tokens + self._cache_miss_tokens
+        if not self._cache_usage_reported_calls or cache_tokens == 0:
+            return None
+        return self._cache_hit_tokens / cache_tokens
+
+    def _provider_model(self) -> str:
+        config = getattr(self.provider, "config", None)
+        model = getattr(config, "model", None)
+        return model if isinstance(model, str) and model else self.provider.name
+
+    def _provider_thinking(self) -> dict[str, object] | None:
+        config = getattr(self.provider, "config", None)
+        if config is None:
+            return None
+        thinking: dict[str, object] = {}
+        for name in ("thinking_enabled", "reasoning_effort"):
+            value = getattr(config, name, None)
+            if isinstance(value, (bool, str)):
+                thinking[name] = value
+        return thinking or None
+
     def _checkpoint(
         self,
         task: Task,
@@ -815,6 +915,14 @@ class AgentRuntime:
             input_tokens=self._input_tokens,
             output_tokens=self._output_tokens,
             cost_usd=self._cost_usd,
+            cache_hit_tokens=self._cache_hit_tokens,
+            cache_miss_tokens=self._cache_miss_tokens,
+            cache_write_tokens=self._cache_write_tokens,
+            cache_usage_reported_calls=self._cache_usage_reported_calls,
+            cache_usage_unreported_calls=self._cache_usage_unreported_calls,
+            cache_usage_inconsistent_calls=self._cache_usage_inconsistent_calls,
+            cache_write_reported_calls=self._cache_write_reported_calls,
+            cache_diagnostics=self._cache_diagnostics.snapshot(),
             elapsed_seconds=elapsed_seconds,
             context_windows=self._context_windows,
             context_compactions=self._context_compactions,

@@ -10,7 +10,17 @@ def test_metrics_and_replay_locate_failed_tool_step() -> None:
             type="model.completed",
             task_id="task-1",
             sequence=3,
-            data={"step": 0, "usage": {"input_tokens": 12, "output_tokens": 3, "cost_usd": 0.1}},
+            data={
+                "step": 0,
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 3,
+                    "cost_usd": 0.1,
+                    "cache_hit_tokens": 8,
+                    "cache_miss_tokens": 4,
+                    "cache_write_tokens": 2,
+                },
+            },
         ),
         Event(
             type="security.decision",
@@ -56,9 +66,75 @@ def test_metrics_and_replay_locate_failed_tool_step() -> None:
     assert metrics.approvals_requested == 1 and metrics.approvals_denied == 1
     assert metrics.input_tokens == 12 and metrics.output_tokens == 3
     assert metrics.cost_usd == 0.1 and metrics.tool_duration_ms == 2.5
+    assert metrics.cache_hit_tokens == 8
+    assert metrics.cache_miss_tokens == 4
+    assert metrics.cache_write_tokens == 2
+    assert metrics.cache_hit_rate == 2 / 3
+    assert metrics.cache_usage_reported_calls == 1
+    assert metrics.cache_usage_unreported_calls == 0
+    assert metrics.cache_usage_inconsistent_calls == 0
+    assert metrics.cache_write_reported_calls == 1
     assert metrics.errors == {"budget_exceeded": 1, "permission_denied": 1}
     assert replay.frames[4].sequence == 5
     assert replay.frames[4].summary == "run_tests failed"
+    assert len(replay.provider_usages) == 1
+    assert replay.provider_usages[0].cache_hit_rate == 2 / 3
+    assert replay.provider_usages[0].cache_usage_consistent is True
+
+
+def test_cache_metrics_distinguish_unreported_partial_and_inconsistent_usage() -> None:
+    events = [
+        Event(
+            type="model.completed",
+            task_id="task-cache",
+            sequence=1,
+            data={
+                "step": 0,
+                "usage": {"input_tokens": 10, "output_tokens": 1, "cost_usd": 0.01},
+            },
+        ),
+        Event(
+            type="model.completed",
+            task_id="task-cache",
+            sequence=2,
+            data={
+                "step": 1,
+                "usage": {
+                    "input_tokens": 20,
+                    "output_tokens": 2,
+                    "cost_usd": 0.02,
+                    "cache_hit_tokens": 7,
+                },
+            },
+        ),
+        Event(
+            type="model.completed",
+            task_id="task-cache",
+            sequence=3,
+            data={
+                "step": 2,
+                "usage": {
+                    "input_tokens": 30,
+                    "output_tokens": 3,
+                    "cost_usd": 0.03,
+                    "cache_hit_tokens": 20,
+                    "cache_miss_tokens": 5,
+                },
+            },
+        ),
+    ]
+
+    metrics = TaskMetrics.from_events("task-cache", events)
+    replay = TaskReplay.from_events("task-cache", events)
+
+    assert metrics.cache_hit_tokens == 20
+    assert metrics.cache_miss_tokens == 5
+    assert metrics.cache_hit_rate == 0.8
+    assert metrics.cache_usage_reported_calls == 1
+    assert metrics.cache_usage_unreported_calls == 2
+    assert metrics.cache_usage_inconsistent_calls == 2
+    assert metrics.cache_write_tokens is None
+    assert [item.cache_usage_consistent for item in replay.provider_usages] == [None, None, False]
 
 
 def test_memory_metrics_and_replay_explain_model_memory_decision() -> None:

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from patchloop.cache import CacheLayoutTrace
 from patchloop.events import Event
 
 
@@ -24,6 +26,21 @@ class TaskMetrics(BaseModel):
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0)
+    cache_hit_tokens: int | None = Field(default=None, ge=0)
+    cache_miss_tokens: int | None = Field(default=None, ge=0)
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+    cache_hit_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    cache_usage_reported_calls: int = Field(default=0, ge=0)
+    cache_usage_unreported_calls: int = Field(default=0, ge=0)
+    cache_usage_inconsistent_calls: int = Field(default=0, ge=0)
+    cache_write_reported_calls: int = Field(default=0, ge=0)
+    cache_layout_events: int = Field(default=0, ge=0)
+    cache_layout_fingerprint_changes: int = Field(default=0, ge=0)
+    cache_layout_reason_counts: dict[str, int] = Field(default_factory=dict)
+    cache_layout_primary_reasons: dict[str, int] = Field(default_factory=dict)
+    cache_layout_first_change_sections: dict[str, int] = Field(default_factory=dict)
+    cache_stable_prefix_tokens: int = Field(default=0, ge=0)
+    cache_longest_common_prefix_tokens: int = Field(default=0, ge=0)
     tool_duration_ms: float = Field(default=0.0, ge=0)
     elapsed_ms: float = Field(default=0.0, ge=0)
     working_memory_updates: int = Field(default=0, ge=0)
@@ -75,6 +92,36 @@ class TaskMetrics(BaseModel):
                     metrics.input_tokens += int(usage.get("input_tokens", 0))
                     metrics.output_tokens += int(usage.get("output_tokens", 0))
                     metrics.cost_usd += float(usage.get("cost_usd", 0.0))
+                    _apply_provider_usage(metrics, usage)
+            elif event.type == "cache.layout":
+                try:
+                    layout = CacheLayoutTrace.model_validate(event.data)
+                except ValueError:
+                    continue
+                metrics.cache_layout_events += 1
+                if layout.first_change_section is not None:
+                    metrics.cache_layout_fingerprint_changes += 1
+                    section = layout.first_change_section
+                    metrics.cache_layout_first_change_sections[section] = (
+                        metrics.cache_layout_first_change_sections.get(section, 0) + 1
+                    )
+                for reason in layout.reasons:
+                    key = reason.value
+                    metrics.cache_layout_reason_counts[key] = (
+                        metrics.cache_layout_reason_counts.get(key, 0) + 1
+                    )
+                primary = layout.primary_reason.value
+                metrics.cache_layout_primary_reasons[primary] = (
+                    metrics.cache_layout_primary_reasons.get(primary, 0) + 1
+                )
+                metrics.cache_stable_prefix_tokens = max(
+                    metrics.cache_stable_prefix_tokens,
+                    layout.stable_prefix_tokens,
+                )
+                metrics.cache_longest_common_prefix_tokens = max(
+                    metrics.cache_longest_common_prefix_tokens,
+                    layout.longest_common_prefix_tokens,
+                )
             elif event.type == "tool.completed":
                 metrics.tool_calls += 1
                 result = event.data.get("result", {})
@@ -174,6 +221,9 @@ class TaskMetrics(BaseModel):
             metrics.memory_compression_ratio = (
                 metrics.memory_compression_output_tokens / metrics.memory_compression_input_tokens
             )
+        cache_tokens = (metrics.cache_hit_tokens or 0) + (metrics.cache_miss_tokens or 0)
+        if metrics.cache_usage_reported_calls and cache_tokens:
+            metrics.cache_hit_rate = (metrics.cache_hit_tokens or 0) / cache_tokens
         if len(selected) >= 2:
             metrics.elapsed_ms = max(
                 0.0,
@@ -202,15 +252,32 @@ class MemoryDecision(BaseModel):
     context_occupancy: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class ProviderUsageRecord(BaseModel):
+    sequence: int
+    step: int
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0)
+    cache_hit_tokens: int | None = Field(default=None, ge=0)
+    cache_miss_tokens: int | None = Field(default=None, ge=0)
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+    cache_hit_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    cache_usage_consistent: bool | None = None
+
+
 class TaskReplay(BaseModel):
     task_id: str
     frames: list[ReplayFrame]
     memory_decisions: list[MemoryDecision] = Field(default_factory=list)
+    provider_usages: list[ProviderUsageRecord] = Field(default_factory=list)
+    cache_layouts: list[CacheLayoutTrace] = Field(default_factory=list)
 
     @classmethod
     def from_events(cls, task_id: str, events: list[Event]) -> TaskReplay:
         frames = []
         memory_decisions: list[MemoryDecision] = []
+        provider_usages: list[ProviderUsageRecord] = []
+        cache_layouts: list[CacheLayoutTrace] = []
         current_step: int | None = None
         for event in events:
             if event.task_id != task_id:
@@ -251,9 +318,84 @@ class TaskReplay(BaseModel):
                         context_occupancy=float(event.data.get("context_occupancy", 0.0)),
                     )
                 )
+            if event.type == "cache.layout":
+                with suppress(ValueError):
+                    cache_layouts.append(CacheLayoutTrace.model_validate(event.data))
+            if event.type == "model.completed" and isinstance(event_step, int):
+                usage = event.data.get("usage", {})
+                if isinstance(usage, dict):
+                    input_tokens = _nonnegative_int(usage.get("input_tokens"))
+                    hit_tokens = _optional_nonnegative_int(usage.get("cache_hit_tokens"))
+                    miss_tokens = _optional_nonnegative_int(usage.get("cache_miss_tokens"))
+                    cache_tokens = (hit_tokens or 0) + (miss_tokens or 0)
+                    if hit_tokens is not None and miss_tokens is not None:
+                        cache_hit_rate = hit_tokens / cache_tokens if cache_tokens else None
+                        cache_usage_consistent = hit_tokens + miss_tokens == input_tokens
+                    else:
+                        cache_hit_rate = None
+                        cache_usage_consistent = None
+                    provider_usages.append(
+                        ProviderUsageRecord(
+                            sequence=event.sequence,
+                            step=event_step,
+                            input_tokens=input_tokens,
+                            output_tokens=_nonnegative_int(usage.get("output_tokens")),
+                            cost_usd=_nonnegative_float(usage.get("cost_usd")),
+                            cache_hit_tokens=hit_tokens,
+                            cache_miss_tokens=miss_tokens,
+                            cache_write_tokens=_optional_nonnegative_int(
+                                usage.get("cache_write_tokens")
+                            ),
+                            cache_hit_rate=cache_hit_rate,
+                            cache_usage_consistent=cache_usage_consistent,
+                        )
+                    )
             if event.type == "step.completed":
                 current_step = None
-        return cls(task_id=task_id, frames=frames, memory_decisions=memory_decisions)
+        return cls(
+            task_id=task_id,
+            frames=frames,
+            memory_decisions=memory_decisions,
+            provider_usages=provider_usages,
+            cache_layouts=cache_layouts,
+        )
+
+
+def _apply_provider_usage(metrics: TaskMetrics, usage: dict[str, Any]) -> None:
+    hit_tokens = _optional_nonnegative_int(usage.get("cache_hit_tokens"))
+    miss_tokens = _optional_nonnegative_int(usage.get("cache_miss_tokens"))
+    input_tokens = _nonnegative_int(usage.get("input_tokens"))
+    if hit_tokens is None and miss_tokens is None:
+        metrics.cache_usage_unreported_calls += 1
+    elif hit_tokens is None or miss_tokens is None:
+        metrics.cache_usage_unreported_calls += 1
+        metrics.cache_usage_inconsistent_calls += 1
+    else:
+        metrics.cache_usage_reported_calls += 1
+        metrics.cache_hit_tokens = (metrics.cache_hit_tokens or 0) + hit_tokens
+        metrics.cache_miss_tokens = (metrics.cache_miss_tokens or 0) + miss_tokens
+        if hit_tokens + miss_tokens != input_tokens:
+            metrics.cache_usage_inconsistent_calls += 1
+    write_tokens = _optional_nonnegative_int(usage.get("cache_write_tokens"))
+    if write_tokens is not None:
+        metrics.cache_write_tokens = (metrics.cache_write_tokens or 0) + write_tokens
+        metrics.cache_write_reported_calls += 1
+
+
+def _nonnegative_int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _nonnegative_float(value: object) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    return 0.0
 
 
 def _apply_memory_inventory(metrics: TaskMetrics, raw_inventory: object) -> None:
@@ -285,6 +427,8 @@ def _event_summary(event: Event) -> str:
         return f"memory decision selected {count} items"
     if event.type == "memory.replayed":
         return f"memory replay suppressed {event.data.get('event_id', 'event')}"
+    if event.type == "cache.layout":
+        return f"cache layout: {event.data.get('primary_reason', 'unknown')}"
     if event.type.startswith("task."):
         return event.type.replace(".", " ")
     if event.type.startswith("step."):

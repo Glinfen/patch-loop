@@ -276,13 +276,21 @@ class DeepSeekProvider:
         usage = raw_usage if isinstance(raw_usage, dict) else {}
         input_tokens = self._integer(usage.get("prompt_tokens"))
         output_tokens = self._integer(usage.get("completion_tokens"))
-        cache_hit_tokens = self._integer(usage.get("prompt_cache_hit_tokens"))
-        cache_miss_tokens = self._integer(usage.get("prompt_cache_miss_tokens"))
-        if cache_hit_tokens + cache_miss_tokens == 0:
-            cache_miss_tokens = input_tokens
+        cache_hit_tokens = self._optional_integer(usage.get("prompt_cache_hit_tokens"))
+        cache_miss_tokens = self._optional_integer(usage.get("prompt_cache_miss_tokens"))
+        if (
+            cache_hit_tokens is not None
+            and cache_miss_tokens is not None
+            and cache_hit_tokens + cache_miss_tokens == input_tokens
+        ):
+            cost_hit_tokens = cache_hit_tokens
+            cost_miss_tokens = cache_miss_tokens
+        else:
+            cost_hit_tokens = 0
+            cost_miss_tokens = input_tokens
         estimated_cost = (
-            cache_hit_tokens * self.config.cache_hit_cost_per_million
-            + cache_miss_tokens * self.config.cache_miss_cost_per_million
+            cost_hit_tokens * self.config.cache_hit_cost_per_million
+            + cost_miss_tokens * self.config.cache_miss_cost_per_million
             + output_tokens * self.config.output_cost_per_million
         ) / 1_000_000
         return ModelResponse(
@@ -292,6 +300,8 @@ class DeepSeekProvider:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cost_usd=estimated_cost,
+                cache_hit_tokens=cache_hit_tokens,
+                cache_miss_tokens=cache_miss_tokens,
             ),
         )
 
@@ -310,3 +320,7 @@ class DeepSeekProvider:
     @staticmethod
     def _integer(value: Any) -> int:
         return value if isinstance(value, int) and value >= 0 else 0
+
+    @staticmethod
+    def _optional_integer(value: Any) -> int | None:
+        return value if isinstance(value, int) and value >= 0 else None

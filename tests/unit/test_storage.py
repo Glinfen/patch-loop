@@ -43,6 +43,13 @@ def test_sqlite_store_round_trips_runtime_state(tmp_path: Path) -> None:
         next_step_index=1,
         messages=[ModelMessage(role="user", content="Persist")],
         tool_history=[result],
+        cache_hit_tokens=80,
+        cache_miss_tokens=20,
+        cache_write_tokens=5,
+        cache_usage_reported_calls=2,
+        cache_usage_unreported_calls=1,
+        cache_usage_inconsistent_calls=1,
+        cache_write_reported_calls=1,
     )
     store.save_checkpoint(checkpoint)
     artifact = tmp_path / "report.json"
@@ -53,7 +60,15 @@ def test_sqlite_store_round_trips_runtime_state(tmp_path: Path) -> None:
     assert store.list_steps(task.id)[0].status is StepStatus.COMPLETED
     assert store.get_tool_result(task.id, call.id) == result
     assert store.list_tool_results(task.id) == [result]
-    assert store.get_checkpoint(task.id).next_step_index == 1
+    restored_checkpoint = store.get_checkpoint(task.id)
+    assert restored_checkpoint.next_step_index == 1
+    assert restored_checkpoint.cache_hit_tokens == 80
+    assert restored_checkpoint.cache_miss_tokens == 20
+    assert restored_checkpoint.cache_write_tokens == 5
+    assert restored_checkpoint.cache_usage_reported_calls == 2
+    assert restored_checkpoint.cache_usage_unreported_calls == 1
+    assert restored_checkpoint.cache_usage_inconsistent_calls == 1
+    assert restored_checkpoint.cache_write_reported_calls == 1
     assert store.list_artifacts(task.id) == [artifact]
 
 

@@ -6,7 +6,7 @@ import pytest
 from patchloop.domain import Task, TaskStatus, ToolCall
 from patchloop.events import EventLogger
 from patchloop.persistence import SQLiteStore
-from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ToolSpec
+from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ModelUsage, ToolSpec
 from patchloop.runtime import AgentRuntime
 from patchloop.tools import (
     ApplyPatchTool,
@@ -68,7 +68,13 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
                             ]
                         },
                     )
-                ]
+                ],
+                usage=ModelUsage(
+                    input_tokens=10,
+                    cache_hit_tokens=6,
+                    cache_miss_tokens=4,
+                    cache_write_tokens=3,
+                ),
             ),
             ModelResponse(
                 tool_calls=[
@@ -85,7 +91,12 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
                             ],
                         },
                     )
-                ]
+                ],
+                usage=ModelUsage(
+                    input_tokens=20,
+                    cache_hit_tokens=15,
+                    cache_miss_tokens=5,
+                ),
             ),
         ]
     )
@@ -104,6 +115,11 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
     assert checkpoint.memory_manager.write_duration_ms > 0
     assert checkpoint.max_memory_context_tokens_used > 0
     assert checkpoint.max_memory_context_occupancy > 0
+    assert checkpoint.cache_hit_tokens == 21
+    assert checkpoint.cache_miss_tokens == 9
+    assert checkpoint.cache_write_tokens == 3
+    assert checkpoint.cache_usage_reported_calls == 2
+    assert checkpoint.cache_write_reported_calls == 1
     assert persisted.status is TaskStatus.RUNNING
     assert checkpoint.next_step_index == 2
     assert "return dividend / divisor" in (repository / "calculator.py").read_text(encoding="utf-8")
@@ -131,9 +147,21 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
                             ]
                         },
                     )
-                ]
+                ],
+                usage=ModelUsage(
+                    input_tokens=30,
+                    cache_hit_tokens=25,
+                    cache_miss_tokens=5,
+                ),
             ),
-            ModelResponse(content="Resumed and verified without repeating the write."),
+            ModelResponse(
+                content="Resumed and verified without repeating the write.",
+                usage=ModelUsage(
+                    input_tokens=40,
+                    cache_hit_tokens=35,
+                    cache_miss_tokens=5,
+                ),
+            ),
         ]
     )
 
@@ -147,6 +175,12 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
     assert result.report.validations[0].passed
     assert result.report.max_memory_context_tokens_used >= checkpoint.max_memory_context_tokens_used
     assert result.report.memory_read_duration_ms >= checkpoint.memory_manager.read_duration_ms
+    assert result.report.input_tokens == 100
+    assert result.report.cache_hit_tokens == 81
+    assert result.report.cache_miss_tokens == 19
+    assert result.report.cache_write_tokens == 3
+    assert result.report.cache_hit_rate == 0.81
+    assert result.report.cache_usage_reported_calls == 4
     assert store.get_task(task.id).status is TaskStatus.COMPLETED
     assert len(store.list_steps(task.id)) == 4
     assert len(store.list_tool_results(task.id)) == 3

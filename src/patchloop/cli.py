@@ -18,6 +18,9 @@ from patchloop.domain import (
     TaskStatus,
 )
 from patchloop.evaluation import (
+    CacheBenchmarkRunner,
+    CacheEvaluationReport,
+    CacheEvaluationVariant,
     CodingBenchmarkRunner,
     EvaluationRunner,
     EvaluationVariant,
@@ -26,10 +29,12 @@ from patchloop.evaluation import (
     MemoryBenchmarkMode,
     MemoryBenchmarkRunner,
     MemoryBenchmarkVariant,
+    RealProviderCacheCollector,
     RetrievalBaseline,
     load_coding_manifest,
     load_evaluation_manifest,
     load_memory_manifest,
+    summarize_cache_run,
 )
 from patchloop.events import EventLogger
 from patchloop.intelligence import (
@@ -405,6 +410,49 @@ def benchmark_memory(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     typer.echo(report.model_dump_json(indent=2))
+
+
+@app.command("benchmark-cache")
+def benchmark_cache(
+    mode: Annotated[str, typer.Option(help="deterministic or provider.")] = "deterministic",
+    trace: Annotated[str, typer.Option(help="JSONL provider trace when mode=provider.")] = "",
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, resolve_path=True),
+    ] = Path("benchmarks/results/pco06_cache_matrix.json"),
+    repeats: Annotated[int, typer.Option(min=3, max=20)] = 3,
+) -> None:
+    try:
+        if mode == "deterministic":
+            report = CacheBenchmarkRunner(repeats=repeats).run()
+        elif mode == "provider":
+            if not trace:
+                raise ValueError("--trace is required when mode=provider")
+            report = _provider_cache_report(Path(trace))
+        else:
+            raise ValueError("mode must be deterministic or provider")
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    typer.echo(report.human_summary())
+    typer.echo(f"machine_report={output}")
+
+
+def _provider_cache_report(trace: Path) -> CacheEvaluationReport:
+    run = RealProviderCacheCollector.run_from_events(
+        EventLogger(trace).read(),
+        variant=CacheEvaluationVariant.FULL_OPTIMIZATION,
+    )
+    summary = summarize_cache_run(run)
+    return CacheEvaluationReport(
+        repeats=1,
+        variants=(run.variant,),
+        fixture_fingerprint="0" * 64,
+        runs=[run],
+        summaries=[summary],
+    )
 
 
 @app.command("experiment-memory")

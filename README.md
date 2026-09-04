@@ -35,6 +35,7 @@ PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能
 - [PCO-03 验收](docs/milestones/PCO_03_ACCEPTANCE.md)：拆分精简 Provider 记忆投影与完整审计投影，并保持安全过滤和确定性排序。
 - [PCO-04 验收](docs/milestones/PCO_04_ACCEPTANCE.md)：引入 cache epoch、冻结前缀脊柱和两阶段历史压缩协议。
 - [PCO-05 验收](docs/milestones/PCO_05_ACCEPTANCE.md)：引入 epoch 记忆快照、确定性增量发布和恢复重放去重。
+- [PCO-06 验收](docs/milestones/PCO_06_ACCEPTANCE.md)：新增 Fake 前缀缓存模拟、六配置矩阵、真实 Provider 字段采集和逐步瀑布报告。
 
 ## 推荐项目周期
 

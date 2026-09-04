@@ -6,6 +6,7 @@ import json
 from time import monotonic
 
 from patchloop.cache import CacheDiagnostics
+from patchloop.cache_epoch import CacheEpoch, CacheEpochBoundary, CacheEpochSnapshot
 from patchloop.context import ContextBudgetError, ContextEngine
 from patchloop.domain import (
     AgentStep,
@@ -158,6 +159,15 @@ class AgentRuntime:
             project_instructions=task.execution.project_instructions,
         )
         frozen_tools = PromptLayout.freeze_tools(self.gateway.specifications())
+        epoch = (
+            CacheEpoch.bootstrap(
+                messages,
+                prefix_message_count=prompt_layout.prefix_message_count,
+                epoch_id=task.execution.cache_epoch,
+            )
+            if task.execution.prompt_cache_layout is PromptCacheLayout.STABLE
+            else None
+        )
         self._persist_task(task)
         self._emit("task.started", task, {"provider": self.provider.name})
         try:
@@ -174,6 +184,7 @@ class AgentRuntime:
             messages=messages,
             tool_specifications=frozen_tools,
             prompt_prefix_message_count=prompt_layout.prefix_message_count,
+            cache_epoch_state=epoch.snapshot if epoch is not None else None,
             plan=task.plan,
             working_memory=memory_snapshot.working_memory,
             episodic_memory=memory_snapshot.episodic_memory,
@@ -274,6 +285,12 @@ class AgentRuntime:
             max_tool_output_chars=task.budget.max_tool_output_chars,
             recent_steps=task.budget.context_recent_steps,
         )
+        stable_layout = task.execution.prompt_cache_layout is PromptCacheLayout.STABLE
+        epoch = (
+            CacheEpoch.from_snapshot(state.cache_epoch_state)
+            if stable_layout and state.cache_epoch_state is not None
+            else None
+        )
         started = monotonic()
         try:
             for step_index in range(state.next_step_index, task.budget.max_steps):
@@ -300,11 +317,21 @@ class AgentRuntime:
                     if state.tool_specifications is not None
                     else self.gateway.specifications()
                 )
-                prefix_message_count = state.prompt_prefix_message_count
-                stable_layout = task.execution.prompt_cache_layout is PromptCacheLayout.STABLE
+                if stable_layout:
+                    if epoch is None:
+                        epoch = CacheEpoch.bootstrap(
+                            messages,
+                            prefix_message_count=state.prompt_prefix_message_count,
+                            epoch_id=task.execution.cache_epoch,
+                        )
+                    request_messages = epoch.materialize(messages)
+                    prefix_message_count = epoch.prefix_message_count
+                else:
+                    request_messages = messages
+                    prefix_message_count = state.prompt_prefix_message_count
                 try:
                     mandatory_tokens = context_engine.estimate_messages(
-                        messages[:prefix_message_count]
+                        request_messages[:prefix_message_count]
                     )
                     mandatory_tokens += context_engine.estimate_tools(specifications)
                     retrieval_cap = max(
@@ -325,7 +352,7 @@ class AgentRuntime:
                         )
                     if layered_memory is None:
                         window = context_engine.build(
-                            messages,
+                            request_messages,
                             specifications,
                             self.gateway.context.plan,
                             stable_prefix_message_count=prefix_message_count,
@@ -333,7 +360,7 @@ class AgentRuntime:
                         )
                     elif stable_layout:
                         window = context_engine.build(
-                            messages,
+                            request_messages,
                             specifications,
                             self.gateway.context.plan,
                             stable_prefix_message_count=prefix_message_count,
@@ -401,7 +428,11 @@ class AgentRuntime:
                     provider=self.provider.name,
                     model=self._provider_model(),
                     thinking=self._provider_thinking(),
-                    epoch_snapshot=task.execution.cache_epoch,
+                    epoch_snapshot=(
+                        epoch.diagnostic_snapshot()
+                        if epoch is not None
+                        else task.execution.cache_epoch
+                    ),
                     system_instructions=SYSTEM_PROMPT,
                     task_project_snapshot={
                         "goal": task.goal,
@@ -552,6 +583,15 @@ class AgentRuntime:
                     },
                 )
                 self._observe_checkpoint(task, step_index + 1)
+                if stable_layout and epoch is not None and window.debug.dropped_steps:
+                    epoch, messages = self._compress_epoch(
+                        task,
+                        epoch,
+                        messages,
+                        specifications,
+                        step_index,
+                    )
+                    prefix_message_count = epoch.prefix_message_count
                 state = self._checkpoint(
                     task,
                     step_index + 1,
@@ -563,6 +603,7 @@ class AgentRuntime:
                     elapsed_before + (monotonic() - started),
                     tool_specifications=specifications,
                     prompt_prefix_message_count=prefix_message_count,
+                    cache_epoch=epoch.snapshot if epoch is not None else None,
                 )
                 self._persist_checkpoint(state)
                 self._persist_task(task)
@@ -917,6 +958,87 @@ class AgentRuntime:
             return None
         return self._cache_hit_tokens / cache_tokens
 
+    def _compress_epoch(
+        self,
+        task: Task,
+        epoch: CacheEpoch,
+        messages: list[ModelMessage],
+        specifications: list[ToolSpec],
+        step_index: int,
+    ) -> tuple[CacheEpoch, list[ModelMessage]]:
+        """Run phase one with the old prefix, then commit phase two on success."""
+
+        request = epoch.compression_request(
+            messages,
+            specifications,
+            boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
+        )
+        self._emit(
+            "cache.compression.requested",
+            task,
+            {
+                "step": step_index,
+                "epoch_id": request.epoch_id,
+                "generation": request.generation,
+                "boundary": request.boundary.value,
+                "prefix_fingerprint": request.source_prefix_fingerprint,
+            },
+        )
+        try:
+            layout = self._cache_diagnostics.observe(
+                step_index,
+                request.messages,
+                request.tools,
+                provider=self.provider.name,
+                model=self._provider_model(),
+                thinking=self._provider_thinking(),
+                epoch_snapshot=epoch.diagnostic_snapshot(),
+                system_instructions=SYSTEM_PROMPT,
+                task_project_snapshot={
+                    "goal": task.goal,
+                    "project_instructions": task.execution.project_instructions,
+                },
+            )
+            response = self.provider.complete(request.messages, request.tools)
+            self._record_model_usage(response.usage)
+            layout = self._cache_diagnostics.finalize(layout, response.usage)
+            self._emit("cache.layout", task, layout.model_dump(mode="json"))
+        except Exception:
+            self._emit(
+                "cache.compression.failed",
+                task,
+                {"step": step_index, "epoch_id": epoch.epoch_id, "reason": "provider_error"},
+            )
+            return epoch, messages
+        if response.tool_calls or not response.content.strip():
+            self._emit(
+                "cache.compression.failed",
+                task,
+                {
+                    "step": step_index,
+                    "epoch_id": epoch.epoch_id,
+                    "reason": "invalid_summary_response",
+                },
+            )
+            return epoch, messages
+        next_epoch = epoch.rollover(
+            response.content,
+            boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
+        )
+        self._emit(
+            "cache.epoch.rolled_over",
+            task,
+            {
+                "step": step_index,
+                "old_epoch_id": epoch.epoch_id,
+                "new_epoch_id": next_epoch.epoch_id,
+                "generation": next_epoch.snapshot.generation,
+                "prefix_message_count": next_epoch.prefix_message_count,
+                "prefix_fingerprint": next_epoch.snapshot.prefix_fingerprint,
+            },
+        )
+        return next_epoch, next_epoch.frozen_prefix
+
     def _provider_model(self) -> str:
         config = getattr(self.provider, "config", None)
         model = getattr(config, "model", None)
@@ -946,6 +1068,7 @@ class AgentRuntime:
         *,
         tool_specifications: list[ToolSpec] | None = None,
         prompt_prefix_message_count: int = 2,
+        cache_epoch: CacheEpochSnapshot | None = None,
     ) -> RuntimeCheckpoint:
         return RuntimeCheckpoint(
             task_id=task.id,
@@ -957,6 +1080,7 @@ class AgentRuntime:
                 else None
             ),
             prompt_prefix_message_count=prompt_prefix_message_count,
+            cache_epoch_state=cache_epoch,
             plan=self.gateway.context.plan,
             requires_replan=self.gateway.context.requires_replan,
             replan_count=self.gateway.context.replan_count,

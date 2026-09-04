@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from patchloop.cache_epoch import CacheEpoch
 from patchloop.domain import AgentStep, StepStatus, Task, TaskReport, ToolCall, ToolResult
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
 from patchloop.providers import ModelMessage
@@ -38,6 +39,14 @@ def test_sqlite_store_round_trips_runtime_state(tmp_path: Path) -> None:
     call = ToolCall(id="call-1", name="list_files")
     result = ToolResult(call_id=call.id, tool_name=call.name, success=True, output="app.py")
     store.record_tool_call(task.id, call, result)
+    epoch = CacheEpoch.bootstrap(
+        [
+            ModelMessage(role="system", content="static"),
+            ModelMessage(role="user", content="Persist"),
+        ],
+        prefix_message_count=2,
+        epoch_id="initial",
+    )
     checkpoint = RuntimeCheckpoint(
         task_id=task.id,
         next_step_index=1,
@@ -50,6 +59,7 @@ def test_sqlite_store_round_trips_runtime_state(tmp_path: Path) -> None:
         cache_usage_unreported_calls=1,
         cache_usage_inconsistent_calls=1,
         cache_write_reported_calls=1,
+        cache_epoch_state=epoch.snapshot,
     )
     store.save_checkpoint(checkpoint)
     artifact = tmp_path / "report.json"
@@ -69,6 +79,10 @@ def test_sqlite_store_round_trips_runtime_state(tmp_path: Path) -> None:
     assert restored_checkpoint.cache_usage_unreported_calls == 1
     assert restored_checkpoint.cache_usage_inconsistent_calls == 1
     assert restored_checkpoint.cache_write_reported_calls == 1
+    assert restored_checkpoint.cache_epoch_state is not None
+    assert restored_checkpoint.cache_epoch_state.prefix_fingerprint == (
+        epoch.snapshot.prefix_fingerprint
+    )
     assert store.list_artifacts(task.id) == [artifact]
 
 

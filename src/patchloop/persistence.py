@@ -12,6 +12,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from patchloop.cache import CacheDiagnosticsSnapshot
+from patchloop.cache_epoch import CacheEpochSnapshot
 from patchloop.domain import AgentStep, Plan, Task, TaskStatus, ToolCall, ToolResult
 from patchloop.memory.episodic import EpisodicMemorySnapshot
 from patchloop.memory.manager import MemoryManagerSnapshot
@@ -28,6 +29,7 @@ class RuntimeCheckpoint(BaseModel):
     messages: list[ModelMessage]
     tool_specifications: list[ToolSpec] | None = None
     prompt_prefix_message_count: int = Field(default=2, ge=2)
+    cache_epoch_state: CacheEpochSnapshot | None = None
     plan: Plan | None = None
     requires_replan: bool = False
     replan_count: int = Field(default=0, ge=0)

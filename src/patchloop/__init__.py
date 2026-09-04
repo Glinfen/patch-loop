@@ -1,12 +1,5 @@
 """PatchLoop public package."""
 
-from patchloop.prompt_cache import CacheDiagnostics, CacheLayoutReason, CacheLayoutTrace
-from patchloop.prompt_cache import (
-    CacheCompressionRequest,
-    CacheEpoch,
-    CacheEpochBoundary,
-    CacheEpochSnapshot,
-)
 from patchloop.domain import (
     AgentStep,
     Plan,
@@ -18,6 +11,13 @@ from patchloop.domain import (
     ToolResult,
 )
 from patchloop.prompt_cache import (
+    CacheCompressionRequest,
+    CacheDiagnostics,
+    CacheEpoch,
+    CacheEpochBoundary,
+    CacheEpochSnapshot,
+    CacheLayoutReason,
+    CacheLayoutTrace,
     MemoryDeltaPublisher,
     MemoryDeltaTooLarge,
     MemoryPublicationSnapshot,

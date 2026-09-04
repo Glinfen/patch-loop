@@ -39,14 +39,9 @@ from patchloop.memory.working import (
 )
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
 from patchloop.prompt_cache import (
-    CacheDiagnostics,
-    CacheEpoch,
     CacheEpochBoundary,
-    CacheEpochSnapshot,
-    CacheUsageAccumulator,
-    MemoryDeltaPublisher,
-    MemoryPublicationSnapshot,
-    PromptLayout,
+    PromptCacheCoordinator,
+    PromptCacheCoordinatorError,
 )
 from patchloop.providers.base import ModelMessage, ModelProvider, ModelUsage, ToolSpec
 from patchloop.tools.gateway import ToolGateway
@@ -77,18 +72,16 @@ class AgentRuntime:
         event_logger: EventLogger | None = None,
         state_store: SQLiteStore | None = None,
         context_engine: ContextEngine | None = None,
-        cache_diagnostics: CacheDiagnostics | None = None,
     ) -> None:
         self.provider = provider
         self.gateway = gateway
         self.event_logger = event_logger
         self.state_store = state_store
         self.context_engine = context_engine
-        self._cache_diagnostics = cache_diagnostics or CacheDiagnostics()
+        self._prompt_cache: PromptCacheCoordinator | None = None
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
-        self._cache_usage = CacheUsageAccumulator()
         self._context_windows = 0
         self._context_compactions = 0
         self._max_context_tokens_used = 0
@@ -115,7 +108,6 @@ class AgentRuntime:
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
-        self._cache_usage = CacheUsageAccumulator()
         self._context_windows = 0
         self._context_compactions = 0
         self._max_context_tokens_used = 0
@@ -132,7 +124,7 @@ class AgentRuntime:
         self._max_memory_context_tokens_used = 0
         self._max_memory_context_occupancy = 0.0
         self._memory_manager = None
-        self._cache_diagnostics.reset()
+        self._prompt_cache = None
         try:
             self._memory_manager = MemoryManager(
                 task.id,
@@ -147,23 +139,19 @@ class AgentRuntime:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except WorkingMemoryBudgetError as exc:
             return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
-        prompt_layout = PromptLayout(task.execution.prompt_cache_layout)
-        messages = prompt_layout.initial_messages(
+        messages = PromptCacheCoordinator.initial_messages(
             SYSTEM_PROMPT,
             task.goal,
+            layout=task.execution.prompt_cache_layout,
             project_instructions=task.execution.project_instructions,
         )
-        initial_prefix_message_count = len(messages)
-        frozen_tools = PromptLayout.freeze_tools(self.gateway.specifications())
-        epoch = (
-            CacheEpoch.bootstrap(
-                messages,
-                prefix_message_count=initial_prefix_message_count,
-                epoch_id=task.execution.cache_epoch,
-            )
-            if task.execution.prompt_cache_layout is PromptCacheLayout.STABLE
-            else None
+        self._prompt_cache = PromptCacheCoordinator.bootstrap(
+            messages,
+            self.gateway.specifications(),
+            layout=task.execution.prompt_cache_layout,
+            epoch_id=task.execution.cache_epoch,
         )
+        frozen_tools = self._prompt_cache.frozen_tools
         self._persist_task(task)
         self._emit("task.started", task, {"provider": self.provider.name})
         try:
@@ -179,8 +167,7 @@ class AgentRuntime:
             next_step_index=0,
             messages=messages,
             tool_specifications=frozen_tools,
-            prompt_prefix_message_count=initial_prefix_message_count,
-            cache_epoch_state=epoch.snapshot if epoch is not None else None,
+            **self._prompt_cache.checkpoint_fields(),
             plan=task.plan,
             working_memory=memory_snapshot.working_memory,
             episodic_memory=memory_snapshot.episodic_memory,
@@ -213,7 +200,23 @@ class AgentRuntime:
         self._input_tokens = checkpoint.input_tokens
         self._output_tokens = checkpoint.output_tokens
         self._cost_usd = checkpoint.cost_usd
-        self._cache_usage = CacheUsageAccumulator.from_legacy(
+        self._prompt_cache = PromptCacheCoordinator.from_legacy_state(
+            layout=task.execution.prompt_cache_layout,
+            cache_epoch_id=(
+                checkpoint.cache_epoch_state.epoch_id
+                if checkpoint.cache_epoch_state is not None
+                else task.execution.cache_epoch
+            ),
+            prefix_message_count=checkpoint.prompt_prefix_message_count,
+            frozen_tools=(
+                checkpoint.tool_specifications
+                if checkpoint.tool_specifications is not None
+                else self.gateway.specifications()
+            ),
+            messages=checkpoint.messages,
+            cache_epoch_state=checkpoint.cache_epoch_state,
+            memory_publication_state=checkpoint.memory_publication_state,
+            cache_diagnostics=checkpoint.cache_diagnostics,
             cache_hit_tokens=checkpoint.cache_hit_tokens,
             cache_miss_tokens=checkpoint.cache_miss_tokens,
             cache_write_tokens=checkpoint.cache_write_tokens,
@@ -237,7 +240,6 @@ class AgentRuntime:
         self._memory_security_filters = checkpoint.memory_security_filters
         self._max_memory_context_tokens_used = checkpoint.max_memory_context_tokens_used
         self._max_memory_context_occupancy = checkpoint.max_memory_context_occupancy
-        self._cache_diagnostics.restore(checkpoint.cache_diagnostics)
         try:
             self._memory_manager = MemoryManager(
                 task.id,
@@ -283,15 +285,34 @@ class AgentRuntime:
             max_tool_output_chars=task.budget.max_tool_output_chars,
             recent_steps=task.budget.context_recent_steps,
         )
-        stable_layout = task.execution.prompt_cache_layout is PromptCacheLayout.STABLE
-        epoch = (
-            CacheEpoch.from_snapshot(state.cache_epoch_state)
-            if stable_layout and state.cache_epoch_state is not None
-            else None
-        )
-        publication = (
-            MemoryDeltaPublisher(state.memory_publication_state) if stable_layout else None
-        )
+        if self._prompt_cache is None:
+            self._prompt_cache = PromptCacheCoordinator.from_legacy_state(
+                layout=task.execution.prompt_cache_layout,
+                cache_epoch_id=(
+                    state.cache_epoch_state.epoch_id
+                    if state.cache_epoch_state is not None
+                    else task.execution.cache_epoch
+                ),
+                prefix_message_count=state.prompt_prefix_message_count,
+                frozen_tools=(
+                    state.tool_specifications
+                    if state.tool_specifications is not None
+                    else self.gateway.specifications()
+                ),
+                messages=state.messages,
+                cache_epoch_state=state.cache_epoch_state,
+                memory_publication_state=state.memory_publication_state,
+                cache_diagnostics=state.cache_diagnostics,
+                cache_hit_tokens=state.cache_hit_tokens,
+                cache_miss_tokens=state.cache_miss_tokens,
+                cache_write_tokens=state.cache_write_tokens,
+                cache_usage_reported_calls=state.cache_usage_reported_calls,
+                cache_usage_unreported_calls=state.cache_usage_unreported_calls,
+                cache_usage_inconsistent_calls=state.cache_usage_inconsistent_calls,
+                cache_write_reported_calls=state.cache_write_reported_calls,
+            )
+        prompt_cache = self._prompt_cache
+        stable_layout = prompt_cache.layout is PromptCacheLayout.STABLE
         started = monotonic()
         try:
             for step_index in range(state.next_step_index, task.budget.max_steps):
@@ -318,18 +339,8 @@ class AgentRuntime:
                     if state.tool_specifications is not None
                     else self.gateway.specifications()
                 )
-                if stable_layout:
-                    if epoch is None:
-                        epoch = CacheEpoch.bootstrap(
-                            messages,
-                            prefix_message_count=state.prompt_prefix_message_count,
-                            epoch_id=task.execution.cache_epoch,
-                        )
-                    request_messages = epoch.materialize(messages)
-                    prefix_message_count = epoch.prefix_message_count
-                else:
-                    request_messages = messages
-                    prefix_message_count = state.prompt_prefix_message_count
+                request_messages = prompt_cache.materialize_messages(messages)
+                prefix_message_count = prompt_cache.prefix_message_count
                 try:
                     mandatory_tokens = context_engine.estimate_messages(
                         request_messages[:prefix_message_count]
@@ -351,16 +362,13 @@ class AgentRuntime:
                             managed_retrieval.fallback_reason,
                             phase="retrieval",
                         )
-                    if stable_layout and publication is not None and layered_memory is not None:
-                        publication, _ = publication.publish(
-                            epoch.epoch_id if epoch is not None else task.execution.cache_epoch,
-                            layered_memory.provider_projection,
+                    memory_projection: str | None = None
+                    if stable_layout and layered_memory is not None:
+                        memory_projection = layered_memory.provider_projection
+                        request_messages = prompt_cache.materialize_messages(
+                            messages,
+                            memory_projection=memory_projection,
                         )
-                        request_messages = [
-                            *request_messages[:prefix_message_count],
-                            *publication.messages,
-                            *request_messages[prefix_message_count:],
-                        ]
                     if layered_memory is None:
                         window = context_engine.build(
                             request_messages,
@@ -368,7 +376,7 @@ class AgentRuntime:
                             self.gateway.context.plan,
                             stable_prefix_message_count=prefix_message_count,
                             pinned_tail_message_count=(
-                                len(publication.messages) if publication is not None else 0
+                                len(prompt_cache.publication_messages) if stable_layout else 0
                             ),
                             task_memory_in_system=not stable_layout,
                         )
@@ -379,7 +387,7 @@ class AgentRuntime:
                             self.gateway.context.plan,
                             stable_prefix_message_count=prefix_message_count,
                             pinned_tail_message_count=(
-                                len(publication.messages) if publication is not None else 0
+                                len(prompt_cache.publication_messages) if stable_layout else 0
                             ),
                             history_token_budget=(layered_memory.allocation.recent_history_tokens),
                             enable_task_memory=False,
@@ -410,6 +418,8 @@ class AgentRuntime:
                             layered_memory,
                             read_duration_ms=managed_retrieval.read_duration_ms,
                         )
+                    if not stable_layout and layered_memory is not None:
+                        memory_projection = layered_memory.rendered
                 except ContextBudgetError as exc:
                     return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
                 self._context_windows += 1
@@ -434,54 +444,42 @@ class AgentRuntime:
                         "layered_memory": self._layered_memory_data(layered_memory),
                         "memory_publication": (
                             {
-                                "snapshot_fingerprint": publication.snapshot.snapshot_fingerprint,
-                                "current_fingerprint": publication.snapshot.current_fingerprint,
-                                "message_count": len(publication.messages),
-                                "delta_count": publication.snapshot.delta_count,
+                                "snapshot_fingerprint": (
+                                    prompt_cache.publication_snapshot.snapshot_fingerprint
+                                ),
+                                "current_fingerprint": (
+                                    prompt_cache.publication_snapshot.current_fingerprint
+                                ),
+                                "message_count": len(prompt_cache.publication_messages),
+                                "delta_count": prompt_cache.publication_snapshot.delta_count,
                             }
-                            if publication is not None and publication.snapshot is not None
+                            if prompt_cache.publication_snapshot is not None
                             else None
                         ),
                         "memory_fallback": layered_memory is None,
                     },
                 )
-                cache_layout = self._cache_diagnostics.observe(
+                prepared_request = prompt_cache.prepare_request(
                     step_index,
                     window.messages,
-                    specifications,
                     provider=self.provider.name,
                     model=self._provider_model(),
                     thinking=self._provider_thinking(),
-                    epoch_snapshot=(
-                        epoch.diagnostic_snapshot()
-                        if epoch is not None
-                        else task.execution.cache_epoch
-                    ),
+                    memory_projection=memory_projection,
                     system_instructions=SYSTEM_PROMPT,
                     task_project_snapshot={
                         "goal": task.goal,
                         "project_instructions": task.execution.project_instructions,
                     },
-                    memory_projection=(
-                        (
-                            publication.rendered
-                            if stable_layout and publication is not None
-                            else layered_memory.provider_projection
-                            if stable_layout
-                            else layered_memory.rendered
-                        )
-                        if layered_memory is not None
-                        else (
-                            window.memory.model_dump(mode="json")
-                            if window.memory is not None
-                            else ""
-                        )
-                    ),
                 )
-                response = self.provider.complete(window.messages, specifications)
+                response = self.provider.complete(prepared_request.messages, prepared_request.tools)
                 self._record_model_usage(response.usage)
-                cache_layout = self._cache_diagnostics.finalize(cache_layout, response.usage)
-                self._emit("cache.layout", task, cache_layout.model_dump(mode="json"))
+                cache_observation = prompt_cache.observe_response(prepared_request, response.usage)
+                self._emit(
+                    "cache.layout",
+                    task,
+                    cache_observation.cache_layout.model_dump(mode="json"),
+                )
                 budget_error = self._model_budget_error(task)
                 if budget_error is not None:
                     return self._fail(task, ErrorKind.BUDGET_EXCEEDED, budget_error)
@@ -609,16 +607,15 @@ class AgentRuntime:
                     },
                 )
                 self._observe_checkpoint(task, step_index + 1)
-                if stable_layout and epoch is not None and window.debug.dropped_steps:
-                    epoch, messages = self._compress_epoch(
+                if stable_layout and window.debug.dropped_steps:
+                    messages = self._compress_epoch(
                         task,
-                        epoch,
+                        prompt_cache,
                         messages,
                         specifications,
                         step_index,
                     )
-                    prefix_message_count = epoch.prefix_message_count
-                    publication = MemoryDeltaPublisher()
+                    prefix_message_count = prompt_cache.prefix_message_count
                 state = self._checkpoint(
                     task,
                     step_index + 1,
@@ -629,9 +626,6 @@ class AgentRuntime:
                     tool_failures,
                     elapsed_before + (monotonic() - started),
                     tool_specifications=specifications,
-                    prompt_prefix_message_count=prefix_message_count,
-                    cache_epoch=epoch.snapshot if epoch is not None else None,
-                    memory_publication=publication.snapshot if publication is not None else None,
                 )
                 self._persist_checkpoint(state)
                 self._persist_task(task)
@@ -852,7 +846,9 @@ class AgentRuntime:
         memory_snapshot = (
             self._memory_manager.snapshot() if self._memory_manager is not None else None
         )
-        cache_usage = self._cache_usage.report_fields()
+        if self._prompt_cache is None:
+            raise RuntimeError("prompt-cache coordinator was not initialized")
+        cache_usage = self._prompt_cache.report_fields()
         return TaskReport(
             summary=summary,
             changed_files=self.gateway.context.changes.changed_paths(),
@@ -960,23 +956,27 @@ class AgentRuntime:
         self._input_tokens += usage.input_tokens
         self._output_tokens += usage.output_tokens
         self._cost_usd += usage.cost_usd
-        self._cache_usage.record(usage)
 
     def _compress_epoch(
         self,
         task: Task,
-        epoch: CacheEpoch,
+        prompt_cache: PromptCacheCoordinator,
         messages: list[ModelMessage],
         specifications: list[ToolSpec],
         step_index: int,
-    ) -> tuple[CacheEpoch, list[ModelMessage]]:
+    ) -> list[ModelMessage]:
         """Run phase one with the old prefix, then commit phase two on success."""
 
-        request = epoch.compression_request(
+        prepared = prompt_cache.prepare_compression(
+            step_index,
             messages,
-            specifications,
             boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
+            provider=self.provider.name,
+            model=self._provider_model(),
+            thinking=self._provider_thinking(),
+            system_instructions=SYSTEM_PROMPT,
         )
+        request = prepared.request
         self._emit(
             "cache.compression.requested",
             task,
@@ -989,59 +989,50 @@ class AgentRuntime:
             },
         )
         try:
-            layout = self._cache_diagnostics.observe(
-                step_index,
-                request.messages,
-                request.tools,
-                provider=self.provider.name,
-                model=self._provider_model(),
-                thinking=self._provider_thinking(),
-                epoch_snapshot=epoch.diagnostic_snapshot(),
-                system_instructions=SYSTEM_PROMPT,
-                task_project_snapshot={
-                    "goal": task.goal,
-                    "project_instructions": task.execution.project_instructions,
-                },
-            )
             response = self.provider.complete(request.messages, request.tools)
             self._record_model_usage(response.usage)
-            layout = self._cache_diagnostics.finalize(layout, response.usage)
-            self._emit("cache.layout", task, layout.model_dump(mode="json"))
+            observation = prompt_cache.observe_compression_response(prepared, response.usage)
+            self._emit(
+                "cache.layout",
+                task,
+                observation.cache_layout.model_dump(mode="json"),
+            )
+        except PromptCacheCoordinatorError:
+            prompt_cache.abort_pending()
+            raise
         except Exception:
+            prompt_cache.abort_pending()
             self._emit(
                 "cache.compression.failed",
                 task,
-                {"step": step_index, "epoch_id": epoch.epoch_id, "reason": "provider_error"},
+                {"step": step_index, "epoch_id": prompt_cache.epoch_id, "reason": "provider_error"},
             )
-            return epoch, messages
+            return messages
         if response.tool_calls or not response.content.strip():
             self._emit(
                 "cache.compression.failed",
                 task,
                 {
                     "step": step_index,
-                    "epoch_id": epoch.epoch_id,
+                    "epoch_id": prompt_cache.epoch_id,
                     "reason": "invalid_summary_response",
                 },
             )
-            return epoch, messages
-        next_epoch = epoch.rollover(
-            response.content,
-            boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
-        )
+            return messages
+        snapshot = prompt_cache.complete_compression(prepared, response.content)
         self._emit(
             "cache.epoch.rolled_over",
             task,
             {
                 "step": step_index,
-                "old_epoch_id": epoch.epoch_id,
-                "new_epoch_id": next_epoch.epoch_id,
-                "generation": next_epoch.snapshot.generation,
-                "prefix_message_count": next_epoch.prefix_message_count,
-                "prefix_fingerprint": next_epoch.snapshot.prefix_fingerprint,
+                "old_epoch_id": prepared.epoch_id,
+                "new_epoch_id": snapshot.epoch_id,
+                "generation": snapshot.generation,
+                "prefix_message_count": snapshot.prefix_message_count,
+                "prefix_fingerprint": snapshot.prefix_fingerprint,
             },
         )
-        return next_epoch, next_epoch.frozen_prefix
+        return prompt_cache.frozen_prefix
 
     def _provider_model(self) -> str:
         config = getattr(self.provider, "config", None)
@@ -1071,22 +1062,17 @@ class AgentRuntime:
         elapsed_seconds: float,
         *,
         tool_specifications: list[ToolSpec] | None = None,
-        prompt_prefix_message_count: int = 2,
-        cache_epoch: CacheEpochSnapshot | None = None,
-        memory_publication: MemoryPublicationSnapshot | None = None,
     ) -> RuntimeCheckpoint:
+        if self._prompt_cache is None:
+            raise RuntimeError("prompt-cache coordinator was not initialized")
         return RuntimeCheckpoint(
             task_id=task.id,
             next_step_index=next_step_index,
             messages=messages,
             tool_specifications=(
-                PromptLayout.freeze_tools(tool_specifications)
-                if tool_specifications is not None
-                else None
+                self._prompt_cache.frozen_tools if tool_specifications is not None else None
             ),
-            prompt_prefix_message_count=prompt_prefix_message_count,
-            cache_epoch_state=cache_epoch,
-            memory_publication_state=memory_publication,
+            **self._prompt_cache.checkpoint_fields(),
             plan=self.gateway.context.plan,
             requires_replan=self.gateway.context.requires_replan,
             replan_count=self.gateway.context.replan_count,
@@ -1099,8 +1085,6 @@ class AgentRuntime:
             input_tokens=self._input_tokens,
             output_tokens=self._output_tokens,
             cost_usd=self._cost_usd,
-            **self._cache_usage.checkpoint_fields(),
-            cache_diagnostics=self._cache_diagnostics.snapshot(),
             elapsed_seconds=elapsed_seconds,
             context_windows=self._context_windows,
             context_compactions=self._context_compactions,

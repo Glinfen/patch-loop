@@ -5,6 +5,15 @@ epochs, and memory publication.  Implementations remain pure and do not own
 provider I/O, persistence, tracing, or runtime orchestration.
 """
 
+from patchloop.prompt_cache.coordinator import (
+    PromptCacheCheckpointFields,
+    PromptCacheCompressionPreparation,
+    PromptCacheCoordinator,
+    PromptCacheCoordinatorError,
+    PromptCacheCoordinatorSnapshot,
+    PromptCachePreparedRequest,
+    PromptCacheResponseObservation,
+)
 from patchloop.prompt_cache.diagnostics import (
     CacheDiagnostics,
     CacheDiagnosticsSnapshot,
@@ -35,14 +44,6 @@ from patchloop.prompt_cache.publication import (
     MemoryPublicationSnapshot,
 )
 from patchloop.prompt_cache.usage import CacheUsageAccumulator, CacheUsageAccumulatorSnapshot
-from patchloop.prompt_cache.coordinator import (
-    PromptCacheCompressionPreparation,
-    PromptCacheCoordinator,
-    PromptCacheCoordinatorError,
-    PromptCacheCoordinatorSnapshot,
-    PromptCachePreparedRequest,
-    PromptCacheResponseObservation,
-)
 
 __all__ = [
     "COMPRESSION_INSTRUCTION",
@@ -62,17 +63,18 @@ __all__ = [
     "CacheSectionFingerprint",
     "CacheUsageAccumulator",
     "CacheUsageAccumulatorSnapshot",
+    "MemoryDeltaPublisher",
+    "MemoryDeltaTooLarge",
+    "MemoryPublicationSnapshot",
+    "PromptCacheCheckpointFields",
     "PromptCacheCompressionPreparation",
     "PromptCacheCoordinator",
     "PromptCacheCoordinatorError",
     "PromptCacheCoordinatorSnapshot",
-    "PromptCachePreparedRequest",
-    "PromptCacheResponseObservation",
-    "MemoryDeltaPublisher",
-    "MemoryDeltaTooLarge",
-    "MemoryPublicationSnapshot",
     "PromptCacheDiagnostics",
     "PromptCacheDiagnosticsSnapshot",
+    "PromptCachePreparedRequest",
+    "PromptCacheResponseObservation",
     "PromptLayout",
     "fingerprint_json",
     "fingerprint_request",

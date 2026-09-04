@@ -26,6 +26,7 @@ from patchloop.prompt_cache.publication import (
 from patchloop.prompt_cache.usage import (
     CacheUsageAccumulator,
     CacheUsageAccumulatorSnapshot,
+    CacheUsageCheckpointFields,
     CacheUsageReportFields,
 )
 from patchloop.providers.base import ModelMessage, ModelUsage, ToolSpec
@@ -92,6 +93,15 @@ class PromptCacheResponseObservation(BaseModel):
 
     cache_layout: CacheLayoutTrace
     cache_usage: CacheUsageReportFields
+
+
+class PromptCacheCheckpointFields(CacheUsageCheckpointFields):
+    """Legacy RuntimeCheckpoint fields projected from coordinator state."""
+
+    prompt_prefix_message_count: int
+    cache_epoch_state: CacheEpochSnapshot | None
+    memory_publication_state: MemoryPublicationSnapshot | None
+    cache_diagnostics: CacheDiagnosticsSnapshot
 
 
 class PromptCacheCoordinator:
@@ -174,6 +184,91 @@ class PromptCacheCoordinator:
 
     start = bootstrap
 
+    @staticmethod
+    def initial_messages(
+        system_prompt: str,
+        goal: str,
+        *,
+        layout: PromptCacheLayout,
+        project_instructions: str = "",
+    ) -> list[ModelMessage]:
+        """Build the initial provider message spine for a selected layout."""
+
+        return PromptLayout(layout).initial_messages(
+            system_prompt,
+            goal,
+            project_instructions=project_instructions,
+        )
+
+    @classmethod
+    def from_legacy_state(
+        cls,
+        *,
+        layout: PromptCacheLayout,
+        cache_epoch_id: str,
+        prefix_message_count: int,
+        frozen_tools: list[ToolSpec],
+        messages: list[ModelMessage],
+        cache_epoch_state: CacheEpochSnapshot | None = None,
+        memory_publication_state: MemoryPublicationSnapshot | None = None,
+        cache_diagnostics: CacheDiagnosticsSnapshot | None = None,
+        cache_hit_tokens: int = 0,
+        cache_miss_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        cache_usage_reported_calls: int = 0,
+        cache_usage_unreported_calls: int = 0,
+        cache_usage_inconsistent_calls: int = 0,
+        cache_write_reported_calls: int = 0,
+        redactor: SecretRedactor | None = None,
+        miss_threshold_tokens: int = 70_000,
+        max_delta_tokens: int = 2_048,
+    ) -> PromptCacheCoordinator:
+        """Restore old RuntimeCheckpoint fields into one coordinator."""
+
+        epoch = cache_epoch_state
+        if layout is PromptCacheLayout.STABLE and epoch is None:
+            epoch = CacheEpoch.bootstrap(
+                messages,
+                prefix_message_count=prefix_message_count,
+                epoch_id=cache_epoch_id,
+                redactor=redactor,
+            ).snapshot
+        diagnostics = CacheDiagnostics(
+            redactor=redactor,
+            miss_threshold_tokens=miss_threshold_tokens,
+        )
+        diagnostics.restore(cache_diagnostics)
+        return cls(
+            layout=layout,
+            cache_epoch_id=cache_epoch_id,
+            prefix_message_count=prefix_message_count,
+            frozen_tools=frozen_tools,
+            cache_epoch=(
+                CacheEpoch.from_snapshot(epoch, redactor=redactor) if epoch is not None else None
+            ),
+            publication=(
+                MemoryDeltaPublisher(
+                    memory_publication_state,
+                    max_delta_tokens=max_delta_tokens,
+                )
+                if layout is PromptCacheLayout.STABLE
+                else None
+            ),
+            diagnostics=diagnostics,
+            usage=CacheUsageAccumulator.from_legacy(
+                cache_hit_tokens=cache_hit_tokens,
+                cache_miss_tokens=cache_miss_tokens,
+                cache_write_tokens=cache_write_tokens,
+                cache_usage_reported_calls=cache_usage_reported_calls,
+                cache_usage_unreported_calls=cache_usage_unreported_calls,
+                cache_usage_inconsistent_calls=cache_usage_inconsistent_calls,
+                cache_write_reported_calls=cache_write_reported_calls,
+            ),
+            redactor=redactor,
+            miss_threshold_tokens=miss_threshold_tokens,
+            max_delta_tokens=max_delta_tokens,
+        )
+
     @classmethod
     def from_snapshot(
         cls,
@@ -224,8 +319,64 @@ class PromptCacheCoordinator:
         return [tool.model_copy(deep=True) for tool in self._frozen_tools]
 
     @property
+    def frozen_prefix(self) -> list[ModelMessage]:
+        if self._epoch is None:
+            return []
+        return self._epoch.frozen_prefix
+
+    @property
+    def publication_messages(self) -> list[ModelMessage]:
+        return self._publication.messages
+
+    @property
+    def publication_snapshot(self) -> MemoryPublicationSnapshot | None:
+        return self._publication.snapshot
+
+    @property
     def usage(self) -> CacheUsageAccumulator:
         return self._usage
+
+    def report_fields(self) -> CacheUsageReportFields:
+        return self._usage.report_fields()
+
+    def checkpoint_fields(self) -> PromptCacheCheckpointFields:
+        fields: PromptCacheCheckpointFields = {
+            "prompt_prefix_message_count": self.prefix_message_count,
+            "cache_epoch_state": self._epoch.snapshot if self._epoch is not None else None,
+            "memory_publication_state": self._publication.snapshot,
+            "cache_diagnostics": self._diagnostics.snapshot(),
+            **self._usage.checkpoint_fields(),
+        }
+        return fields
+
+    def materialize_messages(
+        self,
+        messages: list[ModelMessage],
+        *,
+        memory_projection: str | None = None,
+    ) -> list[ModelMessage]:
+        """Materialize an epoch and publish memory without observing a request."""
+
+        request_messages = [message.model_copy(deep=True) for message in messages]
+        if self._epoch is None:
+            return request_messages
+        request_messages = self._epoch.materialize(request_messages)
+        if memory_projection is not None:
+            self._publication, _ = self._publication.publish(
+                self.epoch_id,
+                memory_projection,
+            )
+        publication_messages = self._publication.messages
+        if not publication_messages:
+            return request_messages
+        tail = request_messages[self.prefix_message_count :]
+        if tail[: len(publication_messages)] == publication_messages:
+            return request_messages
+        return [
+            *request_messages[: self.prefix_message_count],
+            *publication_messages,
+            *tail,
+        ]
 
     def prepare_request(
         self,
@@ -240,20 +391,13 @@ class PromptCacheCoordinator:
         memory_projection: str | None = None,
     ) -> PromptCachePreparedRequest:
         self._ensure_step_available(step)
-        request_messages = [message.model_copy(deep=True) for message in messages]
+        request_messages = self.materialize_messages(
+            messages,
+            memory_projection=memory_projection,
+        )
         published_memory = memory_projection
-        if self._epoch is not None:
-            request_messages = self._epoch.materialize(request_messages)
-            if memory_projection is not None:
-                self._publication, _ = self._publication.publish(self.epoch_id, memory_projection)
-            if self._publication.snapshot is not None:
-                publication_messages = self._publication.messages
-                request_messages = [
-                    *request_messages[: self.prefix_message_count],
-                    *publication_messages,
-                    *request_messages[self.prefix_message_count :],
-                ]
-                published_memory = self._publication.rendered
+        if self._publication.snapshot is not None:
+            published_memory = self._publication.rendered
         cache_layout = self._diagnostics.observe(
             step,
             request_messages,
@@ -424,8 +568,14 @@ class PromptCacheCoordinator:
         self._pending_kind = None
         self._pending_fingerprint = None
 
+    def abort_pending(self) -> None:
+        """Discard an in-flight provider response after an external failure."""
+
+        self._clear_pending()
+
 
 __all__ = [
+    "PromptCacheCheckpointFields",
     "PromptCacheCompressionPreparation",
     "PromptCacheCoordinator",
     "PromptCacheCoordinatorError",

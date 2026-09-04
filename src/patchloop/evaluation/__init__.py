@@ -18,6 +18,7 @@ from patchloop.evaluation.cache import (
     serialize_cache_controls,
     summarize_cache_run,
 )
+from patchloop.evaluation.cache_simulator import DeterministicPrefixCacheSimulator
 from patchloop.evaluation.coding import (
     CodingBenchmarkReport,
     CodingBenchmarkRunner,
@@ -100,6 +101,7 @@ __all__ = [
     "CodingTaskDefinition",
     "CodingTaskManifest",
     "CodingTaskResult",
+    "DeterministicPrefixCacheSimulator",
     "Difficulty",
     "EvaluationCandidate",
     "EvaluationExecutor",

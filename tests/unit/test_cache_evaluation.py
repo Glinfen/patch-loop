@@ -11,10 +11,10 @@ from patchloop.evaluation import (
     provider_cache_capability,
     serialize_cache_controls,
 )
+from patchloop.evaluation.cache_simulator import DeterministicPrefixCacheSimulator
 from patchloop.events import Event
 from patchloop.prompt_cache import CacheLayoutReason, CacheLayoutTrace
 from patchloop.providers import (
-    DeterministicPrefixCacheSimulator,
     FakeProvider,
     ModelMessage,
     ModelResponse,

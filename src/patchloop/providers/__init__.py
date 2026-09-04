@@ -6,12 +6,11 @@ from patchloop.providers.base import (
     ToolSpec,
 )
 from patchloop.providers.deepseek import DeepSeekConfig, DeepSeekProvider
-from patchloop.providers.fake import DeterministicPrefixCacheSimulator, FakeProvider
+from patchloop.providers.fake import FakeProvider
 
 __all__ = [
     "DeepSeekConfig",
     "DeepSeekProvider",
-    "DeterministicPrefixCacheSimulator",
     "FakeProvider",
     "ModelMessage",
     "ModelProvider",

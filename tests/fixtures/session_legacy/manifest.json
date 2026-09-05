@@ -1,0 +1,22 @@
+{
+  "fixture_version": 1,
+  "source_commit": "d51d0a5db5145d572e837d85ef133910cd1f7c87",
+  "database": {
+    "file": "runtime-v0.sqlite",
+    "sha256": "201c911a7a62d655e47e7f294efad5274aadbcb4c2979634eb537e0ef9b0a39e",
+    "runtime_schema": 0,
+    "memory_schema": 1
+  },
+  "row_counts": {
+    "tasks": 2,
+    "agent_steps": 1,
+    "tool_calls": 1,
+    "checkpoints": 1,
+    "artifacts": 1,
+    "memory_sources": 1,
+    "memory_records": 1,
+    "memory_record_sources": 1,
+    "memory_compactions": 0,
+    "patchloop_schema_migrations": 1
+  }
+}

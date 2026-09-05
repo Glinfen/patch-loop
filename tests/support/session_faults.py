@@ -13,13 +13,18 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from patchloop.domain import Task, ToolCall, ToolResult
+from pydantic import BaseModel
+
+from patchloop.domain import Task, TaskBudget, ToolCall, ToolResult
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
-from patchloop.providers import ModelMessage
+from patchloop.providers import FakeProvider, ModelResponse
+from patchloop.runtime import AgentRuntime
+from patchloop.tools import PermissionLevel, Tool, ToolContext, ToolGateway, ToolPolicy
+from patchloop.tools.base import ToolInputModel
 
 
 class FaultPoint(StrEnum):
-    INTENT_SUBMITTED = "intent_submitted"
+    TOOL_DISPATCHED = "tool_dispatched"
     BEFORE_EXTERNAL_ACTION = "before_external_action"
     AFTER_EXTERNAL_ACTION = "after_external_action"
     RESULT_SUBMITTED = "result_submitted"
@@ -77,60 +82,123 @@ class FaultBarrier:
             os.fsync(stream.fileno())
 
 
-class AuditedExternalAction:
-    """A tiny external-writer stand-in used by the legacy crash worker."""
+class AuditedWriteInput(ToolInputModel):
+    path: str
 
-    def __init__(self, barrier: FaultBarrier, target: Path) -> None:
+
+class AuditedExternalWriteTool(Tool):
+    """A non-idempotent test tool run through the real gateway boundary."""
+
+    name = "legacy_external_write"
+    description = "Append a marker to a repository file for crash characterization."
+    input_model = AuditedWriteInput
+    permission = PermissionLevel.WRITE
+
+    def __init__(self, barrier: FaultBarrier, marker: str) -> None:
         self.barrier = barrier
-        self.target = target
+        self.marker = marker
 
-    def run(self, call: ToolCall) -> ToolResult:
-        self.barrier.hit(FaultPoint.BEFORE_EXTERNAL_ACTION, call_id=call.id)
-        self.barrier.record("external_action_started", call_id=call.id)
-        self.target.parent.mkdir(parents=True, exist_ok=True)
-        with self.target.open("w", encoding="utf-8") as stream:
-            stream.write("external action completed\n")
+    def run(self, arguments: BaseModel, context: ToolContext) -> str:
+        parsed = AuditedWriteInput.model_validate(arguments)
+        target = context.resolve_path(parsed.path, must_exist=False)
+        self.barrier.hit(FaultPoint.BEFORE_EXTERNAL_ACTION, marker=self.marker)
+        self.barrier.record("external_action_started", marker=self.marker)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write(f"{self.marker}\n")
             stream.flush()
             os.fsync(stream.fileno())
-        self.barrier.record("external_action_completed", call_id=call.id)
-        self.barrier.hit(FaultPoint.AFTER_EXTERNAL_ACTION, call_id=call.id)
-        return ToolResult(
+        self.barrier.record("external_action_completed", marker=self.marker)
+        self.barrier.hit(FaultPoint.AFTER_EXTERNAL_ACTION, marker=self.marker)
+        return f"external action completed: {self.marker}"
+
+
+class FaultingToolGateway(ToolGateway):
+    """Expose the real gateway dispatch boundary to the parent-controlled barrier."""
+
+    def __init__(self, *args: Any, barrier: FaultBarrier, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.barrier = barrier
+
+    def execute(self, task_id: str, call: ToolCall) -> ToolResult:
+        self.barrier.hit(
+            FaultPoint.TOOL_DISPATCHED,
+            task_id=task_id,
             call_id=call.id,
-            tool_name=call.name,
-            success=True,
-            output="external action completed",
+        )
+        return super().execute(task_id, call)
+
+
+class FaultingSQLiteStore(SQLiteStore):
+    """Expose committed result and post-result checkpoint boundaries."""
+
+    def __init__(self, path: Path, barrier: FaultBarrier) -> None:
+        self.barrier = barrier
+        self.result_submitted = False
+        super().__init__(path)
+
+    def record_tool_call(self, task_id: str, call: ToolCall, result: ToolResult) -> None:
+        super().record_tool_call(task_id, call, result)
+        self.result_submitted = True
+        self.barrier.hit(
+            FaultPoint.RESULT_SUBMITTED,
+            task_id=task_id,
+            call_id=call.id,
         )
 
+    def save_checkpoint(self, checkpoint: RuntimeCheckpoint) -> None:
+        if self.result_submitted:
+            self.barrier.hit(
+                FaultPoint.BEFORE_CHECKPOINT_COMMIT,
+                task_id=checkpoint.task_id,
+                next_step_index=checkpoint.next_step_index,
+            )
+        super().save_checkpoint(checkpoint)
 
-def run_legacy_fault_worker(
+
+def run_runtime_fault_worker(
     database_path: str,
     target_path: str,
     audit_path: str,
     stop_at: str,
 ) -> None:
-    """Run the pre-SRF execution ordering in a child process.
+    """Run the pre-SRF ordering through AgentRuntime and ToolGateway."""
 
-    This intentionally mirrors the old split calls: external action, then
-    result persistence, then checkpoint persistence.
-    """
-
-    store = SQLiteStore(Path(database_path))
-    task = Task(goal="Characterize legacy recovery", repository=str(Path(target_path).parent))
-    store.save_task(task)
+    target = Path(target_path)
+    repository = target.parent
+    repository.mkdir(parents=True, exist_ok=True)
     barrier = FaultBarrier(
         Path(audit_path),
         stop_at=FaultPoint(stop_at),
         terminate_process=True,
     )
-    call = ToolCall(id="legacy-write-call", name="legacy_external_write")
-    barrier.hit(FaultPoint.INTENT_SUBMITTED, task_id=task.id, call_id=call.id)
-    result = AuditedExternalAction(barrier, Path(target_path)).run(call)
-    store.record_tool_call(task.id, call, result)
-    barrier.hit(FaultPoint.RESULT_SUBMITTED, call_id=call.id)
-    checkpoint = RuntimeCheckpoint(
-        task_id=task.id,
-        next_step_index=1,
-        messages=[ModelMessage(role="user", content=task.goal)],
+    store = FaultingSQLiteStore(Path(database_path), barrier)
+    call = ToolCall(
+        id="legacy-write-call",
+        name=AuditedExternalWriteTool.name,
+        arguments={"path": target.name},
     )
-    barrier.hit(FaultPoint.BEFORE_CHECKPOINT_COMMIT, call_id=call.id)
-    store.save_checkpoint(checkpoint)
+    provider = FakeProvider(
+        [
+            ModelResponse(tool_calls=[call]),
+            ModelResponse(content="Legacy external write completed."),
+        ]
+    )
+    policy = ToolPolicy(
+        allowed_permissions=frozenset({PermissionLevel.READ, PermissionLevel.WRITE}),
+        require_plan_for_mutations=False,
+    )
+    gateway = FaultingToolGateway(
+        ToolContext(repository),
+        [AuditedExternalWriteTool(barrier, call.id)],
+        policy=policy,
+        barrier=barrier,
+    )
+    runtime = AgentRuntime(provider, gateway, state_store=store)
+    task = Task(
+        id="legacy-running-task",
+        goal="Characterize legacy recovery",
+        repository=str(repository),
+        budget=TaskBudget(max_steps=2),
+    )
+    runtime.run(task)

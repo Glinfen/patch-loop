@@ -25,15 +25,15 @@ PCR 已有 [验收记录](milestones/PCR_05_ACCEPTANCE.md)。本轮复用现有 
 
 1. 沿 `run → _execute → _execute_or_replay → gateway.execute → record_tool_call → save_checkpoint` 梳理实际读写顺序，列出 Task、工具结果、Memory、checkpoint、Trace 分别在哪次事务提交。特别标出“外部动作完成、工具结果尚未落库”的窗口。
 2. 固定对象归属：Session 串行包含多个 Task；Turn 是用户/Agent 交互记录；Step 是一次模型决策及工具批次；Execution 是一次 run/resume；Effect 是一次工具动作。一个 Session 至多一个活动 Task，一个 Task 至多一个执行 owner。
-3. 固定状态：Session 为 open/closed；Task 在原状态上增加 paused、waiting_for_approval、recovery_required；Effect 使用 prepared、waiting_for_approval、executing、succeeded、failed、denied、unknown。完成/失败/取消的 Task 不重新变为 running。
-4. 固定控制规则：pause 可恢复，cancel 是终态；complete/cancel 按事务先后决定结果；普通 resume 不能扩大授权，也不能重跑 unknown 动作。把允许和禁止的转换写成参数化测试数据，避免实现时各模块自行解释。
-5. 从当前实现生成并固定最小旧数据 fixture：一个完成任务、一个带未完成计划的 running 任务、已确认写入结果、checkpoint、Memory/Cache 快照及 Trace。记录关键 ID、计数和摘要，后续迁移测试禁止用新 schema 重建“旧数据”。
-6. 建立可由父进程控制的故障屏障：意图提交后、动作开始前、外部动作完成后、结果提交后、checkpoint 提交前。用会向独立审计文件追加记录的测试工具复现崩溃窗口，不只依靠 KeyboardInterrupt 或数据库结果行数判断动作是否发生。
+3. 固定状态维度：Session 为 open/closed；Task 业务结果使用 active/completed/failed/cancelled，运行条件单独使用 idle/running/pausing/paused/waiting_for_approval/recovery_required/ended；Effect 使用 prepared、waiting_for_approval、executing、succeeded、failed、denied、unknown、cancelled。完成/失败/取消的 Task 不重新变为 active，业务终态可与 recovery_required 同时存在。
+4. 固定控制规则：pause/cancel 先作为持久化 ControlRequest，经 requested/acknowledged/settled 或 cleanup_failed 闭环；complete/cancel 业务结果按事务先后决定。普通 resume 不能扩大授权，也不能重跑 unknown 动作；离开 recovery_required 必须提交核验结果、创建显式重试或放弃的 RecoveryDisposition。把允许和禁止的转换写成参数化测试数据，避免实现时各模块自行解释。
+5. 从当前实现生成并固定最小旧数据 fixture：一个完成任务、一个带未完成计划的 running 任务、已确认写入结果、checkpoint、Memory/Cache 快照、Trace，以及包含旧 runtime/memory 表和代表性行的 SQLite 数据库。记录来源 commit、SHA-256、关键 ID、表行数和摘要，后续迁移测试禁止用新 schema 重建“旧数据”。
+6. 建立可由父进程控制、且经过真实 AgentRuntime/Gateway/Store 调用链的故障屏障：旧路径工具派发后、动作开始前、外部动作完成后、结果提交后、checkpoint 提交前。旧路径没有持久化意图，不把测试审计点命名为意图提交；SRF-04 再加入 prepared/executing 的真实提交屏障。使用会向独立审计文件追加记录的非幂等测试工具复现崩溃窗口，不只依靠 KeyboardInterrupt 或数据库结果行数判断动作是否发生。
 7. 运行现有质量门禁，记录实际基线与跳过原因；故障复现先作为旧行为特征化测试，SRF-04 再改为安全恢复回归断言，不把旧行为复现成功算作恢复能力通过。
 
 **交付物：** 回写本文的契约决策、旧数据 fixture、故障屏障、旧行为基线及质量检查结果。
 
-**验收：** 同一故障位置重复 3 次均可稳定命中；能够证明外部动作发生但数据库结果缺失；fixture 可由当前版本读取；后续各任务的状态、事务和恢复判断没有未定的基础分歧。
+**验收：** 五个旧路径故障位置各至少稳定命中一次，外部动作完成而结果缺失的位置重复 3 次；能够证明外部动作发生但数据库结果缺失；JSON 与真实旧 SQLite fixture 均可由当前版本读取且校验摘要一致；后续各任务的状态、事务和恢复判断没有未定的基础分歧。
 
 ### SRF-01：实现领域模型与服务端口
 
@@ -48,16 +48,19 @@ PCR 已有 [验收记录](milestones/PCR_05_ACCEPTANCE.md)。本轮复用现有 
    | 模型 | 必需字段与约束 |
    | --- | --- |
    | Session | ID、workspace 引用、open/closed、活动 Task 引用、配置版本、创建/更新时间 |
+   | Task 扩展 | Session 引用、业务 outcome、独立 runtime condition、并发 version；旧 status 仅作兼容投影 |
    | Turn | ID、Session/可空 Task 引用、role、内容/资源引用、sequence、客户端提交 ID |
    | Execution | ID、Session/Task 引用、owner、token、generation、租约到期时间及运行状态 |
-   | Effect | ID、Task/Step 引用、批次位置、Provider call ID、工具/参数摘要、状态、审批与结果引用 |
+   | Effect | ID、Task/Step 引用、批次位置、Provider call ID、`retry_of_effect_id`、工具/参数摘要、状态、审批与结果引用 |
    | Approval | ID、Effect 引用、动作与资源摘要、policy/config version、状态、决定来源/时间 |
+   | ControlRequest | ID、Task/Execution 引用、pause/cancel、状态、请求/确认/清理信息 |
+   | RecoveryDisposition | ID、unknown Effect 引用、confirm_result/create_retry/abandon、证据与决定来源 |
    | Checkpoint 扩展 | schema version、Session/Turn 引用、已消费输入序号、事件水位、待处理 Effect；保留原计划/Memory/Cache 字段 |
 
-2. 为 Task 增加兼容的 Session 关联和新状态，实现显式转换校验；关闭 Session 时仍有活动 Task 必须报错。新请求重做工作创建关联的新 Task，不修改历史终态。
+2. 为 Task 增加兼容的 Session 关联、业务 outcome 和独立 runtime condition，实现显式转换校验；旧 `Task.status` 保留为迁移/旧 API 投影。关闭 Session 时仍有活动 Task 必须报错。新请求重做工作创建关联的新 Task，不修改历史终态。
 3. 定义独立的动作身份校验：同一 Effect ID/批次位置重复写入相同内容为幂等；内容不同返回冲突；不同 Step 可以合法调用参数相同的工具。
 4. 定义服务端口：Session 的 create/list/get/append_message/start_task/request_pause/request_cancel/close；Runtime 的 `advance(execution)`；Effect 的 prepare/execute/reconcile。`advance` 明确返回 progressed、waiting、paused、recovery_required 或终态，CLI 无须解析异常文本猜测状态。
-5. 定义 Store 原子操作及返回值：append turn、claim execution、prepare effects、decide approval、claim effect、commit effect、commit checkpoint；写方法携带 expected version 和适用的 lease guard。接口不暴露 SQL 或连接对象。
+5. 定义 Store 原子操作及返回值：append turn、claim execution、prepare effects、decide approval、claim effect、commit effect、request/settle control、resolve recovery、commit checkpoint；写方法携带 expected version 和适用的 lease guard。接口不暴露 SQL 或连接对象。
 6. 定义 `StaleVersion`、`LeaseConflict`、`LeaseLost`、`ApprovalConflict`、`EffectIdentityConflict`、`RecoveryRequired` 等结构化错误；实现最小 Fake Store，供服务层测试使用。保留现有 `SQLiteStore` 和 `RuntimeCheckpoint` 导入路径。
 
 **交付物：** 可序列化领域模型、状态转换实现、服务/存储 Protocol、Fake Store 和模型测试；本任务不接管生产执行入口。
@@ -73,11 +76,11 @@ PCR 已有 [验收记录](milestones/PCR_05_ACCEPTANCE.md)。本轮复用现有 
 **开发步骤：**
 
 1. 将 SQLite 连接初始化集中到同一入口，保留 WAL、foreign keys、10 秒 busy timeout，并读取实际配置验证。增加 Runtime schema migration，与现有 Memory migration 按固定顺序执行；未来版本或不完整 schema 拒绝启动。
-2. 增加 sessions、turns、executions、effects、approvals、session_events 及 workspace_leases 等必要表，给已有 Task 增加并发 version 和关联信息。建立外键以及 `(session_id, sequence)`、客户端提交 ID、Effect 批次位置、审批决定的唯一约束。
+2. 增加 sessions、turns、executions、effects、approvals、control_requests、recovery_dispositions、session_events 及 workspace_leases 等必要表，给已有 Task 增加并发 version、业务 outcome、runtime condition 和关联信息。建立外键以及 `(session_id, sequence)`、客户端提交 ID、Effect 批次位置、审批决定和恢复处置的唯一约束。
 3. 实现 Session 创建/列表/查询/关闭、Turn 追加/分页读取。Turn 内容与序号在同一事务分配；重复提交返回原记录；同一客户端 ID 提交不同内容报冲突。Task 创建与绑定 Session 活动槽原子化。
 4. 将无条件 Task upsert 拆成创建与条件更新；checkpoint、工具结果、审批和事件提供领域化提交方法。`commit_effect` 在一个事务内写入结果、可回放观察、恢复游标与事件，不能由调用者拼接几个独立 Store 方法模拟原子提交。
 5. 将关键状态事件写入数据库 journal，JSONL 改为可恢复导出。为事件保留稳定 ID、Session sequence 和旧 task/trace ID；导出进程中断后检查已写 ID、修复不完整尾行并补导，保证最终文件不重复、不漏事件。
-6. 实现旧数据迁移：旧 Task 一对一映射 legacy Session，保留 Task ID、工具结果、artifact 和 Memory 关联；已确认结果映射终态 Effect。缺少执行意图的历史 running 任务标记需恢复核对，不能直接推断未记录的动作没有发生。
+6. 从不可变的 `runtime-v0.sqlite` 实现旧数据迁移：旧 Task 一对一映射 legacy Session，保留 Task ID、工具结果、artifact 和 Memory 关联；旧终态映射业务 outcome，旧 created/running 映射 active outcome 和相应 runtime condition；已确认结果映射终态 Effect。缺少执行意图的历史 running 任务标记需恢复核对，不能直接推断未记录的动作没有发生。
 7. 迁移前停止 writer，使用 SQLite 一致性备份；每次迁移失败回滚。回退流程验证为停止执行、保留升级后数据、恢复备份及对应程序版本，禁止旧程序直接写新 schema。
 8. 对 checkpoint 做版本适配，不把原始 Python 对象或 Provider 专属消息当作 Session 唯一事实源。持久内容继续脱敏；需重放的秘密使用凭据引用，脱敏占位符不得变成真实工具参数。
 
@@ -101,7 +104,7 @@ PCR 已有 [验收记录](milestones/PCR_05_ACCEPTANCE.md)。本轮复用现有 
 
 1. 实现 Session 执行槽、Task lease 和 Workspace writer。固定获取顺序为 Session → Task → Workspace，失败按逆序释放。规范化真实路径生成 workspace ID，同一路径别名不能获得第二个 writer。
 2. 实现 acquire/renew/release/assert：token 不复用，接管时 generation 递增；续约和释放必须同时匹配 owner/token/generation。时间、UUID、TTL 可注入，初始沿用 SAR 建议的 60 秒 TTL、20 秒 heartbeat。
-3. 将 Task、Step、Effect、结果、checkpoint、artifact 元数据和 Memory 批次等执行写入接入 guard。guard 检查与写入同事务完成；cancel 使用控制面条件事务，更新状态并使旧 owner 失效。
+3. 将 Task、Step、Effect、结果、checkpoint、artifact 元数据和 Memory 批次等执行写入接入 guard。guard 检查与写入同事务完成；cancel 先提交 ControlRequest，清理完成或明确进入 unknown/recovery_required 后再提交业务终态并使旧 owner 失效。
 4. 为 run/resume 增加共同的 Execution 生命周期封装，模型等待和工具运行期间持续续约。获取失败不得发起 Provider 或工具调用；续约失败阻止新动作，旧 owner 不再写正常 checkpoint 或完成状态。
 5. 为 Workspace 增加跨进程独占机制，覆盖整个写执行期。WRITE/EXECUTE 工具必须同时持有 Task lease 与 Workspace writer；只读执行仍需 Task/Session 所有权。锁文件本身是否存在不能作为 owner 存活证据。
 6. 扩展现有 Sandbox 命令生命周期，使 Runtime 可以终止并确认受管进程树/容器退出。持久化可核对的执行身份，避免只凭可复用 PID 杀进程；支持 timeout、pause、cancel、lease lost 和父进程崩溃后的清理。
@@ -139,10 +142,10 @@ PCR 已有 [验收记录](milestones/PCR_05_ACCEPTANCE.md)。本轮复用现有 
    | waiting_for_approval | 展示原请求；未决定不执行 |
    | executing 且缺少结果 | 核对执行身份、凭据和外部状态；不能确认则 unknown |
    | succeeded/failed/denied | 回放结果并推进观察，不再次调用工具 |
-   | unknown | Task 进入 recovery_required，普通 resume 不重试 |
+   | unknown | runtime condition 进入 recovery_required，普通 resume 不重试；Task 可已有 cancelled 业务结果 |
 
 7. 拆开“已确认失败”与“执行可能已产生部分副作用但结果不明”：后者进入 unknown。拒绝则生成结构化工具观察，让 Agent 选替代方案；准备中的动作因新用户约束被取消时也要结束原调用关联，不能留下不成对的 Provider 工具消息。
-8. 提供恢复处置 API：核验并补认已有结果、放弃任务、显式请求新的受审批重试动作。保留旧 Effect 和处置证据；不把 unknown 直接改回 prepared，也不通过重复 approve 隐式重试。
+8. 提供恢复处置 API：以 RecoveryDisposition 核验并补认已有结果、放弃任务、显式请求新的受审批重试动作。保留旧 Effect 和处置证据；重试创建带 `retry_of_effect_id` 的新 Effect 并进入 waiting_for_approval，不把 unknown 直接改回 prepared，也不通过重复 approve 隐式重试。
 
 **交付物：** EffectExecutor、Approval Store/服务、三态 Policy、文件恢复凭据和旧 Gateway 适配；通用命令不承诺跨系统 exactly-once。
 
@@ -166,7 +169,7 @@ PCR 已有 [验收记录](milestones/PCR_05_ACCEPTANCE.md)。本轮复用现有 
 2. 实现 SessionService：create/list/get、append_message、start_task、request_pause/request_cancel、resume、close。用户消息先持久化再确认；活动 Task 接收补充消息，无活动 Task 时只保存对话，由 start 明确创建新目标。
 3. 在模型调用前、返回后、每个副作用认领前和恢复后检查输入与控制。将读取到的输入 revision 纳入 Effect 认领的条件提交：在认领前已提交的新约束必须先处理；动作认领后的输入在下一边界处理，不能承诺撤回已开始的动作。
 4. 为模型请求记录已消费输入水位。返回时发现新约束，先保存响应和用量，再将未执行的陈旧动作作废并重新规划。补齐原工具调用的结构化取消观察，保证后续 Provider 消息配对合法。
-5. 实现 pause/cancel/resume：控制请求先落库；暂停完成清理后进入 paused，取消提交终态；恢复先取得新 Execution，再核对所有权、待审批/unknown Effect 和文件前置条件，最后决定是否继续。
+5. 实现 pause/cancel/resume：ControlRequest 先落库；暂停完成清理后才 settled 并进入 paused；取消在清理完成或未决 Effect 已明确进入 unknown/recovery_required 后提交业务终态。恢复先取得新 Execution，再核对所有权、待审批/unknown Effect、RecoveryDisposition 和文件前置条件，最后决定是否继续。
 6. 扩展 checkpoint 保存输入水位、事件水位和待处理批次；恢复时重放 checkpoint 之后的已提交观察。Memory 按事件 ID 幂等消费，Prompt Cache 走已有快照适配，禁止向缓存前缀随意插入新用户消息。
 7. 保留 Task 的计划、工具历史、变更基线和预算累计。已落库模型响应的用量不能因重放重复累计；收到响应但未落库即崩溃的远端用量标记为未知，不伪造精确费用。明确暂停等待时间不消耗活动执行时间预算。
 8. 同一 Session 启动第二个 Task 时保留对话历史和显式约束，按已有 Context 预算选取内容；新建计划、预算、Effect 与一次性授权边界，不能复制前一任务终态。持久精确预授权仅在范围仍匹配时生效。
@@ -262,7 +265,9 @@ pytest -q
 
 首个提交只完成 SRF-00：契约、历史 fixture、故障基线和当前质量检查。后续每个编号可拆为模型/实现/集成提交，但完成状态按该编号的全部验收标准判定，不能只完成接口就标记结束。
 
-粗估：SRF-00～01 为 3～4 天，SRF-02～03 为 5～7 天，SRF-04～05 为 6～9 天，SRF-06～07 为 4～7 天，共 18～27 个开发日。SRF-00 后依据进程清理和迁移验证结果修订估算。
+SRF-03/04 首先以一个文件写工具完成 `prepare → claim → execute → commit/reconcile`、持久化审批和 owner guard 的端到端垂直切片，再扩展到命令、多工具批次和完整并发矩阵；不得先分别大范围改写 Runtime/Gateway 后才联调。
+
+修订粗估：SRF-00～01 为 3～5 天，SRF-02～03 为 7～11 天，SRF-04～05 为 8～13 天，SRF-06～07 为 6～9 天，共 24～38 个开发日。进程树清理、旧库迁移或真实 Provider 试用未通过时继续修订，不用最初估算压缩验收。
 
 ## 5. 跨任务约束
 
@@ -280,15 +285,16 @@ SQLite 保存权威状态和事件；checkpoint 是版本化快照，JSONL/CLI �
 
 ### 5.4 所有权与外部进程
 
-数据库 fencing 只阻止旧持久化提交，Workspace 独占与进程清理负责阻止旧外部 writer。lease 过期后，须确认旧 writer 及受管进程树停止才允许新写入；不能确认则进入 recovery_required。暂停、等待审批和退出先清理再释放，清理失败不得报告安全接管。锁不约束用户编辑器，恢复还须核对文件前置条件。具体实现与测试由 SRF-03、SRF-04、SRF-07 负责。
+数据库 fencing 只阻止旧持久化提交，Workspace 独占与进程清理负责阻止旧外部 writer。lease 过期后，须确认旧 writer 及受管进程树停止才允许新写入；不能确认则将 runtime condition 置为 recovery_required。暂停、等待审批和退出先清理再释放；ControlRequest 清理失败进入 cleanup_failed，不得报告安全接管。锁不约束用户编辑器，恢复还须核对文件前置条件。具体实现与测试由 SRF-03、SRF-04、SRF-07 负责。
 
 ## 6. SRF-00 实际交付记录
 
 ### 6.1 契约决策
 
 契约已写入 [ADR-020](adr/ADR-020-session-runtime-foundation-contract.md)，固定了
-Session/Task/Turn/Step/Execution/Effect 的对象归属、Session/Task/Effect 状态、暂停与
-取消规则、完成与取消竞态规则，以及 `unknown` 不得由普通 resume 重试的恢复规则。
+Session/Task/Turn/Step/Execution/Effect/ControlRequest/RecoveryDisposition 的对象归属、
+Task 业务结果与运行条件分离、Effect 状态、暂停与取消规则、完成与取消竞态规则，以及
+`unknown` 不得由普通 resume 重试的恢复规则。
 
 当前读写顺序的证据来自 `runtime.py`、`tools/gateway.py` 和 `persistence.py`：Gateway
 先调用外部工具，Runtime 再独立保存 `tool_calls`，批次结束后再保存 Step、Memory 和
@@ -300,14 +306,17 @@ checkpoint。外部动作完成而结果未落库的窗口已明确记录为旧�
 固定输入位于 `tests/fixtures/session_legacy/`，由
 `tests/e2e/test_session_runtime_baseline.py::test_session_legacy_fixture_is_readable_by_current_models`
 读取。fixture 保留一个完成 Task、一个带未完成计划的 running Task、确认写入结果、
-checkpoint、Memory/Cache snapshot 和 Trace，并在 README 中记录关键 ID、步骤和计数。
+checkpoint、Memory/Cache snapshot 和 Trace；`runtime-v0.sqlite` 冻结旧 runtime/memory 表与
+代表性数据，`manifest.json` 固定来源 commit、SHA-256 和表行数。数据库 fixture 由当前
+版本直接读取验证，后续迁移测试必须复制该文件后升级。
 
 ### 6.3 故障屏障与旧行为基线
 
-`tests/support/session_faults.py` 提供父进程可控的五个屏障，并把屏障和外部动作审计
-追加到独立 JSONL 后 `fsync`。端到端基线测试在外部动作完成后、结果提交前终止子进程，
-重复 3 次均证明：审计文件和目标文件显示动作已发生，而 SQLite 没有对应工具结果。
-该测试是 SRF-04 安全恢复回归的输入，不是恢复成功声明。
+`tests/support/session_faults.py` 通过真实 `AgentRuntime → ToolGateway → Tool → SQLiteStore`
+路径提供父进程可控的五个屏障，并把屏障和非幂等外部动作审计追加到独立 JSONL 后
+`fsync`。五个位置各至少命中一次；外部动作完成后、结果提交前额外重复 3 次，均证明审计
+文件和目标文件显示动作已发生，而 SQLite 没有对应工具结果。该测试是 SRF-04 安全恢复
+回归的输入，不是恢复成功声明。
 
 ### 6.4 质量门禁记录
 
@@ -329,5 +338,15 @@ SRF-00 实施后的同一组门禁：
 | `mypy src` | 通过（63 source files） |
 | `pytest -q` | 通过：242 passed, 1 skipped in 172.14s；跳过原因为 Windows 主机不支持 symbolic links |
 
-SRF-00 的 19 项新增测试全部通过，其中外部动作完成后崩溃屏障重复命中 3 次。完整门禁
-未发现回归；唯一跳过项仍是 Windows 主机不支持 symbolic links。
+SRF-00 契约修订后的同一组门禁：
+
+| 命令 | 结果 |
+| --- | --- |
+| `ruff check src tests` | 通过 |
+| `ruff format --check src tests` | 通过（118 files already formatted） |
+| `mypy src` | 通过（63 source files） |
+| `pytest -q` | 通过：262 passed, 1 skipped in 171.21s；跳过原因为 Windows 主机不支持 symbolic links |
+
+SRF-00 原有 19 项测试与本次 20 项契约/旧库/真实调用链测试共 39 项全部通过。五个旧路径
+故障屏障各命中一次，其中外部动作完成后崩溃窗口额外重复 3 次。完整门禁未发现回归；唯一
+跳过项仍是 Windows 主机不支持 symbolic links。

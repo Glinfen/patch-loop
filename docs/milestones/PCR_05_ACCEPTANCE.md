@@ -17,7 +17,14 @@ PCR-00 基线仍由 `tests/unit/test_pcr00_behavior_baseline.py` 逐字节校验
 
 ## DeepSeek stable 场景
 
-本次环境未提供 `DEEPSEEK_API_KEY` 或 `LLM_API_KEY`，因此没有发起真实 Provider 请求，避免在无凭据时伪造“真实场景”结果。DeepSeek 的 Provider 单元测试仍覆盖缓存字段保留、计价和不一致输入；stable Runtime 场景使用 Fake Provider 完成了请求布局、epoch 压缩、Trace 和 report 回归。获得凭据后应单独运行受控 stable smoke test，并只观察字段采集是否退化，不把远端命中率波动当作重构失败。
+已使用根目录 `.env` 完成两次最小真实 stable 请求，Provider 返回正常且两次都提供了缓存字段：
+
+- Provider/model：`deepseek-v4-flash`
+- 第一次：`input_tokens=16`，`cache_hit_tokens=0`，`cache_miss_tokens=16`
+- 第二次：`input_tokens=16`，`cache_hit_tokens=0`，`cache_miss_tokens=16`
+- 聚合：`cache_usage_reported_calls=2`，`cache_usage_inconsistent_calls=0`，命中率 `0.0`
+
+短提示未达到远端缓存命中条件，因此不能据此宣称命中率改善；本次结果确认 Provider 缓存字段采集、协调器用量累计和 stable 请求链路正常。DeepSeek Provider 单元测试及 Fake Provider stable Runtime 测试继续覆盖计价、压缩、Trace 和 report 回归。
 
 ## 验证结果
 
@@ -25,8 +32,7 @@ PCR-00 基线仍由 `tests/unit/test_pcr00_behavior_baseline.py` 逐字节校验
 ruff check src tests       PASS
 ruff format --check src tests  PASS
 mypy src                    PASS
-pytest -q                  221 passed, 1 skipped
+pytest -q                  223 passed, 1 skipped
 ```
 
 跳过项为 Windows 主机不支持符号链接的工具测试。
-

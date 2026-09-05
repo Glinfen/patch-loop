@@ -1,0 +1,137 @@
+{
+  "task_id": "legacy-running-task",
+  "next_step_index": 1,
+  "messages": [
+    {
+      "role": "system",
+      "content": "PatchLoop legacy system",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "user",
+      "content": "Repair calculator",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ],
+  "tool_history": [
+    {
+      "call_id": "legacy-write-call",
+      "tool_name": "apply_patch",
+      "success": true,
+      "output": "calculator.py updated",
+      "duration_ms": 12.5
+    }
+  ],
+  "plan": {
+    "items": [
+      {
+        "id": "inspect",
+        "description": "Inspect the repository",
+        "status": "completed",
+        "evidence": ["legacy evidence"]
+      },
+      {
+        "id": "verify",
+        "description": "Run verification after the confirmed write",
+        "status": "running",
+        "evidence": []
+      }
+    ],
+    "revision": 2,
+    "updated_at": "2026-09-01T08:04:00Z"
+  },
+  "cache_epoch_state": {
+    "schema_version": "1.0",
+    "epoch_id": "legacy-epoch",
+    "generation": 0,
+    "prefix_message_count": 2,
+    "prefix_messages": [
+      {
+        "role": "system",
+        "content": "PatchLoop legacy system",
+        "tool_calls": [],
+        "tool_call_id": null
+      },
+      {
+        "role": "user",
+        "content": "Repair calculator",
+        "tool_calls": [],
+        "tool_call_id": null
+      }
+    ],
+    "prefix_message_ids": [
+      "message-2658a8b4f16e0de34c6aa60c",
+      "message-f2f9ed3e737e2d761d311f85"
+    ],
+    "prefix_fingerprints": [
+      "2658a8b4f16e0de34c6aa60c879b5a8629d4e8133ae296df30abe3608e5fbd3e",
+      "f2f9ed3e737e2d761d311f854ef4bc3f2f5d0aaf8ca575c2e94d836023f131a4"
+    ],
+    "prefix_fingerprint": "bc3f42f9e98986b7b912e8f0e441456a2a3e15e2a06f74175c5f4c004ac35607",
+    "last_boundary": null
+  },
+  "memory_manager": {
+    "schema_version": "1.0",
+    "task_id": "legacy-running-task",
+    "cursor": {
+      "next_event_index": 1,
+      "last_event_id": "tool:legacy-write-call",
+      "processed_event_ids": ["tool:legacy-write-call"],
+      "pending_event_ids": []
+    },
+    "working_memory": {
+      "schema_version": "1.0",
+      "task_id": "legacy-running-task",
+      "token_budget": 512,
+      "revision": 1,
+      "items": [
+        {
+          "key": "changed-file",
+          "kind": "changed_file",
+          "text": "calculator.py was updated",
+          "pinned": true,
+          "step_index": 0,
+          "source_id": "legacy-write-call"
+        }
+      ],
+      "phase_events": [],
+      "read_signatures": {},
+      "promoted_keys": [],
+      "estimated_tokens": 12,
+      "max_estimated_tokens": 12,
+      "evicted_count": 0,
+      "promoted_count": 0
+    },
+    "episodic_memory": {
+      "schema_version": "1.0",
+      "task_id": "legacy-running-task",
+      "recorded_call_ids": ["legacy-write-call"],
+      "recorded_checkpoint_steps": [1],
+      "recent_episodes": [],
+      "unresolved_failures": [],
+      "episode_count": 0,
+      "recovery_count": 0
+    },
+    "records_written": 1,
+    "compactions": 0,
+    "compression_input_tokens": 0,
+    "compression_output_tokens": 0,
+    "fallback_count": 0,
+    "fallback_active": false,
+    "records_by_kind": {"working": 1},
+    "records_by_status": {"active": 1},
+    "read_duration_ms": 1.5,
+    "write_duration_ms": 2.5,
+    "compression_duration_ms": 0.0
+  },
+  "input_tokens": 30,
+  "output_tokens": 5,
+  "cache_hit_tokens": 21,
+  "cache_miss_tokens": 9,
+  "cache_write_tokens": 3,
+  "cache_usage_reported_calls": 2,
+  "cache_write_reported_calls": 1,
+  "updated_at": "2026-09-01T08:04:30Z"
+}

@@ -1,0 +1,26 @@
+{
+  "id": "legacy-running-task",
+  "goal": "Finish the legacy write and verification task",
+  "repository": "tests/fixtures/session_legacy/workspace",
+  "status": "running",
+  "plan": {
+    "items": [
+      {
+        "id": "inspect",
+        "description": "Inspect the repository",
+        "status": "completed",
+        "evidence": ["legacy evidence"]
+      },
+      {
+        "id": "verify",
+        "description": "Run verification after the confirmed write",
+        "status": "running",
+        "evidence": []
+      }
+    ],
+    "revision": 2,
+    "updated_at": "2026-09-01T08:04:00Z"
+  },
+  "created_at": "2026-09-01T08:00:00Z",
+  "updated_at": "2026-09-01T08:04:00Z"
+}

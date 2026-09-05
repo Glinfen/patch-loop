@@ -2,7 +2,8 @@
 
 ## 1. 目标与范围
 
-状态：待实施。当前起点为 **SRF-00**；下文新增文件、接口和命令均为拟开发内容。
+状态：SRF-00 已完成，当前起点为 **SRF-01**。SRF-00 固定了执行契约、旧数据输入和
+旧行为故障基线；后续新增接口和命令仍按编号任务实施。
 
 本轮交付：创建 Session → 提交任务 → 运行中追加要求 → 暂停或等待审批 → 进程重启后恢复 → 完成修改、测试与报告。已确认的副作用不得因恢复再次执行，无法确认结果的动作必须停止自动重试。
 
@@ -280,3 +281,53 @@ SQLite 保存权威状态和事件；checkpoint 是版本化快照，JSONL/CLI �
 ### 5.4 所有权与外部进程
 
 数据库 fencing 只阻止旧持久化提交，Workspace 独占与进程清理负责阻止旧外部 writer。lease 过期后，须确认旧 writer 及受管进程树停止才允许新写入；不能确认则进入 recovery_required。暂停、等待审批和退出先清理再释放，清理失败不得报告安全接管。锁不约束用户编辑器，恢复还须核对文件前置条件。具体实现与测试由 SRF-03、SRF-04、SRF-07 负责。
+
+## 6. SRF-00 实际交付记录
+
+### 6.1 契约决策
+
+契约已写入 [ADR-020](adr/ADR-020-session-runtime-foundation-contract.md)，固定了
+Session/Task/Turn/Step/Execution/Effect 的对象归属、Session/Task/Effect 状态、暂停与
+取消规则、完成与取消竞态规则，以及 `unknown` 不得由普通 resume 重试的恢复规则。
+
+当前读写顺序的证据来自 `runtime.py`、`tools/gateway.py` 和 `persistence.py`：Gateway
+先调用外部工具，Runtime 再独立保存 `tool_calls`，批次结束后再保存 Step、Memory 和
+checkpoint。外部动作完成而结果未落库的窗口已明确记录为旧行为，不把 Trace 或数据库
+缺行解释成动作未发生。
+
+### 6.2 旧数据 fixture
+
+固定输入位于 `tests/fixtures/session_legacy/`，由
+`tests/e2e/test_session_runtime_baseline.py::test_session_legacy_fixture_is_readable_by_current_models`
+读取。fixture 保留一个完成 Task、一个带未完成计划的 running Task、确认写入结果、
+checkpoint、Memory/Cache snapshot 和 Trace，并在 README 中记录关键 ID、步骤和计数。
+
+### 6.3 故障屏障与旧行为基线
+
+`tests/support/session_faults.py` 提供父进程可控的五个屏障，并把屏障和外部动作审计
+追加到独立 JSONL 后 `fsync`。端到端基线测试在外部动作完成后、结果提交前终止子进程，
+重复 3 次均证明：审计文件和目标文件显示动作已发生，而 SQLite 没有对应工具结果。
+该测试是 SRF-04 安全恢复回归的输入，不是恢复成功声明。
+
+### 6.4 质量门禁记录
+
+SRF-00 实施前的当前基线：
+
+| 命令 | 结果 |
+| --- | --- |
+| `ruff check src tests` | 通过 |
+| `ruff format --check src tests` | 通过（110 files already formatted） |
+| `mypy src` | 通过（63 source files） |
+| `pytest -q` | 通过：223 passed, 1 skipped in 187.89s；跳过原因为 Windows 主机不支持 symbolic links |
+
+SRF-00 实施后的同一组门禁：
+
+| 命令 | 结果 |
+| --- | --- |
+| `ruff check src tests` | 通过 |
+| `ruff format --check src tests` | 通过（118 files already formatted） |
+| `mypy src` | 通过（63 source files） |
+| `pytest -q` | 通过：242 passed, 1 skipped in 172.14s；跳过原因为 Windows 主机不支持 symbolic links |
+
+SRF-00 的 19 项新增测试全部通过，其中外部动作完成后崩溃屏障重复命中 3 次。完整门禁
+未发现回归；唯一跳过项仍是 Windows 主机不支持 symbolic links。

@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0",
+  "task_id": "legacy-running-task",
+  "cursor": {
+    "next_event_index": 1,
+    "last_event_id": "tool:legacy-write-call",
+    "processed_event_ids": ["tool:legacy-write-call"],
+    "pending_event_ids": []
+  },
+  "working_memory": {
+    "schema_version": "1.0",
+    "task_id": "legacy-running-task",
+    "token_budget": 512,
+    "revision": 1,
+    "items": [
+      {
+        "key": "changed-file",
+        "kind": "changed_file",
+        "text": "calculator.py was updated",
+        "pinned": true,
+        "step_index": 0,
+        "source_id": "legacy-write-call"
+      }
+    ],
+    "phase_events": [],
+    "read_signatures": {},
+    "promoted_keys": [],
+    "estimated_tokens": 12,
+    "max_estimated_tokens": 12,
+    "evicted_count": 0,
+    "promoted_count": 0
+  },
+  "episodic_memory": {
+    "schema_version": "1.0",
+    "task_id": "legacy-running-task",
+    "recorded_call_ids": ["legacy-write-call"],
+    "recorded_checkpoint_steps": [1],
+    "recent_episodes": [],
+    "unresolved_failures": [],
+    "episode_count": 0,
+    "recovery_count": 0
+  },
+  "records_written": 1,
+  "compactions": 0,
+  "compression_input_tokens": 0,
+  "compression_output_tokens": 0,
+  "fallback_count": 0,
+  "fallback_active": false,
+  "records_by_kind": {"working": 1},
+  "records_by_status": {"active": 1},
+  "read_duration_ms": 1.5,
+  "write_duration_ms": 2.5,
+  "compression_duration_ms": 0.0
+}

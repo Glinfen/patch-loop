@@ -1,0 +1,4 @@
+{"id":"legacy-event-1","type":"task.started","task_id":"legacy-completed-task","trace_id":"legacy-completed-task","sequence":1,"data":{"provider":"fixture"},"timestamp":"2026-09-01T08:00:00Z"}
+{"id":"legacy-event-2","type":"tool.completed","task_id":"legacy-completed-task","trace_id":"legacy-completed-task","sequence":2,"data":{"call":{"id":"legacy-write-call","name":"apply_patch","arguments":{}},"result":{"call_id":"legacy-write-call","tool_name":"apply_patch","success":true,"output":"calculator.py updated","duration_ms":12.5}},"timestamp":"2026-09-01T08:03:00Z"}
+{"id":"legacy-event-3","type":"task.completed","task_id":"legacy-completed-task","trace_id":"legacy-completed-task","sequence":3,"data":{"result":"Legacy task completed"},"timestamp":"2026-09-01T08:05:00Z"}
+{"id":"legacy-event-4","type":"task.started","task_id":"legacy-running-task","trace_id":"legacy-running-task","sequence":4,"data":{"provider":"fixture"},"timestamp":"2026-09-01T08:04:00Z"}

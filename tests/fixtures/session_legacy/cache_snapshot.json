@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "epoch_id": "legacy-epoch",
+  "generation": 0,
+  "prefix_message_count": 2,
+  "prefix_messages": [
+    {
+      "role": "system",
+      "content": "PatchLoop legacy system",
+      "tool_calls": [],
+      "tool_call_id": null
+    },
+    {
+      "role": "user",
+      "content": "Repair calculator",
+      "tool_calls": [],
+      "tool_call_id": null
+    }
+  ],
+  "prefix_message_ids": [
+    "message-2658a8b4f16e0de34c6aa60c",
+    "message-f2f9ed3e737e2d761d311f85"
+  ],
+  "prefix_fingerprints": [
+    "2658a8b4f16e0de34c6aa60c879b5a8629d4e8133ae296df30abe3608e5fbd3e",
+    "f2f9ed3e737e2d761d311f854ef4bc3f2f5d0aaf8ca575c2e94d836023f131a4"
+  ],
+  "prefix_fingerprint": "bc3f42f9e98986b7b912e8f0e441456a2a3e15e2a06f74175c5f4c004ac35607",
+  "last_boundary": null
+}

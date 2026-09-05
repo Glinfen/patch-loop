@@ -1,0 +1,7 @@
+{
+  "call_id": "legacy-write-call",
+  "tool_name": "apply_patch",
+  "success": true,
+  "output": "calculator.py updated",
+  "duration_ms": 12.5
+}

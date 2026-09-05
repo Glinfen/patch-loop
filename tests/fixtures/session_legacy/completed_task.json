@@ -1,0 +1,9 @@
+{
+  "id": "legacy-completed-task",
+  "goal": "Inspect the completed legacy task",
+  "repository": "tests/fixtures/session_legacy/workspace",
+  "status": "completed",
+  "result": "Legacy task completed",
+  "created_at": "2026-09-01T08:00:00Z",
+  "updated_at": "2026-09-01T08:05:00Z"
+}

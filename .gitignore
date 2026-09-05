@@ -12,3 +12,4 @@ __pycache__/
 build/
 dist/
 .patchloop/
+docs/PROJECT_GOALS.md

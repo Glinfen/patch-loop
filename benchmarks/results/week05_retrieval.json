@@ -1,8 +1,8 @@
 {
   "task_count": 4,
   "baseline_recall_at_k": 0.25,
-  "hybrid_recall_at_k": 1.0,
-  "improvement": 0.75,
+  "hybrid_recall_at_k": 0.75,
+  "improvement": 0.5,
   "results": [
     {
       "task_id": "calculator-division-implementation",
@@ -27,9 +27,9 @@
       "query": "checkpoint database persistence",
       "expected_paths": ["src/patchloop/persistence.py"],
       "baseline_paths": ["src/patchloop/intelligence/search.py"],
-      "hybrid_paths": ["src/patchloop/persistence.py"],
+      "hybrid_paths": ["src/patchloop/persistence_contracts.py"],
       "baseline_hit": false,
-      "hybrid_hit": true
+      "hybrid_hit": false
     },
     {
       "task_id": "repository-ranking",

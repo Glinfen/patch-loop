@@ -2,8 +2,9 @@
 
 ## 1. 目标与范围
 
-状态：SRF-00 已完成，当前起点为 **SRF-01**。SRF-00 固定了执行契约、旧数据输入和
-旧行为故障基线；后续新增接口和命令仍按编号任务实施。
+状态：SRF-01 已完成，当前起点为 **SRF-02**。SRF-00 固定了执行契约、旧数据输入和
+旧行为故障基线；SRF-01 已完成领域模型、服务端口和 Fake Store，后续新增接口和命令仍
+按编号任务实施。
 
 本轮交付：创建 Session → 提交任务 → 运行中追加要求 → 暂停或等待审批 → 进程重启后恢复 → 完成修改、测试与报告。已确认的副作用不得因恢复再次执行，无法确认结果的动作必须停止自动重试。
 
@@ -350,3 +351,33 @@ SRF-00 契约修订后的同一组门禁：
 SRF-00 原有 19 项测试与本次 20 项契约/旧库/真实调用链测试共 39 项全部通过。五个旧路径
 故障屏障各命中一次，其中外部动作完成后崩溃窗口额外重复 3 次。完整门禁未发现回归；唯一
 跳过项仍是 Windows 主机不支持 symbolic links。
+
+## 7. SRF-01 实际交付记录
+
+### 7.1 领域模型
+
+新增 `src/patchloop/session/models.py` 和 `src/patchloop/execution/models.py`，提供可序列化
+的 Session、Turn、SessionCheckpoint、Execution、Effect、Approval、ControlRequest 和
+RecoveryDisposition。`src/patchloop/domain.py` 为旧 Task 增加 Session 关联、业务 outcome、
+runtime condition 和并发 version；旧 `Task.status` 仍可反序列化并作为兼容投影。
+
+业务结果与运行条件分离：终态 Task 不会回到 active，`recovery_required` 不能通过普通状态
+转换离开；Effect 的身份由 Task/Step/批次位置及动作内容决定，Provider call ID 不作为唯一
+执行身份。
+
+### 7.2 服务端口、错误与 Fake Store
+
+新增 `src/patchloop/persistence_contracts.py`，定义 Session/Runtime Store Protocol、
+Runtime/Effect 端口、AdvanceResult、LeaseGuard，以及 `StaleVersion`、`LeaseConflict`、
+`LeaseLost`、`ApprovalConflict`、`EffectIdentityConflict`、`RecoveryRequired` 等结构化
+错误。Fake Store 覆盖输入幂等、版本校验、活动 Task 槽、Execution claim、Effect prepare/
+claim/commit、审批、控制请求、恢复处置和 checkpoint 提交；不导入 SQLite、CLI 或具体
+Provider，实现未接管现有生产执行入口。
+
+### 7.3 验收证据
+
+模型和 Store 测试位于 `tests/unit/test_session_models.py`、
+`tests/unit/test_execution_models.py` 和 `tests/unit/test_persistence_contracts.py`；相关
+定向测试 23 项通过。全量 `pytest -q` 在加入 SRF-01 后为 279 passed、1 skipped（跳过项
+仍是 Windows 不支持 symbolic links），固定检索报告同步更新为当前源码候选路径；Week 05
+检索快照由 `tests/unit/test_intelligence.py` 验证可复现。

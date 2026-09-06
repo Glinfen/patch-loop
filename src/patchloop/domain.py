@@ -22,6 +22,33 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class SessionStatus(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class TaskOutcome(StrEnum):
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TaskRuntimeCondition(StrEnum):
+    IDLE = "idle"
+    RUNNING = "running"
+    PAUSING = "pausing"
+    PAUSED = "paused"
+    WAITING_FOR_APPROVAL = "waiting_for_approval"
+    RECOVERY_REQUIRED = "recovery_required"
+    ENDED = "ended"
+
+
+# Short aliases used by the session contract and kept provider-independent.
+RuntimeCondition = TaskRuntimeCondition
+TaskBusinessOutcome = TaskOutcome
+
+
 class PromptCacheLayout(StrEnum):
     """Prompt assembly mode used for cache-layout experiments and rollback."""
 
@@ -173,13 +200,43 @@ class TaskExecutionConfig(BaseModel):
 class Task(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def project_legacy_status(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        raw_status = data.get("status", TaskStatus.CREATED)
+        status = raw_status if isinstance(raw_status, TaskStatus) else TaskStatus(raw_status)
+        if "outcome" not in data:
+            data["outcome"] = {
+                TaskStatus.CREATED: TaskOutcome.ACTIVE,
+                TaskStatus.RUNNING: TaskOutcome.ACTIVE,
+                TaskStatus.COMPLETED: TaskOutcome.COMPLETED,
+                TaskStatus.FAILED: TaskOutcome.FAILED,
+                TaskStatus.CANCELLED: TaskOutcome.CANCELLED,
+            }[status]
+        if "runtime_condition" not in data:
+            data["runtime_condition"] = {
+                TaskStatus.CREATED: TaskRuntimeCondition.IDLE,
+                TaskStatus.RUNNING: TaskRuntimeCondition.RUNNING,
+                TaskStatus.COMPLETED: TaskRuntimeCondition.ENDED,
+                TaskStatus.FAILED: TaskRuntimeCondition.ENDED,
+                TaskStatus.CANCELLED: TaskRuntimeCondition.ENDED,
+            }[status]
+        return data
+
     id: str = Field(
         default_factory=lambda: str(uuid4()),
         pattern=r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$",
     )
     goal: str = Field(min_length=1)
     repository: str
+    session_id: str | None = Field(default=None, min_length=1)
     status: TaskStatus = TaskStatus.CREATED
+    outcome: TaskOutcome = TaskOutcome.ACTIVE
+    runtime_condition: TaskRuntimeCondition = TaskRuntimeCondition.IDLE
+    version: int = Field(default=1, ge=1)
     budget: TaskBudget = Field(default_factory=TaskBudget)
     execution: TaskExecutionConfig = Field(default_factory=TaskExecutionConfig)
     plan: Plan | None = None
@@ -188,6 +245,25 @@ class Task(BaseModel):
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_state_dimensions(self) -> Self:
+        projected_status = {
+            TaskOutcome.ACTIVE: {TaskStatus.CREATED, TaskStatus.RUNNING},
+            TaskOutcome.COMPLETED: {TaskStatus.COMPLETED},
+            TaskOutcome.FAILED: {TaskStatus.FAILED},
+            TaskOutcome.CANCELLED: {TaskStatus.CANCELLED},
+        }[self.outcome]
+        if self.status not in projected_status:
+            raise ValueError(
+                f"task status is not a valid compatibility projection for outcome {self.outcome}"
+            )
+        if self.outcome is not TaskOutcome.ACTIVE and self.runtime_condition not in {
+            TaskRuntimeCondition.ENDED,
+            TaskRuntimeCondition.RECOVERY_REQUIRED,
+        }:
+            raise ValueError("terminal task outcome requires ended or recovery_required condition")
+        return self
 
     def transition(self, target: TaskStatus, *, message: str | None = None) -> None:
         allowed = {
@@ -203,12 +279,88 @@ class Task(BaseModel):
         }
         if target not in allowed[self.status]:
             raise ValueError(f"invalid task transition: {self.status} -> {target}")
-        self.status = target
-        self.updated_at = utc_now()
+        target_outcome = {
+            TaskStatus.CREATED: TaskOutcome.ACTIVE,
+            TaskStatus.RUNNING: TaskOutcome.ACTIVE,
+            TaskStatus.COMPLETED: TaskOutcome.COMPLETED,
+            TaskStatus.FAILED: TaskOutcome.FAILED,
+            TaskStatus.CANCELLED: TaskOutcome.CANCELLED,
+        }[target]
+        next_condition = (
+            TaskRuntimeCondition.RUNNING
+            if target is TaskStatus.RUNNING
+            else (
+                self.runtime_condition
+                if self.runtime_condition is TaskRuntimeCondition.RECOVERY_REQUIRED
+                and target is TaskStatus.CANCELLED
+                else TaskRuntimeCondition.ENDED
+            )
+        )
+        object.__setattr__(self, "status", target)
+        object.__setattr__(self, "outcome", target_outcome)
+        object.__setattr__(self, "runtime_condition", next_condition)
+        object.__setattr__(self, "updated_at", utc_now())
         if target is TaskStatus.COMPLETED:
-            self.result = message
+            object.__setattr__(self, "result", message)
         elif target is TaskStatus.FAILED:
-            self.error = message
+            object.__setattr__(self, "error", message)
+
+    def transition_runtime(self, target: TaskRuntimeCondition) -> None:
+        allowed = {
+            TaskRuntimeCondition.IDLE: {
+                TaskRuntimeCondition.RUNNING,
+                TaskRuntimeCondition.PAUSED,
+                TaskRuntimeCondition.ENDED,
+            },
+            TaskRuntimeCondition.RUNNING: {
+                TaskRuntimeCondition.PAUSING,
+                TaskRuntimeCondition.WAITING_FOR_APPROVAL,
+                TaskRuntimeCondition.RECOVERY_REQUIRED,
+                TaskRuntimeCondition.ENDED,
+            },
+            TaskRuntimeCondition.PAUSING: {
+                TaskRuntimeCondition.PAUSED,
+                TaskRuntimeCondition.RECOVERY_REQUIRED,
+            },
+            TaskRuntimeCondition.PAUSED: {
+                TaskRuntimeCondition.RUNNING,
+                TaskRuntimeCondition.ENDED,
+            },
+            TaskRuntimeCondition.WAITING_FOR_APPROVAL: {
+                TaskRuntimeCondition.RUNNING,
+                TaskRuntimeCondition.PAUSED,
+                TaskRuntimeCondition.RECOVERY_REQUIRED,
+                TaskRuntimeCondition.ENDED,
+            },
+            TaskRuntimeCondition.RECOVERY_REQUIRED: set(),
+            TaskRuntimeCondition.ENDED: set(),
+        }
+        if target not in allowed[self.runtime_condition]:
+            raise ValueError(
+                f"invalid task runtime transition: {self.runtime_condition} -> {target}"
+            )
+        object.__setattr__(self, "runtime_condition", target)
+        object.__setattr__(self, "updated_at", utc_now())
+
+    def set_outcome(self, target: TaskOutcome, *, message: str | None = None) -> None:
+        if target is TaskOutcome.ACTIVE:
+            raise ValueError("active is not a terminal outcome transition")
+        if self.outcome is not TaskOutcome.ACTIVE:
+            raise ValueError(f"invalid task outcome transition: {self.outcome} -> {target}")
+        status = {
+            TaskOutcome.COMPLETED: TaskStatus.COMPLETED,
+            TaskOutcome.FAILED: TaskStatus.FAILED,
+            TaskOutcome.CANCELLED: TaskStatus.CANCELLED,
+        }[target]
+        object.__setattr__(self, "outcome", target)
+        object.__setattr__(self, "status", status)
+        if self.runtime_condition is not TaskRuntimeCondition.RECOVERY_REQUIRED:
+            object.__setattr__(self, "runtime_condition", TaskRuntimeCondition.ENDED)
+        object.__setattr__(self, "updated_at", utc_now())
+        if target is TaskOutcome.COMPLETED:
+            object.__setattr__(self, "result", message)
+        elif target is TaskOutcome.FAILED:
+            object.__setattr__(self, "error", message)
 
 
 class ToolCall(BaseModel):

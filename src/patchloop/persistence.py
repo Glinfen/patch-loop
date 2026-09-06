@@ -27,7 +27,13 @@ from patchloop.storage import TaskNotFoundError
 
 
 class RuntimeCheckpoint(BaseModel):
+    schema_version: str = Field(default="1.0", pattern=r"^1\.0$")
     task_id: str
+    session_id: str | None = None
+    turn_id: str | None = None
+    consumed_input_sequence: int = Field(default=0, ge=0)
+    event_sequence: int = Field(default=0, ge=0)
+    pending_effect_ids: list[str] = Field(default_factory=list)
     next_step_index: int = Field(ge=0)
     messages: list[ModelMessage]
     tool_specifications: list[ToolSpec] | None = None

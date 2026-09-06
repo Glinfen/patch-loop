@@ -21,7 +21,12 @@ from patchloop.domain import (
     ToolCall,
     ToolResult,
 )
-from patchloop.events import SessionEvent, effect_commit_event_id, journal_event_id
+from patchloop.events import (
+    SessionEvent,
+    effect_commit_event_id,
+    journal_event_id,
+    lease_owner_summary,
+)
 from patchloop.execution.models import (
     Approval,
     ApprovalStatus,
@@ -34,6 +39,7 @@ from patchloop.execution.models import (
     ExecutionStatus,
     RecoveryDisposition,
     RecoveryDispositionKind,
+    WorkspaceLease,
 )
 from patchloop.memory.episodic import EpisodicMemorySnapshot
 from patchloop.memory.manager import MemoryManagerSnapshot
@@ -47,6 +53,7 @@ from patchloop.persistence_contracts import (
     RecoveryRequired,
     StaleVersion,
     SubmissionConflict,
+    WorkspaceLeaseGuard,
 )
 from patchloop.prompt_cache import (
     CacheDiagnosticsSnapshot,
@@ -54,6 +61,7 @@ from patchloop.prompt_cache import (
     MemoryPublicationSnapshot,
 )
 from patchloop.providers.base import ModelMessage, ToolSpec
+from patchloop.sandbox import ManagedCommandIdentity, ManagedCommandStatus
 from patchloop.security import SecretRedactor, persist_tool_arguments
 from patchloop.session.models import Session, SessionCheckpoint, Turn
 from patchloop.sqlite_support import (
@@ -67,7 +75,7 @@ from patchloop.sqlite_support import (
 )
 from patchloop.storage import TaskNotFoundError
 
-RUNTIME_SCHEMA_VERSION = 2
+RUNTIME_SCHEMA_VERSION = 4
 _RUNTIME_TABLES = {
     "tasks",
     "agent_steps",
@@ -83,9 +91,23 @@ _RUNTIME_TABLES = {
     "recovery_dispositions",
     "session_events",
     "workspace_leases",
+    "managed_commands",
 }
 
 _RUNTIME_TASK_COLUMNS = {"session_id", "outcome", "runtime_condition", "version"}
+_RUNTIME_WORKSPACE_LEASE_COLUMNS = {
+    "workspace_id",
+    "repository_path",
+    "session_id",
+    "task_id",
+    "execution_id",
+    "owner_id",
+    "token",
+    "generation",
+    "lease_expires_at",
+    "acquired_at",
+    "updated_at",
+}
 
 _RUNTIME_MIGRATION_V1 = (
     # Legacy runtime tables keep their historical shape; a fresh database
@@ -303,6 +325,35 @@ _RUNTIME_MIGRATION_V1 = (
     "CREATE INDEX IF NOT EXISTS idx_effects_task ON effects(task_id)",
 )
 
+_RUNTIME_MIGRATION_V3 = (
+    "ALTER TABLE workspace_leases ADD COLUMN repository_path TEXT",
+    "ALTER TABLE workspace_leases ADD COLUMN session_id TEXT REFERENCES sessions(id)",
+    "ALTER TABLE workspace_leases ADD COLUMN task_id TEXT REFERENCES tasks(id)",
+    "ALTER TABLE workspace_leases ADD COLUMN execution_id TEXT REFERENCES executions(id)",
+    "CREATE INDEX IF NOT EXISTS idx_executions_session ON executions(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_workspace_leases_task ON workspace_leases(task_id)",
+)
+
+_RUNTIME_MIGRATION_V4 = (
+    """
+    CREATE TABLE managed_commands (
+        id TEXT PRIMARY KEY,
+        execution_id TEXT NOT NULL,
+        backend TEXT NOT NULL,
+        process_id INTEGER NOT NULL,
+        process_start_marker TEXT NOT NULL,
+        container_name TEXT,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        FOREIGN KEY (execution_id) REFERENCES executions(id) ON DELETE CASCADE
+    )
+    """,
+    "CREATE INDEX idx_managed_commands_execution ON managed_commands(execution_id)",
+    "CREATE INDEX idx_managed_commands_status ON managed_commands(status)",
+)
+
 
 class RuntimeSchemaError(RuntimeError):
     """Raised when the runtime schema cannot be migrated or is unusable."""
@@ -350,6 +401,28 @@ def initialize_runtime_schema(connection: sqlite3.Connection) -> None:
                 """,
                 (2, datetime.now(UTC).isoformat()),
             )
+            version = 2
+        if version < 3:
+            for statement in _RUNTIME_MIGRATION_V3:
+                connection.execute(statement)
+            connection.execute(
+                """
+                UPDATE patchloop_schema_migrations
+                SET version = ?, updated_at = ? WHERE component = 'runtime'
+                """,
+                (3, datetime.now(UTC).isoformat()),
+            )
+            version = 3
+        if version < 4:
+            for statement in _RUNTIME_MIGRATION_V4:
+                connection.execute(statement)
+            connection.execute(
+                """
+                UPDATE patchloop_schema_migrations
+                SET version = ?, updated_at = ? WHERE component = 'runtime'
+                """,
+                (4, datetime.now(UTC).isoformat()),
+            )
         tables = {
             str(table[0])
             for table in connection.execute(
@@ -366,6 +439,15 @@ def initialize_runtime_schema(connection: sqlite3.Connection) -> None:
             missing = ", ".join(sorted(_RUNTIME_TASK_COLUMNS - task_columns))
             raise RuntimeSchemaError(
                 f"runtime tasks table is incomplete; missing columns: {missing}"
+            )
+        workspace_lease_columns = {
+            str(column[1])
+            for column in connection.execute("PRAGMA table_info(workspace_leases)").fetchall()
+        }
+        if not _RUNTIME_WORKSPACE_LEASE_COLUMNS.issubset(workspace_lease_columns):
+            missing = ", ".join(sorted(_RUNTIME_WORKSPACE_LEASE_COLUMNS - workspace_lease_columns))
+            raise RuntimeSchemaError(
+                f"runtime workspace_leases table is incomplete; missing columns: {missing}"
             )
         connection.execute("RELEASE SAVEPOINT patchloop_runtime_migration")
     except Exception as exc:
@@ -700,8 +782,9 @@ class SQLiteStore:
         finally:
             connection.close()
 
-    def save_task(self, task: Task) -> None:
-        with connect(self.path) as connection:
+    def save_task(self, task: Task, *, lease_guard: LeaseGuard | None = None) -> None:
+        with connect_write(self.path) as connection:
+            self._assert_legacy_write_guard(connection, task.id, lease_guard)
             connection.execute(
                 """
                 INSERT INTO tasks (
@@ -739,8 +822,9 @@ class SQLiteStore:
             raise TaskNotFoundError(task_id)
         return Task.model_validate_json(row["payload_json"])
 
-    def record_step(self, step: AgentStep) -> None:
-        with connect(self.path) as connection:
+    def record_step(self, step: AgentStep, *, lease_guard: LeaseGuard | None = None) -> None:
+        with connect_write(self.path) as connection:
+            self._assert_legacy_write_guard(connection, step.task_id, lease_guard)
             connection.execute(
                 """
                 INSERT INTO agent_steps (task_id, step_index, payload_json)
@@ -762,8 +846,16 @@ class SQLiteStore:
             ).fetchall()
         return [AgentStep.model_validate_json(row["payload_json"]) for row in rows]
 
-    def record_tool_call(self, task_id: str, call: ToolCall, result: ToolResult) -> None:
-        with connect(self.path) as connection:
+    def record_tool_call(
+        self,
+        task_id: str,
+        call: ToolCall,
+        result: ToolResult,
+        *,
+        lease_guard: LeaseGuard | None = None,
+    ) -> None:
+        with connect_write(self.path) as connection:
+            self._assert_legacy_write_guard(connection, task_id, lease_guard)
             connection.execute(
                 """
                 INSERT INTO tool_calls
@@ -802,8 +894,11 @@ class SQLiteStore:
             ).fetchall()
         return [ToolResult.model_validate_json(row["result_json"]) for row in rows]
 
-    def save_checkpoint(self, checkpoint: RuntimeCheckpoint) -> None:
-        with connect(self.path) as connection:
+    def save_checkpoint(
+        self, checkpoint: RuntimeCheckpoint, *, lease_guard: LeaseGuard | None = None
+    ) -> None:
+        with connect_write(self.path) as connection:
+            self._assert_legacy_write_guard(connection, checkpoint.task_id, lease_guard)
             connection.execute(
                 """
                 INSERT INTO checkpoints (task_id, payload_json, updated_at)
@@ -828,8 +923,13 @@ class SQLiteStore:
             raise TaskNotFoundError(f"checkpoint:{task_id}")
         return _adapt_checkpoint_json(row["payload_json"], RuntimeCheckpoint)
 
-    def record_artifact(self, task_id: str, path: Path) -> None:
-        with connect(self.path) as connection:
+    def record_artifact(
+        self, task_id: str, path: Path, *, lease_guard: LeaseGuard | None = None
+    ) -> None:
+        with connect_write(self.path) as connection:
+            task = self._require_task(connection, task_id)
+            if task.outcome is TaskOutcome.ACTIVE or lease_guard is not None:
+                self._assert_legacy_write_guard(connection, task_id, lease_guard)
             connection.execute(
                 """
                 INSERT INTO artifacts (task_id, name, path, created_at)
@@ -850,11 +950,93 @@ class SQLiteStore:
         return [Path(row["path"]) for row in rows]
 
     def cancel_task(self, task_id: str) -> Task:
-        task = self.get_task(task_id)
-        if task.status in {TaskStatus.CREATED, TaskStatus.RUNNING}:
+        with connect_write(self.path) as connection:
+            task = self._require_task(connection, task_id)
+            if task.status not in {TaskStatus.CREATED, TaskStatus.RUNNING}:
+                return task
+            existing = connection.execute(
+                """
+                SELECT payload_json FROM control_requests
+                WHERE task_id = ? AND kind = ? AND status IN (?, ?)
+                ORDER BY requested_at, id LIMIT 1
+                """,
+                (
+                    task_id,
+                    ControlKind.CANCEL.value,
+                    ControlStatus.REQUESTED.value,
+                    ControlStatus.ACKNOWLEDGED.value,
+                ),
+            ).fetchone()
+            if existing is not None:
+                return task
+            now = datetime.now(UTC)
+            active_row = connection.execute(
+                """
+                SELECT payload_json FROM executions
+                WHERE task_id = ? AND status IN (?, ?, ?, ?)
+                ORDER BY generation DESC LIMIT 1
+                """,
+                (
+                    task_id,
+                    ExecutionStatus.CLAIMED.value,
+                    ExecutionStatus.RUNNING.value,
+                    ExecutionStatus.WAITING_FOR_APPROVAL.value,
+                    ExecutionStatus.PAUSED.value,
+                ),
+            ).fetchone()
+            active = (
+                None
+                if active_row is None
+                else Execution.model_validate_json(active_row["payload_json"])
+            )
+            if active is not None and active.lease_expires_at <= now:
+                active = None
+            request = ControlRequest(
+                task_id=task_id,
+                execution_id=None if active is None else active.id,
+                kind=ControlKind.CANCEL,
+                requested_at=now,
+            )
+            if active is None:
+                request.transition(ControlStatus.ACKNOWLEDGED)
+                request.transition(ControlStatus.SETTLED)
+            connection.execute(
+                """
+                INSERT INTO control_requests (
+                    id, task_id, execution_id, kind, status, version,
+                    requested_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.id,
+                    request.task_id,
+                    request.execution_id,
+                    request.kind.value,
+                    request.status.value,
+                    request.version,
+                    request.requested_at.isoformat(),
+                    self._redacted_json(request),
+                ),
+            )
+            if active is not None:
+                return task
             task.transition(TaskStatus.CANCELLED)
-            self.save_task(task)
-        return task
+            terminal = task.model_copy(update={"version": task.version + 1})
+            self._write_task_row(connection, terminal)
+            if terminal.session_id is not None:
+                session = self._require_session(connection, terminal.session_id)
+                if session.active_task_id == terminal.id:
+                    self._write_session_row(
+                        connection,
+                        session.model_copy(
+                            update={
+                                "active_task_id": None,
+                                "version": session.version + 1,
+                                "updated_at": now,
+                            }
+                        ),
+                    )
+            return terminal
 
     def is_cancelled(self, task_id: str) -> bool:
         try:
@@ -1037,6 +1219,52 @@ class SQLiteStore:
 
     # -- Conditional runtime store surface (SRF-02) ------------------------
 
+    def prepare_task_execution(self, task: Task) -> Task:
+        """Persist and Session-bind a legacy Task before ownership acquisition."""
+
+        safe = self._redacted_task(task)
+        with connect_write(self.path) as connection:
+            current = self._task_row(connection, safe.id)
+            if current is None:
+                self._insert_task_row(connection, safe)
+                current = safe
+            if current.session_id is not None:
+                session = self._require_session(connection, current.session_id)
+                if session.active_task_id != current.id:
+                    raise LeaseConflict(session.id, session.active_task_id)
+                return current
+            session_id = f"runtime-session-{current.id}"
+            runtime_session = self._session_row(connection, session_id)
+            if runtime_session is None:
+                runtime_session = Session(
+                    id=session_id,
+                    workspace_ref=current.repository,
+                    active_task_id=current.id,
+                )
+                self._insert_session_row(connection, runtime_session)
+            elif runtime_session.active_task_id not in {None, current.id}:
+                raise LeaseConflict(runtime_session.id, runtime_session.active_task_id)
+            bound = current.model_copy(
+                update={
+                    "session_id": runtime_session.id,
+                    "version": current.version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self._write_task_row(connection, bound)
+            if runtime_session.active_task_id is None:
+                self._write_session_row(
+                    connection,
+                    runtime_session.model_copy(
+                        update={
+                            "active_task_id": bound.id,
+                            "version": runtime_session.version + 1,
+                            "updated_at": datetime.now(UTC),
+                        }
+                    ),
+                )
+            return bound
+
     def create_task(self, task: Task) -> Task:
         """Create a Task without the legacy upsert semantics."""
 
@@ -1057,13 +1285,23 @@ class SQLiteStore:
                 )
         return safe
 
-    def update_task(self, task: Task, *, expected_version: int) -> Task:
+    def update_task(
+        self,
+        task: Task,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard | None = None,
+    ) -> Task:
         """Conditionally replace a Task and fence stale writers."""
 
         safe = self._redacted_task(task)
         with connect_write(self.path) as connection:
             current = self._require_task(connection, safe.id)
             self._check_version(safe.id, current.version, expected_version)
+            if current.session_id is not None:
+                if lease_guard is None:
+                    raise LeaseLost(current.id)
+                self._assert_guard(connection, lease_guard)
             self._validate_task_update(current, safe)
             updated = safe.model_copy(
                 update={"version": current.version + 1, "updated_at": datetime.now(UTC)}
@@ -1098,19 +1336,50 @@ class SQLiteStore:
             return updated
 
     def claim_execution(
-        self, execution: Execution, *, expected_version: int | None = None
+        self,
+        execution: Execution,
+        *,
+        expected_version: int | None = None,
+        now: datetime | None = None,
     ) -> Execution:
         safe = self._redacted_model(execution, Execution)
+        current_time = datetime.now(UTC) if now is None else now
+        if safe.lease_expires_at <= current_time:
+            raise ValueError("execution lease must expire in the future")
         with connect_write(self.path) as connection:
+            session = self._require_session(connection, safe.session_id)
+            takeover = False
+            active_rows = connection.execute(
+                """
+                SELECT payload_json FROM executions
+                WHERE session_id = ? AND status IN (?, ?, ?, ?)
+                ORDER BY generation DESC
+                """,
+                (
+                    safe.session_id,
+                    ExecutionStatus.CLAIMED.value,
+                    ExecutionStatus.RUNNING.value,
+                    ExecutionStatus.WAITING_FOR_APPROVAL.value,
+                    ExecutionStatus.PAUSED.value,
+                ),
+            ).fetchall()
+            for active_row in active_rows:
+                active = Execution.model_validate_json(active_row["payload_json"])
+                if active.lease_expires_at > current_time:
+                    raise LeaseConflict(safe.session_id, active.owner_id)
+                takeover = True
+                self._expire_execution_row(connection, active, current_time)
             task = self._require_task(connection, safe.task_id)
             self._check_version(task.id, task.version, expected_version)
             if task.session_id != safe.session_id:
                 raise ValueError("execution session does not own its task")
-            active = connection.execute(
+            if task.runtime_condition is TaskRuntimeCondition.RECOVERY_REQUIRED:
+                raise RecoveryRequired(task.id)
+            active_rows = connection.execute(
                 """
                 SELECT payload_json FROM executions
                 WHERE task_id = ? AND status IN (?, ?, ?, ?)
-                ORDER BY generation DESC LIMIT 1
+                ORDER BY generation DESC
                 """,
                 (
                     safe.task_id,
@@ -1119,37 +1388,468 @@ class SQLiteStore:
                     ExecutionStatus.WAITING_FOR_APPROVAL.value,
                     ExecutionStatus.PAUSED.value,
                 ),
-            ).fetchone()
-            if active is not None:
-                owner = Execution.model_validate_json(active["payload_json"]).owner_id
-                raise LeaseConflict(safe.task_id, owner)
+            ).fetchall()
+            for active_row in active_rows:
+                active = Execution.model_validate_json(active_row["payload_json"])
+                if active.lease_expires_at > current_time:
+                    raise LeaseConflict(safe.task_id, active.owner_id)
+                takeover = True
+                self._expire_execution_row(connection, active, current_time)
             if connection.execute("SELECT 1 FROM executions WHERE id = ?", (safe.id,)).fetchone():
                 raise ValueError(f"execution already exists: {safe.id}")
+            if connection.execute(
+                "SELECT 1 FROM executions WHERE lease_token = ?", (safe.lease_token,)
+            ).fetchone():
+                raise ValueError("execution lease token was already used")
+            generation_row = connection.execute(
+                "SELECT COALESCE(MAX(generation), 0) FROM executions WHERE task_id = ?",
+                (safe.task_id,),
+            ).fetchone()
+            generation = int(generation_row[0]) + 1
             claimed = safe.model_copy(
-                update={"status": ExecutionStatus.RUNNING, "updated_at": datetime.now(UTC)}
+                update={
+                    "generation": generation,
+                    "status": ExecutionStatus.RUNNING,
+                    "updated_at": current_time,
+                }
             )
             self._insert_execution_row(connection, claimed)
             running_task = task.model_copy(
                 update={
                     "runtime_condition": TaskRuntimeCondition.RUNNING,
                     "version": task.version + 1,
-                    "updated_at": datetime.now(UTC),
+                    "updated_at": current_time,
                 }
             )
             self._write_task_row(connection, running_task)
+            event_type = "lease.takeover" if takeover else "lease.acquired"
             self._journal(
                 connection,
-                self._require_session(connection, safe.session_id),
-                event_id=journal_event_id("execution.claimed", claimed.id, claimed.generation),
-                event_type="execution.claimed",
+                session,
+                event_id=journal_event_id(event_type, claimed.id, claimed.generation),
+                event_type=event_type,
                 task_id=task.id,
                 data={
                     "execution_id": claimed.id,
-                    "owner_id": claimed.owner_id,
+                    "scope": "execution",
+                    "resource_id": claimed.task_id,
+                    "owner_summary": lease_owner_summary(claimed.owner_id),
                     "generation": claimed.generation,
+                    "recovery_advice": (
+                        "verify prior managed commands before writes"
+                        if takeover
+                        else "renew before lease expiry"
+                    ),
                 },
             )
             return claimed
+
+    def renew_execution(
+        self, lease_guard: LeaseGuard, *, now: datetime, lease_expires_at: datetime
+    ) -> Execution:
+        if lease_expires_at <= now:
+            raise ValueError("renewed execution lease must expire in the future")
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard, now=now)
+            renewed = execution.model_copy(
+                update={
+                    "lease_expires_at": lease_expires_at,
+                    "version": execution.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._write_execution_row(connection, renewed)
+            return renewed
+
+    def release_execution(self, lease_guard: LeaseGuard, *, now: datetime) -> None:
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard, now=now)
+            released = execution.model_copy(
+                update={
+                    "status": ExecutionStatus.RELEASED,
+                    "version": execution.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._write_execution_row(connection, released)
+            task = self._require_task(connection, released.task_id)
+            if task.runtime_condition is TaskRuntimeCondition.RUNNING:
+                idle_task = task.model_copy(
+                    update={
+                        "runtime_condition": TaskRuntimeCondition.IDLE,
+                        "version": task.version + 1,
+                        "updated_at": now,
+                    }
+                )
+                self._write_task_row(connection, idle_task)
+            if task.session_id is not None:
+                self._journal(
+                    connection,
+                    self._require_session(connection, task.session_id),
+                    event_id=journal_event_id("lease.released", released.id, released.version),
+                    event_type="lease.released",
+                    task_id=task.id,
+                    data={
+                        "execution_id": released.id,
+                        "scope": "execution",
+                        "resource_id": released.task_id,
+                        "owner_summary": lease_owner_summary(released.owner_id),
+                        "generation": released.generation,
+                        "recovery_advice": "safe to acquire a new execution lease",
+                    },
+                )
+
+    def assert_execution(self, lease_guard: LeaseGuard, *, now: datetime) -> Execution:
+        with connect(self.path) as connection:
+            return self._assert_guard(connection, lease_guard, now=now)
+
+    def acquire_workspace_writer(
+        self, lease: WorkspaceLease, *, lease_guard: LeaseGuard, now: datetime
+    ) -> WorkspaceLease:
+        safe = self._redacted_model(lease, WorkspaceLease)
+        if safe.lease_expires_at <= now:
+            raise ValueError("workspace lease must expire in the future")
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard, now=now)
+            if (
+                safe.execution_id != execution.id
+                or safe.session_id != execution.session_id
+                or safe.task_id != execution.task_id
+                or safe.owner_id != execution.owner_id
+            ):
+                raise LeaseLost(safe.workspace_id)
+            existing_row = connection.execute(
+                "SELECT * FROM workspace_leases WHERE workspace_id = ?",
+                (safe.workspace_id,),
+            ).fetchone()
+            existing = (
+                None if existing_row is None else self._workspace_lease_from_row(existing_row)
+            )
+            if existing is not None and existing.lease_expires_at > now:
+                raise LeaseConflict(safe.workspace_id, existing.owner_id)
+            if existing is not None and existing.lease_token == safe.lease_token:
+                raise ValueError("workspace lease token was already used")
+            takeover = False
+            if existing is not None:
+                prior_row = connection.execute(
+                    "SELECT payload_json FROM executions WHERE id = ?",
+                    (existing.execution_id,),
+                ).fetchone()
+                if prior_row is not None:
+                    prior = Execution.model_validate_json(prior_row["payload_json"])
+                    takeover = prior.status in {
+                        ExecutionStatus.CLAIMED,
+                        ExecutionStatus.RUNNING,
+                        ExecutionStatus.WAITING_FOR_APPROVAL,
+                        ExecutionStatus.PAUSED,
+                    }
+            acquired = safe.model_copy(
+                update={
+                    "generation": 1 if existing is None else existing.generation + 1,
+                    "acquired_at": now,
+                    "updated_at": now,
+                }
+            )
+            connection.execute(
+                """
+                INSERT INTO workspace_leases (
+                    workspace_id, repository_path, session_id, task_id, execution_id,
+                    owner_id, token, generation, lease_expires_at, acquired_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace_id) DO UPDATE SET
+                    repository_path = excluded.repository_path,
+                    session_id = excluded.session_id,
+                    task_id = excluded.task_id,
+                    execution_id = excluded.execution_id,
+                    owner_id = excluded.owner_id,
+                    token = excluded.token,
+                    generation = excluded.generation,
+                    lease_expires_at = excluded.lease_expires_at,
+                    acquired_at = excluded.acquired_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    acquired.workspace_id,
+                    acquired.repository_path,
+                    acquired.session_id,
+                    acquired.task_id,
+                    acquired.execution_id,
+                    acquired.owner_id,
+                    acquired.lease_token,
+                    acquired.generation,
+                    acquired.lease_expires_at.isoformat(),
+                    acquired.acquired_at.isoformat(),
+                    acquired.updated_at.isoformat(),
+                ),
+            )
+            event_type = "lease.takeover" if takeover else "lease.acquired"
+            self._journal(
+                connection,
+                self._require_session(connection, acquired.session_id),
+                event_id=journal_event_id(event_type, acquired.workspace_id, acquired.generation),
+                event_type=event_type,
+                task_id=acquired.task_id,
+                data={
+                    "execution_id": acquired.execution_id,
+                    "scope": "workspace",
+                    "resource_id": acquired.workspace_id,
+                    "owner_summary": lease_owner_summary(acquired.owner_id),
+                    "generation": acquired.generation,
+                    "recovery_advice": (
+                        "prior writer cleanup confirmed before takeover"
+                        if takeover
+                        else "release after managed command cleanup"
+                    ),
+                },
+            )
+            return acquired
+
+    def renew_workspace_writer(
+        self,
+        lease_guard: WorkspaceLeaseGuard,
+        *,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> WorkspaceLease:
+        if lease_expires_at <= now:
+            raise ValueError("renewed workspace lease must expire in the future")
+        with connect_write(self.path) as connection:
+            existing = self._assert_workspace_guard(connection, lease_guard, now=now)
+            renewed = existing.model_copy(
+                update={"lease_expires_at": lease_expires_at, "updated_at": now}
+            )
+            self._write_workspace_lease_row(connection, renewed)
+            return renewed
+
+    def release_workspace_writer(self, lease_guard: WorkspaceLeaseGuard, *, now: datetime) -> None:
+        with connect_write(self.path) as connection:
+            existing = self._assert_workspace_guard(connection, lease_guard, now=now)
+            cursor = connection.execute(
+                """
+                UPDATE workspace_leases SET lease_expires_at = ?, updated_at = ?
+                WHERE workspace_id = ? AND execution_id = ? AND owner_id = ?
+                    AND token = ? AND generation = ?
+                """,
+                (
+                    now.isoformat(),
+                    now.isoformat(),
+                    lease_guard.workspace_id,
+                    lease_guard.execution_id,
+                    lease_guard.owner_id,
+                    lease_guard.token,
+                    lease_guard.generation,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise LeaseLost(lease_guard.workspace_id)
+            self._journal(
+                connection,
+                self._require_session(connection, existing.session_id),
+                event_id=journal_event_id(
+                    "lease.released",
+                    existing.workspace_id,
+                    f"{existing.generation}:{existing.execution_id}",
+                ),
+                event_type="lease.released",
+                task_id=existing.task_id,
+                data={
+                    "execution_id": existing.execution_id,
+                    "scope": "workspace",
+                    "resource_id": existing.workspace_id,
+                    "owner_summary": lease_owner_summary(existing.owner_id),
+                    "generation": existing.generation,
+                    "recovery_advice": "safe to acquire a new workspace writer",
+                },
+            )
+
+    def assert_workspace_writer(
+        self, lease_guard: WorkspaceLeaseGuard, *, now: datetime
+    ) -> WorkspaceLease:
+        with connect(self.path) as connection:
+            return self._assert_workspace_guard(connection, lease_guard, now=now)
+
+    def register_managed_command(
+        self, identity: ManagedCommandIdentity, *, lease_guard: LeaseGuard
+    ) -> ManagedCommandIdentity:
+        """Persist a verifiable process/container identity before command work proceeds."""
+
+        safe = self._redacted_model(identity, ManagedCommandIdentity)
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard)
+            if safe.execution_id != execution.id:
+                raise LeaseLost(execution.task_id)
+            connection.execute(
+                """
+                INSERT INTO managed_commands (
+                    id, execution_id, backend, process_id, process_start_marker,
+                    container_name, status, started_at, updated_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    safe.id,
+                    safe.execution_id,
+                    safe.backend,
+                    safe.process_id,
+                    safe.process_start_marker,
+                    safe.container_name,
+                    safe.status.value,
+                    safe.started_at.isoformat(),
+                    safe.updated_at.isoformat(),
+                    self._redacted_json(safe),
+                ),
+            )
+        return safe
+
+    def finish_managed_command(self, identity: ManagedCommandIdentity) -> ManagedCommandIdentity:
+        """Record cleanup outcome using immutable identity, including after lease loss."""
+
+        safe = self._redacted_model(identity, ManagedCommandIdentity)
+        if safe.status is ManagedCommandStatus.RUNNING:
+            raise ValueError("a finished managed command cannot remain running")
+        with connect_write(self.path) as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM managed_commands WHERE id = ?", (safe.id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"managed command not found: {safe.id}")
+            current = ManagedCommandIdentity.model_validate_json(row["payload_json"])
+            immutable_identity = (
+                "execution_id",
+                "backend",
+                "process_id",
+                "process_start_marker",
+                "container_name",
+            )
+            if any(getattr(current, name) != getattr(safe, name) for name in immutable_identity):
+                raise LeaseLost(safe.execution_id)
+            if current.status not in {
+                ManagedCommandStatus.RUNNING,
+                ManagedCommandStatus.CLEANUP_FAILED,
+            }:
+                if current.status in {
+                    ManagedCommandStatus.EXITED,
+                    ManagedCommandStatus.TERMINATED,
+                }:
+                    return current
+                raise ValueError(f"managed command is already finished: {safe.id}")
+            connection.execute(
+                """
+                UPDATE managed_commands SET status = ?, updated_at = ?, payload_json = ?
+                WHERE id = ? AND status IN (?, ?)
+                """,
+                (
+                    safe.status.value,
+                    safe.updated_at.isoformat(),
+                    self._redacted_json(safe),
+                    safe.id,
+                    ManagedCommandStatus.RUNNING.value,
+                    ManagedCommandStatus.CLEANUP_FAILED.value,
+                ),
+            )
+        return safe
+
+    def list_managed_commands(
+        self, execution_id: str, *, active_only: bool = False
+    ) -> list[ManagedCommandIdentity]:
+        query = "SELECT payload_json FROM managed_commands WHERE execution_id = ?"
+        parameters: tuple[object, ...] = (execution_id,)
+        if active_only:
+            query += " AND status = ?"
+            parameters += (ManagedCommandStatus.RUNNING.value,)
+        query += " ORDER BY started_at, id"
+        with connect(self.path) as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [ManagedCommandIdentity.model_validate_json(row["payload_json"]) for row in rows]
+
+    def recovery_commands_for_task(
+        self, task_id: str, *, now: datetime
+    ) -> list[ManagedCommandIdentity]:
+        with connect(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT managed_commands.payload_json
+                FROM managed_commands
+                JOIN executions ON executions.id = managed_commands.execution_id
+                WHERE executions.task_id = ? AND executions.lease_expires_at <= ?
+                    AND managed_commands.status IN (?, ?)
+                ORDER BY managed_commands.started_at, managed_commands.id
+                """,
+                (
+                    task_id,
+                    now.isoformat(),
+                    ManagedCommandStatus.RUNNING.value,
+                    ManagedCommandStatus.CLEANUP_FAILED.value,
+                ),
+            ).fetchall()
+        return [ManagedCommandIdentity.model_validate_json(row["payload_json"]) for row in rows]
+
+    def recovery_commands_for_workspace(
+        self, workspace_id: str, *, now: datetime
+    ) -> list[ManagedCommandIdentity]:
+        with connect(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT managed_commands.payload_json
+                FROM workspace_leases
+                JOIN managed_commands
+                    ON managed_commands.execution_id = workspace_leases.execution_id
+                WHERE workspace_leases.workspace_id = ?
+                    AND workspace_leases.lease_expires_at <= ?
+                    AND managed_commands.status IN (?, ?)
+                ORDER BY managed_commands.started_at, managed_commands.id
+                """,
+                (
+                    workspace_id,
+                    now.isoformat(),
+                    ManagedCommandStatus.RUNNING.value,
+                    ManagedCommandStatus.CLEANUP_FAILED.value,
+                ),
+            ).fetchall()
+        return [ManagedCommandIdentity.model_validate_json(row["payload_json"]) for row in rows]
+
+    def mark_command_recovery_required(
+        self, identity: ManagedCommandIdentity, *, cleanup_info: str
+    ) -> str:
+        with connect_write(self.path) as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM executions WHERE id = ?", (identity.execution_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"execution not found: {identity.execution_id}")
+            execution = Execution.model_validate_json(row["payload_json"])
+            recovery_execution = execution.model_copy(
+                update={
+                    "status": ExecutionStatus.RECOVERY_REQUIRED,
+                    "version": execution.version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self._write_execution_row(connection, recovery_execution)
+            task = self._require_task(connection, execution.task_id)
+            recovery_task = task.model_copy(
+                update={
+                    "runtime_condition": TaskRuntimeCondition.RECOVERY_REQUIRED,
+                    "version": task.version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self._write_task_row(connection, recovery_task)
+            if task.session_id is not None:
+                self._journal(
+                    connection,
+                    self._require_session(connection, task.session_id),
+                    event_id=journal_event_id(
+                        "command.recovery_required", identity.id, recovery_task.version
+                    ),
+                    event_type="command.recovery_required",
+                    task_id=task.id,
+                    data={
+                        "command_id": identity.id,
+                        "execution_id": identity.execution_id,
+                        "reason": cleanup_info[:256],
+                    },
+                )
+            return task.id
 
     def get_execution(self, execution_id: str) -> Execution:
         with connect(self.path) as connection:
@@ -1175,9 +1875,11 @@ class SQLiteStore:
             raise ValueError("one prepare batch must belong to one task")
         task_id = next(iter(task_ids))
         with connect_write(self.path) as connection:
-            if lease_guard is not None:
-                self._assert_guard(connection, lease_guard)
             task = self._require_task(connection, task_id)
+            if task.session_id is not None:
+                if lease_guard is None:
+                    raise LeaseLost(task_id)
+                self._assert_guard(connection, lease_guard)
             prepared: list[Effect] = []
             new_effects: list[Effect] = []
             for effect in safe_effects:
@@ -1465,7 +2167,12 @@ class SQLiteStore:
             return safe
 
     def settle_control(
-        self, request_id: str, *, status: ControlStatus, expected_version: int
+        self,
+        request_id: str,
+        *,
+        status: ControlStatus,
+        expected_version: int,
+        cleanup_info: str | None = None,
     ) -> ControlRequest:
         with connect_write(self.path) as connection:
             row = connection.execute(
@@ -1475,7 +2182,7 @@ class SQLiteStore:
                 raise KeyError(f"control request not found: {request_id}")
             current = ControlRequest.model_validate_json(row["payload_json"])
             self._check_version(request_id, current.version, expected_version)
-            current.transition(status)
+            current.transition(status, cleanup_info=cleanup_info)
             connection.execute(
                 """
                 UPDATE control_requests SET status = ?, version = ?, payload_json = ?
@@ -1494,6 +2201,18 @@ class SQLiteStore:
                     data={"control_id": current.id, "status": current.status.value},
                 )
             return current
+
+    def get_pending_control(self, task_id: str) -> ControlRequest | None:
+        with connect(self.path) as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json FROM control_requests
+                WHERE task_id = ? AND status IN (?, ?)
+                ORDER BY requested_at, id LIMIT 1
+                """,
+                (task_id, ControlStatus.REQUESTED.value, ControlStatus.ACKNOWLEDGED.value),
+            ).fetchone()
+        return None if row is None else ControlRequest.model_validate_json(row["payload_json"])
 
     def resolve_recovery(
         self,
@@ -1620,9 +2339,11 @@ class SQLiteStore:
         if safe_result.call_id != safe_call.id:
             raise ValueError("tool result does not belong to the call")
         with connect_write(self.path) as connection:
-            if lease_guard is not None:
-                self._assert_guard(connection, lease_guard)
             task = self._require_task(connection, task_id)
+            if task.session_id is not None:
+                if lease_guard is None:
+                    raise LeaseLost(task_id)
+                self._assert_guard(connection, lease_guard)
             row = connection.execute(
                 """
                 SELECT call_json, result_json FROM tool_calls
@@ -1909,7 +2630,57 @@ class SQLiteStore:
             ),
         )
 
-    def _assert_guard(self, connection: sqlite3.Connection, guard: LeaseGuard) -> Execution:
+    def _write_execution_row(self, connection: sqlite3.Connection, execution: Execution) -> None:
+        cursor = connection.execute(
+            """
+            UPDATE executions SET
+                owner_id = ?, lease_token = ?, generation = ?, lease_expires_at = ?,
+                status = ?, version = ?, updated_at = ?, payload_json = ?
+            WHERE id = ?
+            """,
+            (
+                execution.owner_id,
+                execution.lease_token,
+                execution.generation,
+                execution.lease_expires_at.isoformat(),
+                execution.status.value,
+                execution.version,
+                execution.updated_at.isoformat(),
+                self._redacted_json(execution),
+                execution.id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise LeaseLost(execution.task_id)
+
+    def _expire_execution_row(
+        self, connection: sqlite3.Connection, execution: Execution, now: datetime
+    ) -> None:
+        if execution.status not in {
+            ExecutionStatus.CLAIMED,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.WAITING_FOR_APPROVAL,
+            ExecutionStatus.PAUSED,
+        }:
+            return
+        self._write_execution_row(
+            connection,
+            execution.model_copy(
+                update={
+                    "status": ExecutionStatus.RELEASED,
+                    "version": execution.version + 1,
+                    "updated_at": now,
+                }
+            ),
+        )
+
+    def _assert_guard(
+        self,
+        connection: sqlite3.Connection,
+        guard: LeaseGuard,
+        *,
+        now: datetime | None = None,
+    ) -> Execution:
         row = connection.execute(
             "SELECT payload_json FROM executions WHERE id = ?", (guard.execution_id,)
         ).fetchone()
@@ -1920,6 +2691,8 @@ class SQLiteStore:
             execution.task_id != guard.task_id
             or execution.lease_token != guard.token
             or execution.generation != guard.generation
+            or execution.owner_id != guard.owner_id
+            or execution.lease_expires_at <= (datetime.now(UTC) if now is None else now)
             or execution.status
             not in {
                 ExecutionStatus.CLAIMED,
@@ -1930,6 +2703,81 @@ class SQLiteStore:
         ):
             raise LeaseLost(guard.task_id)
         return execution
+
+    def _assert_legacy_write_guard(
+        self,
+        connection: sqlite3.Connection,
+        task_id: str,
+        lease_guard: LeaseGuard | None,
+    ) -> None:
+        row = connection.execute("SELECT session_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None or row["session_id"] is None:
+            return
+        if lease_guard is None or lease_guard.task_id != task_id:
+            raise LeaseLost(task_id)
+        self._assert_guard(connection, lease_guard)
+
+    @staticmethod
+    def _workspace_lease_from_row(row: sqlite3.Row) -> WorkspaceLease:
+        return WorkspaceLease(
+            workspace_id=str(row["workspace_id"]),
+            repository_path=str(row["repository_path"]),
+            session_id=str(row["session_id"]),
+            task_id=str(row["task_id"]),
+            execution_id=str(row["execution_id"]),
+            owner_id=str(row["owner_id"]),
+            lease_token=str(row["token"]),
+            generation=int(row["generation"]),
+            lease_expires_at=datetime.fromisoformat(str(row["lease_expires_at"])),
+            acquired_at=datetime.fromisoformat(str(row["acquired_at"])),
+            updated_at=datetime.fromisoformat(str(row["updated_at"])),
+        )
+
+    def _assert_workspace_guard(
+        self,
+        connection: sqlite3.Connection,
+        guard: WorkspaceLeaseGuard,
+        *,
+        now: datetime,
+    ) -> WorkspaceLease:
+        row = connection.execute(
+            "SELECT * FROM workspace_leases WHERE workspace_id = ?", (guard.workspace_id,)
+        ).fetchone()
+        if row is None:
+            raise LeaseLost(guard.workspace_id)
+        lease = self._workspace_lease_from_row(row)
+        if (
+            lease.execution_id != guard.execution_id
+            or lease.owner_id != guard.owner_id
+            or lease.lease_token != guard.token
+            or lease.generation != guard.generation
+            or lease.lease_expires_at <= now
+        ):
+            raise LeaseLost(guard.workspace_id)
+        return lease
+
+    def _write_workspace_lease_row(
+        self, connection: sqlite3.Connection, lease: WorkspaceLease
+    ) -> None:
+        cursor = connection.execute(
+            """
+            UPDATE workspace_leases SET
+                lease_expires_at = ?, updated_at = ?
+            WHERE workspace_id = ? AND execution_id = ? AND owner_id = ?
+                AND token = ? AND generation = ?
+            """,
+            (
+                lease.lease_expires_at.isoformat(),
+                lease.updated_at.isoformat(),
+                lease.workspace_id,
+                lease.execution_id,
+                lease.owner_id,
+                lease.lease_token,
+                lease.generation,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise LeaseLost(lease.workspace_id)
 
     @staticmethod
     def _effect_row(connection: sqlite3.Connection, effect_id: str) -> Effect | None:

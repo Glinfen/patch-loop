@@ -133,6 +133,25 @@ class Execution(BaseModel):
         object.__setattr__(self, "updated_at", _now())
 
 
+class WorkspaceLease(BaseModel):
+    """One database-backed writer claim for a canonical workspace."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["1.0"] = EXECUTION_SCHEMA_VERSION
+    workspace_id: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    repository_path: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    owner_id: str = Field(min_length=1, max_length=256)
+    lease_token: str = Field(min_length=1, max_length=512)
+    generation: int = Field(default=1, ge=1)
+    lease_expires_at: datetime
+    acquired_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
 class Effect(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
@@ -346,4 +365,5 @@ __all__ = [
     "RecoveryDisposition",
     "RecoveryDispositionKind",
     "SessionCheckpoint",
+    "WorkspaceLease",
 ]

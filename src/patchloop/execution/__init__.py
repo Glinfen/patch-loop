@@ -13,6 +13,7 @@ from patchloop.execution.models import (
     RecoveryDisposition,
     RecoveryDispositionKind,
     SessionCheckpoint,
+    WorkspaceLease,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "RecoveryDisposition",
     "RecoveryDispositionKind",
     "SessionCheckpoint",
+    "WorkspaceLease",
 ]

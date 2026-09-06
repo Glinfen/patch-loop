@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol, TypeVar
 
@@ -16,7 +17,12 @@ from patchloop.domain import (
     ToolCall,
     ToolResult,
 )
-from patchloop.events import SessionEvent, effect_commit_event_id, journal_event_id
+from patchloop.events import (
+    SessionEvent,
+    effect_commit_event_id,
+    journal_event_id,
+    lease_owner_summary,
+)
 from patchloop.execution.models import (
     Approval,
     ApprovalStatus,
@@ -28,7 +34,9 @@ from patchloop.execution.models import (
     ExecutionStatus,
     RecoveryDisposition,
     RecoveryDispositionKind,
+    WorkspaceLease,
 )
+from patchloop.sandbox import ManagedCommandIdentity, ManagedCommandStatus
 from patchloop.session.models import Session, SessionCheckpoint, Turn
 
 _T = TypeVar("_T")
@@ -144,6 +152,18 @@ class LeaseGuard:
     task_id: str
     token: str
     generation: int
+    owner_id: str
+
+
+@dataclass(frozen=True)
+class WorkspaceLeaseGuard:
+    """Opaque fencing data for a workspace writer."""
+
+    workspace_id: str
+    execution_id: str
+    token: str
+    generation: int
+    owner_id: str
 
 
 class AdvanceStatus(StrEnum):
@@ -200,7 +220,13 @@ class RuntimeStore(Protocol):
 
     def get_task(self, task_id: str) -> Task: ...
 
-    def update_task(self, task: Task, *, expected_version: int) -> Task: ...
+    def update_task(
+        self,
+        task: Task,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard | None = None,
+    ) -> Task: ...
 
     def commit_tool_result(
         self,
@@ -213,8 +239,40 @@ class RuntimeStore(Protocol):
     ) -> ToolResult: ...
 
     def claim_execution(
-        self, execution: Execution, *, expected_version: int | None = None
+        self,
+        execution: Execution,
+        *,
+        expected_version: int | None = None,
+        now: datetime | None = None,
     ) -> Execution: ...
+
+    def renew_execution(
+        self, lease_guard: LeaseGuard, *, now: datetime, lease_expires_at: datetime
+    ) -> Execution: ...
+
+    def release_execution(self, lease_guard: LeaseGuard, *, now: datetime) -> None: ...
+
+    def assert_execution(self, lease_guard: LeaseGuard, *, now: datetime) -> Execution: ...
+
+    def acquire_workspace_writer(
+        self, lease: WorkspaceLease, *, lease_guard: LeaseGuard, now: datetime
+    ) -> WorkspaceLease: ...
+
+    def renew_workspace_writer(
+        self,
+        lease_guard: WorkspaceLeaseGuard,
+        *,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> WorkspaceLease: ...
+
+    def release_workspace_writer(
+        self, lease_guard: WorkspaceLeaseGuard, *, now: datetime
+    ) -> None: ...
+
+    def assert_workspace_writer(
+        self, lease_guard: WorkspaceLeaseGuard, *, now: datetime
+    ) -> WorkspaceLease: ...
 
     def prepare_effects(
         self,
@@ -252,7 +310,10 @@ class RuntimeStore(Protocol):
         *,
         status: ControlStatus,
         expected_version: int,
+        cleanup_info: str | None = None,
     ) -> ControlRequest: ...
+
+    def get_pending_control(self, task_id: str) -> ControlRequest | None: ...
 
     def resolve_recovery(
         self,
@@ -299,6 +360,7 @@ class FakeStore:
         self.tasks: dict[str, Task] = {}
         self.turns: dict[str, list[Turn]] = {}
         self.executions: dict[str, Execution] = {}
+        self.workspace_leases: dict[str, WorkspaceLease] = {}
         self.effects: dict[str, Effect] = {}
         self.approvals: dict[str, Approval] = {}
         self.controls: dict[str, ControlRequest] = {}
@@ -306,6 +368,7 @@ class FakeStore:
         self.checkpoints: dict[str, SessionCheckpoint] = {}
         self.events: dict[str, list[SessionEvent]] = {}
         self.tool_results: dict[tuple[str, str], tuple[ToolCall, ToolResult]] = {}
+        self.managed_commands: dict[str, ManagedCommandIdentity] = {}
 
     @staticmethod
     def _copy(value: _T) -> _T:
@@ -501,9 +564,16 @@ class FakeStore:
         )
         return self._copy(bound)
 
-    def update_task(self, task: Task, *, expected_version: int) -> Task:
+    def update_task(
+        self,
+        task: Task,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard | None = None,
+    ) -> Task:
         current = self.get_task(task.id)
         self._check_version(task.id, current.version, expected_version)
+        self._require_session_guard(current, lease_guard)
         if current.session_id != task.session_id:
             raise ValueError("task session binding is immutable")
         if current.outcome is not TaskOutcome.ACTIVE and task.outcome is not current.outcome:
@@ -539,28 +609,52 @@ class FakeStore:
         return self._copy(updated)
 
     def claim_execution(
-        self, execution: Execution, *, expected_version: int | None = None
+        self,
+        execution: Execution,
+        *,
+        expected_version: int | None = None,
+        now: datetime | None = None,
     ) -> Execution:
+        current_time = datetime.now(UTC) if now is None else now
+        self.get_session(execution.session_id)
+        takeover = False
+        for active in list(self.executions.values()):
+            if active.session_id == execution.session_id and self._execution_is_active(active):
+                if active.lease_expires_at > current_time:
+                    raise LeaseConflict(execution.session_id, active.owner_id)
+                takeover = True
+                self._expire_execution(active, current_time)
         task = self.get_task(execution.task_id)
         self._check_version(task.id, task.version, expected_version)
-        active = next(
+        if task.session_id != execution.session_id:
+            raise ValueError("execution session does not own its task")
+        if task.runtime_condition is TaskRuntimeCondition.RECOVERY_REQUIRED:
+            raise RecoveryRequired(task.id)
+        for active in list(self.executions.values()):
+            if active.task_id == execution.task_id and self._execution_is_active(active):
+                if active.lease_expires_at > current_time:
+                    raise LeaseConflict(execution.task_id, active.owner_id)
+                takeover = True
+                self._expire_execution(active, current_time)
+        if execution.id in self.executions:
+            raise ValueError(f"execution already exists: {execution.id}")
+        if any(item.lease_token == execution.lease_token for item in self.executions.values()):
+            raise ValueError("execution lease token was already used")
+        generation = 1 + max(
             (
-                item
+                item.generation
                 for item in self.executions.values()
                 if item.task_id == execution.task_id
-                and item.status
-                in {
-                    ExecutionStatus.RUNNING,
-                    ExecutionStatus.CLAIMED,
-                    ExecutionStatus.WAITING_FOR_APPROVAL,
-                    ExecutionStatus.PAUSED,
-                }
             ),
-            None,
+            default=0,
         )
-        if active is not None:
-            raise LeaseConflict(execution.task_id, active.owner_id)
-        claimed = execution.model_copy(update={"status": ExecutionStatus.RUNNING})
+        claimed = execution.model_copy(
+            update={
+                "generation": generation,
+                "status": ExecutionStatus.RUNNING,
+                "updated_at": current_time,
+            }
+        )
         self.executions[claimed.id] = self._copy(claimed)
         self.tasks[task.id] = task.model_copy(
             update={
@@ -569,26 +663,274 @@ class FakeStore:
             }
         )
         if task.session_id is not None:
+            event_type = "lease.takeover" if takeover else "lease.acquired"
             self._journal(
                 self.get_session(task.session_id),
-                event_id=journal_event_id("execution.claimed", claimed.id, claimed.generation),
-                event_type="execution.claimed",
+                event_id=journal_event_id(event_type, claimed.id, claimed.generation),
+                event_type=event_type,
                 task_id=task.id,
                 data={
                     "execution_id": claimed.id,
-                    "owner_id": claimed.owner_id,
+                    "scope": "execution",
+                    "resource_id": claimed.task_id,
+                    "owner_summary": lease_owner_summary(claimed.owner_id),
                     "generation": claimed.generation,
+                    "recovery_advice": (
+                        "verify prior managed commands before writes"
+                        if takeover
+                        else "renew before lease expiry"
+                    ),
                 },
             )
         return self._copy(claimed)
 
-    def _assert_guard(self, guard: LeaseGuard) -> Execution:
+    def renew_execution(
+        self, lease_guard: LeaseGuard, *, now: datetime, lease_expires_at: datetime
+    ) -> Execution:
+        execution = self._assert_guard(lease_guard, now=now)
+        if lease_expires_at <= now:
+            raise ValueError("renewed execution lease must expire in the future")
+        renewed = execution.model_copy(
+            update={
+                "lease_expires_at": lease_expires_at,
+                "version": execution.version + 1,
+                "updated_at": now,
+            }
+        )
+        self.executions[renewed.id] = renewed
+        return self._copy(renewed)
+
+    def release_execution(self, lease_guard: LeaseGuard, *, now: datetime) -> None:
+        execution = self._assert_guard(lease_guard, now=now)
+        released = execution.model_copy(
+            update={
+                "status": ExecutionStatus.RELEASED,
+                "version": execution.version + 1,
+                "updated_at": now,
+            }
+        )
+        self.executions[released.id] = released
+        task = self.tasks[released.task_id]
+        if task.runtime_condition is TaskRuntimeCondition.RUNNING:
+            self.tasks[task.id] = task.model_copy(
+                update={
+                    "runtime_condition": TaskRuntimeCondition.IDLE,
+                    "version": task.version + 1,
+                }
+            )
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("lease.released", released.id, released.version),
+                event_type="lease.released",
+                task_id=task.id,
+                data={
+                    "execution_id": released.id,
+                    "scope": "execution",
+                    "resource_id": released.task_id,
+                    "owner_summary": lease_owner_summary(released.owner_id),
+                    "generation": released.generation,
+                    "recovery_advice": "safe to acquire a new execution lease",
+                },
+            )
+
+    def assert_execution(self, lease_guard: LeaseGuard, *, now: datetime) -> Execution:
+        return self._copy(self._assert_guard(lease_guard, now=now))
+
+    def acquire_workspace_writer(
+        self, lease: WorkspaceLease, *, lease_guard: LeaseGuard, now: datetime
+    ) -> WorkspaceLease:
+        existing = self.workspace_leases.get(lease.workspace_id)
+        if existing is not None and existing.lease_expires_at > now:
+            raise LeaseConflict(lease.workspace_id, existing.owner_id)
+        execution = self._assert_guard(lease_guard, now=now)
+        if (
+            lease.execution_id != execution.id
+            or lease.session_id != execution.session_id
+            or lease.task_id != execution.task_id
+            or lease.owner_id != execution.owner_id
+        ):
+            raise LeaseLost(lease.workspace_id)
+        if existing is not None and existing.lease_token == lease.lease_token:
+            raise ValueError("workspace lease token was already used")
+        takeover = bool(
+            existing is not None
+            and (prior := self.executions.get(existing.execution_id)) is not None
+            and self._execution_is_active(prior)
+        )
+        acquired = lease.model_copy(
+            update={
+                "generation": 1 if existing is None else existing.generation + 1,
+                "acquired_at": now,
+                "updated_at": now,
+            }
+        )
+        self.workspace_leases[lease.workspace_id] = self._copy(acquired)
+        event_type = "lease.takeover" if takeover else "lease.acquired"
+        self._journal(
+            self.get_session(acquired.session_id),
+            event_id=journal_event_id(event_type, acquired.workspace_id, acquired.generation),
+            event_type=event_type,
+            task_id=acquired.task_id,
+            data={
+                "execution_id": acquired.execution_id,
+                "scope": "workspace",
+                "resource_id": acquired.workspace_id,
+                "owner_summary": lease_owner_summary(acquired.owner_id),
+                "generation": acquired.generation,
+                "recovery_advice": (
+                    "prior writer cleanup confirmed before takeover"
+                    if takeover
+                    else "release after managed command cleanup"
+                ),
+            },
+        )
+        return self._copy(acquired)
+
+    def renew_workspace_writer(
+        self,
+        lease_guard: WorkspaceLeaseGuard,
+        *,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> WorkspaceLease:
+        existing = self._assert_workspace_guard(lease_guard, now=now)
+        if lease_expires_at <= now:
+            raise ValueError("renewed workspace lease must expire in the future")
+        renewed = existing.model_copy(
+            update={"lease_expires_at": lease_expires_at, "updated_at": now}
+        )
+        self.workspace_leases[renewed.workspace_id] = renewed
+        return self._copy(renewed)
+
+    def release_workspace_writer(self, lease_guard: WorkspaceLeaseGuard, *, now: datetime) -> None:
+        existing = self._assert_workspace_guard(lease_guard, now=now)
+        self.workspace_leases[existing.workspace_id] = existing.model_copy(
+            update={"lease_expires_at": now, "updated_at": now}
+        )
+        self._journal(
+            self.get_session(existing.session_id),
+            event_id=journal_event_id(
+                "lease.released",
+                existing.workspace_id,
+                f"{existing.generation}:{existing.execution_id}",
+            ),
+            event_type="lease.released",
+            task_id=existing.task_id,
+            data={
+                "execution_id": existing.execution_id,
+                "scope": "workspace",
+                "resource_id": existing.workspace_id,
+                "owner_summary": lease_owner_summary(existing.owner_id),
+                "generation": existing.generation,
+                "recovery_advice": "safe to acquire a new workspace writer",
+            },
+        )
+
+    def assert_workspace_writer(
+        self, lease_guard: WorkspaceLeaseGuard, *, now: datetime
+    ) -> WorkspaceLease:
+        return self._copy(self._assert_workspace_guard(lease_guard, now=now))
+
+    def recovery_commands_for_task(
+        self, task_id: str, *, now: datetime
+    ) -> list[ManagedCommandIdentity]:
+        return [
+            self._copy(command)
+            for command in self.managed_commands.values()
+            if (execution := self.executions.get(command.execution_id)) is not None
+            and execution.task_id == task_id
+            and execution.lease_expires_at <= now
+            and command.status
+            in {ManagedCommandStatus.RUNNING, ManagedCommandStatus.CLEANUP_FAILED}
+        ]
+
+    def recovery_commands_for_workspace(
+        self, workspace_id: str, *, now: datetime
+    ) -> list[ManagedCommandIdentity]:
+        lease = self.workspace_leases.get(workspace_id)
+        if lease is None or lease.lease_expires_at > now:
+            return []
+        return [
+            self._copy(command)
+            for command in self.managed_commands.values()
+            if command.execution_id == lease.execution_id
+            and command.status
+            in {ManagedCommandStatus.RUNNING, ManagedCommandStatus.CLEANUP_FAILED}
+        ]
+
+    def finish_managed_command(self, identity: ManagedCommandIdentity) -> ManagedCommandIdentity:
+        current = self.managed_commands.get(identity.id)
+        if current is not None and current.status in {
+            ManagedCommandStatus.EXITED,
+            ManagedCommandStatus.TERMINATED,
+        }:
+            return self._copy(current)
+        self.managed_commands[identity.id] = self._copy(identity)
+        return self._copy(identity)
+
+    def mark_command_recovery_required(
+        self, identity: ManagedCommandIdentity, *, cleanup_info: str
+    ) -> str:
+        del cleanup_info
+        execution = self.executions[identity.execution_id]
+        self.executions[execution.id] = execution.model_copy(
+            update={"status": ExecutionStatus.RECOVERY_REQUIRED, "version": execution.version + 1}
+        )
+        task = self.tasks[execution.task_id]
+        self.tasks[task.id] = task.model_copy(
+            update={
+                "runtime_condition": TaskRuntimeCondition.RECOVERY_REQUIRED,
+                "version": task.version + 1,
+            }
+        )
+        return task.id
+
+    def _assert_workspace_guard(
+        self, lease_guard: WorkspaceLeaseGuard, *, now: datetime
+    ) -> WorkspaceLease:
+        existing = self.workspace_leases.get(lease_guard.workspace_id)
+        if (
+            existing is None
+            or existing.execution_id != lease_guard.execution_id
+            or existing.lease_token != lease_guard.token
+            or existing.generation != lease_guard.generation
+            or existing.owner_id != lease_guard.owner_id
+            or existing.lease_expires_at <= now
+        ):
+            raise LeaseLost(lease_guard.workspace_id)
+        return existing
+
+    @staticmethod
+    def _execution_is_active(execution: Execution) -> bool:
+        return execution.status in {
+            ExecutionStatus.CLAIMED,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.WAITING_FOR_APPROVAL,
+            ExecutionStatus.PAUSED,
+        }
+
+    def _expire_execution(self, execution: Execution, now: datetime) -> None:
+        if not self._execution_is_active(execution):
+            return
+        self.executions[execution.id] = execution.model_copy(
+            update={
+                "status": ExecutionStatus.RELEASED,
+                "version": execution.version + 1,
+                "updated_at": now,
+            }
+        )
+
+    def _assert_guard(self, guard: LeaseGuard, *, now: datetime | None = None) -> Execution:
+        current_time = datetime.now(UTC) if now is None else now
         execution = self.executions.get(guard.execution_id)
         if (
             execution is None
             or execution.task_id != guard.task_id
             or execution.lease_token != guard.token
             or execution.generation != guard.generation
+            or execution.owner_id != guard.owner_id
+            or execution.lease_expires_at <= current_time
             or execution.status
             not in {
                 ExecutionStatus.CLAIMED,
@@ -609,13 +951,12 @@ class FakeStore:
     ) -> list[Effect]:
         if not effects:
             return []
-        if lease_guard is not None:
-            self._assert_guard(lease_guard)
         task_ids = {effect.task_id for effect in effects}
         if len(task_ids) != 1:
             raise ValueError("one prepare batch must belong to one task")
         task_id = next(iter(task_ids))
         task = self.get_task(task_id)
+        self._require_session_guard(task, lease_guard)
         result: list[Effect] = []
         new_effects: list[Effect] = []
         for effect in effects:
@@ -783,9 +1124,8 @@ class FakeStore:
     ) -> ToolResult:
         if result.call_id != call.id:
             raise ValueError("tool result does not belong to the call")
-        if lease_guard is not None:
-            self._assert_guard(lease_guard)
         task = self.get_task(task_id)
+        self._require_session_guard(task, lease_guard)
         key = (task_id, call.id)
         existing = self.tool_results.get(key)
         if existing is not None:
@@ -804,6 +1144,13 @@ class FakeStore:
                 data={"call_id": call.id, "tool_name": call.name, "success": result.success},
             )
         return self._copy(result)
+
+    def _require_session_guard(self, task: Task, lease_guard: LeaseGuard | None) -> None:
+        if task.session_id is None:
+            return
+        if lease_guard is None or lease_guard.task_id != task.id:
+            raise LeaseLost(task.id)
+        self._assert_guard(lease_guard)
 
     def request_control(self, request: ControlRequest, *, expected_version: int) -> ControlRequest:
         task = self.get_task(request.task_id)
@@ -827,10 +1174,11 @@ class FakeStore:
         *,
         status: ControlStatus,
         expected_version: int,
+        cleanup_info: str | None = None,
     ) -> ControlRequest:
         current = self._copy(self.controls[request_id])
         self._check_version(request_id, current.version, expected_version)
-        current.transition(status)
+        current.transition(status, cleanup_info=cleanup_info)
         self.controls[request_id] = self._copy(current)
         task = self.get_task(current.task_id)
         if task.session_id is not None:
@@ -842,6 +1190,17 @@ class FakeStore:
                 data={"control_id": current.id, "status": current.status.value},
             )
         return self._copy(current)
+
+    def get_pending_control(self, task_id: str) -> ControlRequest | None:
+        pending = [
+            request
+            for request in self.controls.values()
+            if request.task_id == task_id
+            and request.status in {ControlStatus.REQUESTED, ControlStatus.ACKNOWLEDGED}
+        ]
+        if not pending:
+            return None
+        return self._copy(sorted(pending, key=lambda item: item.requested_at)[0])
 
     def resolve_recovery(
         self,
@@ -980,4 +1339,5 @@ __all__ = [
     "StaleVersion",
     "Store",
     "SubmissionConflict",
+    "WorkspaceLeaseGuard",
 ]

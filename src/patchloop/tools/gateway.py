@@ -133,6 +133,7 @@ class ToolGateway:
         tools: list[Tool],
         event_logger: EventLogger | None = None,
         policy: ToolPolicy | None = None,
+        ownership_assertion: Callable[[PermissionLevel], None] | None = None,
     ) -> None:
         self.context = context
         self._tools = {tool.name: tool for tool in tools}
@@ -140,6 +141,7 @@ class ToolGateway:
             raise ValueError("tool names must be unique")
         self.event_logger = event_logger
         self.policy = policy or ToolPolicy()
+        self.ownership_assertion = ownership_assertion
         self.history: list[ToolResult] = []
 
     def specifications(self) -> list[ToolSpec]:
@@ -227,6 +229,8 @@ class ToolGateway:
                 output=assessment.reason,
             )
             return self._finish(task_id, call, result, started)
+        if self.ownership_assertion is not None:
+            self.ownership_assertion(tool.permission)
         try:
             arguments = tool.input_model.model_validate(call.arguments)
             output = tool.run(arguments, self.context)

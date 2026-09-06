@@ -58,7 +58,13 @@ def _owned_effect(store: object) -> tuple[LeaseGuard, Effect]:
         expected_version=session.version,
     )
     execution = store.claim_execution(_execution(), expected_version=task.version)
-    guard = LeaseGuard(execution.id, task.id, execution.lease_token, execution.generation)
+    guard = LeaseGuard(
+        execution.id,
+        task.id,
+        execution.lease_token,
+        execution.generation,
+        execution.owner_id,
+    )
     effect = store.prepare_effects(
         [_effect()], expected_version=store.get_task(task.id).version, lease_guard=guard
     )[0]
@@ -243,6 +249,14 @@ def test_sqlite_effect_persists_credential_reference_without_secret(tmp_path: Pa
         Task(id="task-1", goal="Call service", repository="workspace"),
         expected_version=session.version,
     )
+    execution = store.claim_execution(_execution(), expected_version=task.version)
+    guard = LeaseGuard(
+        execution.id,
+        task.id,
+        execution.lease_token,
+        execution.generation,
+        execution.owner_id,
+    )
     effect = _effect().model_copy(
         update={
             "arguments_summary": {"password": "raw-secret", "path": "example.py"},
@@ -252,7 +266,9 @@ def test_sqlite_effect_persists_credential_reference_without_secret(tmp_path: Pa
         }
     )
 
-    persisted = store.prepare_effects([effect], expected_version=task.version)[0]
+    persisted = store.prepare_effects(
+        [effect], expected_version=store.get_task(task.id).version, lease_guard=guard
+    )[0]
 
     assert persisted.arguments_summary["password"] == {
         "$credential_ref": "credential://vault/service-password"

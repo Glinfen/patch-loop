@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Callable
+from contextlib import suppress
 from time import monotonic
+from uuid import uuid4
 
 from patchloop.context import ContextBudgetError, ContextEngine
 from patchloop.domain import (
@@ -13,6 +17,7 @@ from patchloop.domain import (
     StepStatus,
     Task,
     TaskReport,
+    TaskRuntimeCondition,
     TaskStatus,
     ToolCall,
     ToolResult,
@@ -20,6 +25,12 @@ from patchloop.domain import (
     utc_now,
 )
 from patchloop.events import Event, EventLogger
+from patchloop.execution.models import ControlKind, ControlRequest, ControlStatus
+from patchloop.execution.ownership import (
+    ExecutionOwnership,
+    ExecutionOwnershipManager,
+    LeaseHeartbeat,
+)
 from patchloop.memory.episodic import (
     EpisodeWrite,
     EpisodicMemoryManager,
@@ -38,12 +49,20 @@ from patchloop.memory.working import (
     WorkingMemoryManager,
 )
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
+from patchloop.persistence_contracts import LeaseGuard, LeaseLost
 from patchloop.prompt_cache import (
     CacheEpochBoundary,
     PromptCacheCoordinator,
     PromptCacheCoordinatorError,
 )
 from patchloop.providers.base import ModelMessage, ModelProvider, ModelUsage, ToolSpec
+from patchloop.sandbox import (
+    LocalProcessSandbox,
+    ManagedCommandIdentity,
+    ManagedCommandSandbox,
+    SandboxCleanupError,
+)
+from patchloop.tools.base import PermissionLevel
 from patchloop.tools.gateway import ToolGateway
 
 SYSTEM_PROMPT = """You are PatchLoop, a repository-scoped coding agent.
@@ -72,12 +91,18 @@ class AgentRuntime:
         event_logger: EventLogger | None = None,
         state_store: SQLiteStore | None = None,
         context_engine: ContextEngine | None = None,
+        ownership_manager: ExecutionOwnershipManager | None = None,
+        owner_id: str | None = None,
     ) -> None:
         self.provider = provider
         self.gateway = gateway
         self.event_logger = event_logger
         self.state_store = state_store
         self.context_engine = context_engine
+        self.ownership_manager = ownership_manager
+        self.owner_id = owner_id or f"process-{os.getpid()}-{uuid4().hex}"
+        self._ownership: ExecutionOwnership | None = None
+        self._heartbeat: LeaseHeartbeat | None = None
         self._prompt_cache: PromptCacheCoordinator | None = None
         self._input_tokens = 0
         self._output_tokens = 0
@@ -103,6 +128,9 @@ class AgentRuntime:
         self._max_memory_context_occupancy = 0.0
 
     def run(self, task: Task) -> Task:
+        return self._with_execution_ownership(task, self._run_owned)
+
+    def _run_owned(self, task: Task) -> Task:
         task.transition(TaskStatus.RUNNING)
         self.gateway.context.plan = task.plan
         self._input_tokens = 0
@@ -133,6 +161,7 @@ class AgentRuntime:
                 working_token_budget=self._working_memory_budget(task),
                 plan=task.plan,
                 store=self.state_store.memory if self.state_store is not None else None,
+                lease_guard=self._lease_guard(),
             )
             self._sync_memory_aliases()
         except MemoryStoreError as exc:
@@ -188,6 +217,12 @@ class AgentRuntime:
         return self._execute(task, state)
 
     def resume(self, task: Task, checkpoint: RuntimeCheckpoint) -> Task:
+        return self._with_execution_ownership(
+            task,
+            lambda owned_task: self._resume_owned(owned_task, checkpoint),
+        )
+
+    def _resume_owned(self, task: Task, checkpoint: RuntimeCheckpoint) -> Task:
         if task.status is not TaskStatus.RUNNING:
             raise ValueError(f"only a running task can resume, got {task.status}")
         if checkpoint.task_id != task.id:
@@ -249,6 +284,7 @@ class AgentRuntime:
                 plan=checkpoint.plan,
                 step_index=checkpoint.next_step_index,
                 store=self.state_store.memory if self.state_store is not None else None,
+                lease_guard=self._lease_guard(),
                 snapshot=checkpoint.memory_manager,
                 legacy_working=checkpoint.working_memory,
                 legacy_episodic=checkpoint.episodic_memory,
@@ -323,8 +359,9 @@ class AgentRuntime:
                         ErrorKind.BUDGET_EXCEEDED,
                         f"time budget exceeded after {step_index} steps",
                     )
-                if self.state_store is not None and self.state_store.is_cancelled(task.id):
-                    return self._cancel(task)
+                controlled = self._apply_pending_control(task)
+                if controlled is not None:
+                    return controlled
 
                 step = AgentStep(
                     task_id=task.id,
@@ -472,7 +509,12 @@ class AgentRuntime:
                         "project_instructions": task.execution.project_instructions,
                     },
                 )
+                self._assert_ownership()
                 response = self.provider.complete(prepared_request.messages, prepared_request.tools)
+                self._assert_ownership()
+                controlled = self._apply_pending_control(task)
+                if controlled is not None:
+                    return controlled
                 self._record_model_usage(response.usage)
                 cache_observation = prompt_cache.observe_response(prepared_request, response.usage)
                 self._emit(
@@ -633,6 +675,8 @@ class AgentRuntime:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except WorkingMemoryBudgetError as exc:
             return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
+        except (LeaseLost, SandboxCleanupError):
+            raise
         except Exception as exc:
             return self._fail(task, ErrorKind.PROVIDER_ERROR, str(exc))
         return self._fail(
@@ -710,6 +754,7 @@ class AgentRuntime:
         return f"Completed the plan and verified passing tests for: {paths}."
 
     def _execute_or_replay(self, task: Task, call: ToolCall) -> ToolResult:
+        self._assert_ownership()
         persisted = (
             None if self.state_store is None else self.state_store.get_tool_result(task.id, call.id)
         )
@@ -736,7 +781,9 @@ class AgentRuntime:
             )
             self.gateway.history.append(result)
             if self.state_store is not None:
-                self.state_store.record_tool_call(task.id, call, result)
+                self.state_store.record_tool_call(
+                    task.id, call, result, lease_guard=self._lease_guard()
+                )
             payload = {
                 "call": call.model_dump(mode="json"),
                 "result": result.model_dump(mode="json"),
@@ -760,7 +807,9 @@ class AgentRuntime:
             self.gateway.history.append(result)
             self.gateway.context.requires_replan = True
             if self.state_store is not None:
-                self.state_store.record_tool_call(task.id, call, result)
+                self.state_store.record_tool_call(
+                    task.id, call, result, lease_guard=self._lease_guard()
+                )
             self._emit(
                 "tool.completed",
                 task,
@@ -781,8 +830,11 @@ class AgentRuntime:
             )
             return result
         result = self.gateway.execute(task.id, call)
+        self._assert_ownership()
         if self.state_store is not None:
-            self.state_store.record_tool_call(task.id, call, result)
+            self.state_store.record_tool_call(
+                task.id, call, result, lease_guard=self._lease_guard()
+            )
         return result
 
     def _fail(self, task: Task, kind: ErrorKind, message: str) -> Task:
@@ -801,13 +853,52 @@ class AgentRuntime:
         )
         return task
 
-    def _cancel(self, task: Task) -> Task:
+    def _cancel(self, task: Task, control: ControlRequest | None = None) -> Task:
+        if control is not None:
+            self._settle_control(control)
         task.plan = self.gateway.context.plan
         task.report = self._build_report("task cancelled")
         task.transition(TaskStatus.CANCELLED)
         self._persist_task(task)
         self._emit("task.cancelled", task, {"report": task.report.model_dump(mode="json")})
         return task
+
+    def _pause(self, task: Task, control: ControlRequest) -> Task:
+        self._settle_control(control)
+        task.plan = self.gateway.context.plan
+        task.report = self._build_report("task paused")
+        if task.runtime_condition is TaskRuntimeCondition.RUNNING:
+            task.transition_runtime(TaskRuntimeCondition.PAUSING)
+        task.transition_runtime(TaskRuntimeCondition.PAUSED)
+        self._persist_task(task)
+        self._emit("task.paused", task, {"report": task.report.model_dump(mode="json")})
+        return task
+
+    def _apply_pending_control(self, task: Task) -> Task | None:
+        if self.state_store is None:
+            return None
+        control = self.state_store.get_pending_control(task.id)
+        if control is None:
+            return None
+        if control.kind is ControlKind.CANCEL:
+            return self._cancel(task, control)
+        return self._pause(task, control)
+
+    def _settle_control(self, control: ControlRequest) -> None:
+        if self.state_store is None:
+            return
+        current = control
+        if current.status is ControlStatus.REQUESTED:
+            current = self.state_store.settle_control(
+                current.id,
+                status=ControlStatus.ACKNOWLEDGED,
+                expected_version=current.version,
+            )
+        self.state_store.settle_control(
+            current.id,
+            status=ControlStatus.SETTLED,
+            expected_version=current.version,
+        )
 
     def _build_report(self, summary: str) -> TaskReport:
         validations: list[ValidationRecord] = []
@@ -989,7 +1080,9 @@ class AgentRuntime:
             },
         )
         try:
+            self._assert_ownership()
             response = self.provider.complete(request.messages, request.tools)
+            self._assert_ownership()
             self._record_model_usage(response.usage)
             observation = prompt_cache.observe_compression_response(prepared, response.usage)
             self._emit(
@@ -997,7 +1090,7 @@ class AgentRuntime:
                 task,
                 observation.cache_layout.model_dump(mode="json"),
             )
-        except PromptCacheCoordinatorError:
+        except (PromptCacheCoordinatorError, LeaseLost):
             prompt_cache.abort_pending()
             raise
         except Exception:
@@ -1419,6 +1512,7 @@ class AgentRuntime:
             self.state_store.memory.save_batch(
                 sources=batch.sources,
                 records=batch.records,
+                lease_guard=self._lease_guard(),
             )
         self._semantic_facts_created += batch.created_count
         self._semantic_facts_superseded += batch.superseded_count
@@ -1478,15 +1572,142 @@ class AgentRuntime:
 
     def _persist_task(self, task: Task) -> None:
         if self.state_store is not None:
-            self.state_store.save_task(task)
+            updated = self.state_store.update_task(
+                task,
+                expected_version=task.version,
+                lease_guard=self._lease_guard(),
+            )
+            object.__setattr__(task, "version", updated.version)
 
     def _persist_checkpoint(self, checkpoint: RuntimeCheckpoint) -> None:
         if self.state_store is not None:
-            self.state_store.save_checkpoint(checkpoint)
+            self.state_store.save_checkpoint(checkpoint, lease_guard=self._lease_guard())
 
     def _record_step(self, step: AgentStep) -> None:
         if self.state_store is not None:
-            self.state_store.record_step(step)
+            self.state_store.record_step(step, lease_guard=self._lease_guard())
+
+    def _with_execution_ownership(self, task: Task, action: Callable[[Task], Task]) -> Task:
+        if self.state_store is None:
+            return action(task)
+        prepared = self.state_store.prepare_task_execution(task)
+        manager = self.ownership_manager or ExecutionOwnershipManager(self.state_store)
+        permissions = self.gateway.policy.allowed_permissions
+        workspace_writer = bool(permissions & {PermissionLevel.WRITE, PermissionLevel.EXECUTE})
+        ownership = manager.acquire(
+            session_id=prepared.session_id or "",
+            task_id=prepared.id,
+            owner_id=self.owner_id,
+            repository=prepared.repository,
+            expected_version=prepared.version,
+            workspace_writer=workspace_writer,
+        )
+        prepared = self.state_store.get_task(prepared.id)
+        self.ownership_manager = manager
+        self._ownership = ownership
+        self._heartbeat = LeaseHeartbeat(manager, ownership)
+        self.gateway.ownership_assertion = self._assert_tool_ownership
+        if self.gateway.context.sandbox is None:
+            self.gateway.context.sandbox = LocalProcessSandbox()
+        managed_sandbox = (
+            self.gateway.context.sandbox
+            if isinstance(self.gateway.context.sandbox, ManagedCommandSandbox)
+            else None
+        )
+        if managed_sandbox is not None:
+            managed_sandbox.bind_execution(
+                ownership.execution.id,
+                command_started=self._register_managed_command,
+                command_finished=self._finish_managed_command,
+                interruption_probe=self._sandbox_interruption_reason,
+            )
+        self._heartbeat.start()
+        cleanup_error: SandboxCleanupError | None = None
+        try:
+            return action(prepared)
+        except SandboxCleanupError as exc:
+            cleanup_error = exc
+            self._record_cleanup_failure(str(exc))
+            raise
+        finally:
+            self.gateway.ownership_assertion = None
+            heartbeat = self._heartbeat
+            if heartbeat is not None:
+                heartbeat.stop()
+                self._ownership = heartbeat.ownership
+            if managed_sandbox is not None:
+                try:
+                    managed_sandbox.terminate_all("runtime_exit")
+                except SandboxCleanupError as exc:
+                    cleanup_error = exc
+                    self._record_cleanup_failure(str(exc))
+                finally:
+                    managed_sandbox.unbind_execution()
+            if cleanup_error is None and self._ownership is not None:
+                with suppress(LeaseLost):
+                    manager.release(self._ownership)
+            self._heartbeat = None
+            self._ownership = None
+            if cleanup_error is not None:
+                raise cleanup_error
+
+    def _lease_guard(self) -> LeaseGuard | None:
+        return None if self._ownership is None else self._ownership.lease_guard
+
+    def _assert_ownership(self) -> None:
+        if self._heartbeat is not None:
+            self._heartbeat.assert_owned()
+
+    def _assert_tool_ownership(self, permission: PermissionLevel) -> None:
+        self._assert_ownership()
+        if permission in {PermissionLevel.WRITE, PermissionLevel.EXECUTE} and (
+            self._ownership is None or self._ownership.workspace_guard is None
+        ):
+            task_id = "unknown" if self._ownership is None else self._ownership.execution.task_id
+            raise LeaseLost(task_id)
+
+    def _register_managed_command(self, identity: ManagedCommandIdentity) -> None:
+        if self.state_store is None:
+            return
+        guard = self._lease_guard()
+        if guard is None:
+            raise LeaseLost(identity.execution_id)
+        self.state_store.register_managed_command(identity, lease_guard=guard)
+
+    def _finish_managed_command(self, identity: ManagedCommandIdentity) -> None:
+        if self.state_store is not None:
+            self.state_store.finish_managed_command(identity)
+
+    def _sandbox_interruption_reason(self) -> str | None:
+        heartbeat = self._heartbeat
+        if heartbeat is not None and heartbeat.failure is not None:
+            return "lease_lost"
+        if self.state_store is None or self._ownership is None:
+            return None
+        control = self.state_store.get_pending_control(self._ownership.execution.task_id)
+        return None if control is None else control.kind.value
+
+    def _record_cleanup_failure(self, cleanup_info: str) -> None:
+        if self.state_store is None or self._ownership is None:
+            return
+        control = self.state_store.get_pending_control(self._ownership.execution.task_id)
+        if control is not None:
+            self.state_store.settle_control(
+                control.id,
+                status=ControlStatus.CLEANUP_FAILED,
+                expected_version=control.version,
+                cleanup_info=cleanup_info[:256],
+            )
+        task = self.state_store.get_task(self._ownership.execution.task_id)
+        if task.runtime_condition is not TaskRuntimeCondition.RECOVERY_REQUIRED:
+            task = task.model_copy(
+                update={"runtime_condition": TaskRuntimeCondition.RECOVERY_REQUIRED}
+            )
+            self.state_store.update_task(
+                task,
+                expected_version=task.version,
+                lease_guard=self._lease_guard(),
+            )
 
     def _emit(self, event_type: str, task: Task, data: dict[str, object]) -> None:
         if self.event_logger is not None:

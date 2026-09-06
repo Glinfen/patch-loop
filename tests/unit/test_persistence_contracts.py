@@ -15,6 +15,7 @@ from patchloop.persistence_contracts import (
     FakeStore,
     LeaseConflict,
     LeaseGuard,
+    LeaseLost,
     StaleVersion,
     SubmissionConflict,
 )
@@ -107,8 +108,18 @@ def test_fake_store_effect_identity_and_lease_guard() -> None:
         expected_version=session.version,
     )
     execution = store.claim_execution(_execution(), expected_version=task.version)
-    guard = LeaseGuard(execution.id, task.id, execution.lease_token, execution.generation)
-    prepared = store.prepare_effects([_effect()], expected_version=store.get_task(task.id).version)
+    guard = LeaseGuard(
+        execution.id,
+        task.id,
+        execution.lease_token,
+        execution.generation,
+        execution.owner_id,
+    )
+    with pytest.raises(LeaseLost):
+        store.prepare_effects([_effect()], expected_version=store.get_task(task.id).version)
+    prepared = store.prepare_effects(
+        [_effect()], expected_version=store.get_task(task.id).version, lease_guard=guard
+    )
     assert prepared[0].id == "effect-1"
     assert (
         store.prepare_effects(
@@ -124,6 +135,7 @@ def test_fake_store_effect_identity_and_lease_guard() -> None:
                 )
             ],
             expected_version=store.get_task(task.id).version,
+            lease_guard=guard,
         )
     claimed = store.claim_effect("effect-1", expected_version=1, lease_guard=guard)
     committed = claimed.model_copy(update={"status": EffectStatus.SUCCEEDED})
@@ -145,13 +157,25 @@ def test_fake_store_recovery_requires_recovery_condition_and_disposition() -> No
         Task(id="task-1", goal="Inspect", repository="workspace"),
         expected_version=1,
     )
+    execution = store.claim_execution(_execution(), expected_version=task.version)
+    guard = LeaseGuard(
+        execution.id,
+        task.id,
+        execution.lease_token,
+        execution.generation,
+        execution.owner_id,
+    )
     recovering = task.model_copy(
         update={
             "runtime_condition": TaskRuntimeCondition.RECOVERY_REQUIRED,
             "version": task.version,
         }
     )
-    store.update_task(recovering, expected_version=task.version)
+    store.update_task(
+        recovering,
+        expected_version=store.get_task(task.id).version,
+        lease_guard=guard,
+    )
     current = store.get_task(task.id)
     disposition = RecoveryDisposition(
         unknown_effect_id="effect-1",

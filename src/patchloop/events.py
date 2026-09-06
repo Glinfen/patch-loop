@@ -59,6 +59,13 @@ def journal_event_id(event_type: str, entity_id: str, revision: int | str) -> st
     return f"journal-{digest}"
 
 
+def lease_owner_summary(owner_id: str) -> str:
+    """Return a stable diagnostic owner reference without exposing its raw value."""
+
+    digest = hashlib.sha256(owner_id.encode("utf-8")).hexdigest()
+    return f"sha256:{digest[:16]}"
+
+
 class SessionEventSource(Protocol):
     def list_events(self, session_id: str, *, after_sequence: int = 0) -> list[SessionEvent]: ...
 

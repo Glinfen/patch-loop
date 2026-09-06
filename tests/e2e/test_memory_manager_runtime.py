@@ -27,8 +27,9 @@ class WriteFailingMemoryStore:
         sources: Sequence[MemorySource] = (),
         records: Sequence[MemoryRecord] = (),
         compactions: Sequence[CompressionReport] = (),
+        lease_guard: object | None = None,
     ) -> object:
-        del sources, records, compactions
+        del sources, records, compactions, lease_guard
         raise MemoryStoreError("simulated memory database failure")
 
 

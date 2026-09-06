@@ -33,7 +33,9 @@ class CompressionFailingStore:
         sources: Sequence[MemorySource] = (),
         records: Sequence[MemoryRecord] = (),
         compactions: Sequence[object] = (),
+        lease_guard: object | None = None,
     ) -> object:
+        del lease_guard
         if compactions:
             raise MemoryStoreError("simulated compaction transaction failure")
         self.sources.update((source.id, source) for source in sources)

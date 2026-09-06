@@ -24,7 +24,7 @@ from patchloop.memory.models import (
     memory_record_matches_semantic_filters,
 )
 from patchloop.security import SecretRedactor
-from patchloop.sqlite_support import connect
+from patchloop.sqlite_support import connect, connect_write
 
 MEMORY_STORE_SCHEMA_VERSION = 1
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_./:-]+|[\u4e00-\u9fff]+")
@@ -48,6 +48,23 @@ class MemoryVectorIndex(Protocol):
     """Optional in-process semantic scorer; no network backend is required."""
 
     def score(self, query: str, records: Sequence[MemoryRecord]) -> Mapping[str, float]: ...
+
+
+class MemoryLeaseGuard(Protocol):
+    @property
+    def execution_id(self) -> str: ...
+
+    @property
+    def task_id(self) -> str: ...
+
+    @property
+    def token(self) -> str: ...
+
+    @property
+    def generation(self) -> int: ...
+
+    @property
+    def owner_id(self) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -202,14 +219,20 @@ class SQLiteMemoryStore:
         with connect(self.path) as connection:
             initialize_memory_schema(connection)
 
-    def save_source(self, source: MemorySource) -> MemorySource:
-        return self.save_batch(sources=[source]).sources[0]
+    def save_source(
+        self, source: MemorySource, *, lease_guard: MemoryLeaseGuard | None = None
+    ) -> MemorySource:
+        return self.save_batch(sources=[source], lease_guard=lease_guard).sources[0]
 
-    def save_record(self, record: MemoryRecord) -> MemoryRecord:
-        return self.save_batch(records=[record]).records[0]
+    def save_record(
+        self, record: MemoryRecord, *, lease_guard: MemoryLeaseGuard | None = None
+    ) -> MemoryRecord:
+        return self.save_batch(records=[record], lease_guard=lease_guard).records[0]
 
-    def save_compaction(self, report: CompressionReport) -> CompressionReport:
-        return self.save_batch(compactions=[report]).compactions[0]
+    def save_compaction(
+        self, report: CompressionReport, *, lease_guard: MemoryLeaseGuard | None = None
+    ) -> CompressionReport:
+        return self.save_batch(compactions=[report], lease_guard=lease_guard).compactions[0]
 
     def save_batch(
         self,
@@ -217,13 +240,23 @@ class SQLiteMemoryStore:
         sources: Sequence[MemorySource] = (),
         records: Sequence[MemoryRecord] = (),
         compactions: Sequence[CompressionReport] = (),
+        lease_guard: MemoryLeaseGuard | None = None,
     ) -> MemoryWriteResult:
         """Persist one recovery-safe batch; any failed item rolls back every write."""
 
         safe_sources = [self._redact_source(source) for source in sources]
         safe_records = [self._redact_record(record) for record in records]
         safe_compactions = [self._redact_compaction(report) for report in compactions]
-        with connect(self.path) as connection:
+        task_ids = {
+            *(source.task_id for source in safe_sources),
+            *(record.task_id for record in safe_records),
+            *(report.task_id for report in safe_compactions),
+        }
+        if len(task_ids) > 1:
+            raise MemoryStoreError("one memory batch must belong to one task")
+        with connect_write(self.path) as connection:
+            if task_ids:
+                self._assert_memory_guard(connection, next(iter(task_ids)), lease_guard)
             source_id_map: dict[str, str] = {}
             persisted_sources: list[MemorySource] = []
             for source in safe_sources:
@@ -253,10 +286,49 @@ class SQLiteMemoryStore:
         sources: Sequence[MemorySource] = (),
         records: Sequence[MemoryRecord] = (),
         compactions: Sequence[CompressionReport] = (),
+        lease_guard: MemoryLeaseGuard | None = None,
     ) -> MemoryWriteResult:
         """Replay derived checkpoint memory through the same idempotent transaction."""
 
-        return self.save_batch(sources=sources, records=records, compactions=compactions)
+        return self.save_batch(
+            sources=sources,
+            records=records,
+            compactions=compactions,
+            lease_guard=lease_guard,
+        )
+
+    @staticmethod
+    def _assert_memory_guard(
+        connection: sqlite3.Connection,
+        task_id: str,
+        lease_guard: MemoryLeaseGuard | None,
+    ) -> None:
+        task = connection.execute(
+            "SELECT session_id FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if task is None:
+            raise MemoryStoreError(f"memory task not found: {task_id}")
+        if task["session_id"] is None:
+            return
+        if lease_guard is None or lease_guard.task_id != task_id:
+            from patchloop.persistence_contracts import LeaseLost
+
+            raise LeaseLost(task_id)
+        row = connection.execute(
+            "SELECT * FROM executions WHERE id = ?", (lease_guard.execution_id,)
+        ).fetchone()
+        if (
+            row is None
+            or str(row["task_id"]) != task_id
+            or str(row["owner_id"]) != lease_guard.owner_id
+            or str(row["lease_token"]) != lease_guard.token
+            or int(row["generation"]) != lease_guard.generation
+            or str(row["status"]) not in {"claimed", "running", "waiting_for_approval", "paused"}
+            or datetime.fromisoformat(str(row["lease_expires_at"])) <= datetime.now(UTC)
+        ):
+            from patchloop.persistence_contracts import LeaseLost
+
+            raise LeaseLost(task_id)
 
     def get_source(self, source_id: str) -> MemorySource:
         with connect(self.path) as connection:

@@ -25,7 +25,7 @@ from patchloop.memory.models import (
 )
 from patchloop.memory.retrieval import CrossLayerMemoryRetriever, LayeredMemoryContext
 from patchloop.memory.semantic import SemanticMemoryManager, SemanticResolutionBatch
-from patchloop.memory.store import MemoryStoreError
+from patchloop.memory.store import MemoryLeaseGuard, MemoryStoreError
 from patchloop.memory.working import (
     MemoryPromotionBatch,
     WorkingMemoryManager,
@@ -44,6 +44,7 @@ class MemoryManagerStore(Protocol):
         sources: Sequence[MemorySource] = (),
         records: Sequence[MemoryRecord] = (),
         compactions: Sequence[CompressionReport] = (),
+        lease_guard: MemoryLeaseGuard | None = None,
     ) -> object: ...
 
 
@@ -164,6 +165,7 @@ class MemoryManager:
         legacy_working: WorkingMemorySnapshot | None = None,
         legacy_episodic: EpisodicMemorySnapshot | None = None,
         compression_policy: MemoryCompressionPolicy | None = None,
+        lease_guard: MemoryLeaseGuard | None = None,
     ) -> None:
         if snapshot is not None and snapshot.task_id != task_id:
             raise ValueError("memory manager snapshot belongs to another task")
@@ -171,6 +173,7 @@ class MemoryManager:
         self.goal = goal
         self.repository_scope_id = repository_scope_id
         self.store = store
+        self.lease_guard = lease_guard
         self.compression_policy = compression_policy or MemoryCompressionPolicy()
         self.compressor = MemoryCompressor()
         self.retriever = CrossLayerMemoryRetriever()
@@ -433,7 +436,7 @@ class MemoryManager:
         if records and self.store is not None and not self._fallback_active:
             write_started = perf_counter()
             try:
-                self.store.save_batch(sources=sources, records=records)
+                self._save_batch(sources=sources, records=records)
             except MemoryStoreError as exc:
                 self._activate_fallback(f"memory write failed: {exc}")
             finally:
@@ -490,7 +493,7 @@ class MemoryManager:
         if self.store is not None:
             write_started = perf_counter()
             try:
-                self.store.save_batch(records=batch.writes, compactions=[batch.report])
+                self._save_batch(records=batch.writes, compactions=[batch.report])
             except (MemoryStoreError, ValueError) as exc:
                 write_duration = (perf_counter() - write_started) * 1_000
                 self._write_duration_ms += write_duration
@@ -509,6 +512,22 @@ class MemoryManager:
         duration = (perf_counter() - compression_started) * 1_000
         self._compression_duration_ms += duration
         return batch, duration, write_duration
+
+    def _save_batch(
+        self,
+        *,
+        sources: Sequence[MemorySource] = (),
+        records: Sequence[MemoryRecord] = (),
+        compactions: Sequence[CompressionReport] = (),
+    ) -> None:
+        if self.store is None:
+            return
+        self.store.save_batch(
+            sources=sources,
+            records=records,
+            compactions=compactions,
+            lease_guard=self.lease_guard,
+        )
 
     def _remember(
         self,

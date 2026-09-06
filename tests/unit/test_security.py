@@ -1,14 +1,19 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from patchloop.domain import ErrorKind, Task, ToolCall, ToolResult
 from patchloop.events import Event, EventLogger
 from patchloop.persistence import SQLiteStore
 from patchloop.security import (
+    CredentialBinding,
     RiskLevel,
     SecretRedactor,
+    UnresolvedToolArgument,
     UntrustedContentFinding,
     UntrustedContentGuard,
+    persist_tool_arguments,
 )
 from patchloop.tools import (
     PermissionLevel,
@@ -34,6 +39,55 @@ def test_secret_redactor_covers_api_keys_bearer_tokens_and_named_fields() -> Non
     assert "do-not-store" not in result
     assert "also-secret" not in result
     assert result.count("[REDACTED]") == 4
+
+
+def test_persisted_tool_arguments_resolve_only_declared_credential_references() -> None:
+    persisted = persist_tool_arguments(
+        {"username": "agent", "password": "do-not-store"},
+        credential_bindings=[
+            CredentialBinding(path="/password", reference="credential://vault/tool-password")
+        ],
+    )
+
+    assert persisted.arguments == {
+        "username": "agent",
+        "password": {"$credential_ref": "credential://vault/tool-password"},
+    }
+    assert "do-not-store" not in persisted.model_dump_json()
+    assert persisted.materialize(lambda reference: f"resolved:{reference}") == {
+        "username": "agent",
+        "password": "resolved:credential://vault/tool-password",
+    }
+
+
+def test_unreferenced_redaction_cannot_be_materialized_as_a_tool_argument() -> None:
+    persisted = persist_tool_arguments({"password": "do-not-store", "path": "README.md"})
+
+    assert persisted.redacted_paths == ["/password"]
+    with pytest.raises(UnresolvedToolArgument, match="redacted tool arguments"):
+        persisted.materialize(lambda reference: reference)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"path": "[REDACTED]"},
+        {"path": {"$credential_ref": "credential://vault/path"}},
+    ],
+)
+def test_gateway_rejects_unresolved_persisted_arguments(
+    tmp_path: Path, arguments: dict[str, object]
+) -> None:
+    gateway = ToolGateway(
+        ToolContext(tmp_path),
+        [ReplaceTextTool()],
+        policy=ToolPolicy(frozenset({PermissionLevel.WRITE}), require_plan_for_mutations=False),
+    )
+
+    result = gateway.execute("task-1", ToolCall(name="replace_text", arguments=arguments))
+
+    assert result.error_kind is ErrorKind.INVALID_ARGUMENTS
+    assert result.success is False
 
 
 def test_untrusted_content_guard_redacts_credentials_and_blocks_instructions() -> None:

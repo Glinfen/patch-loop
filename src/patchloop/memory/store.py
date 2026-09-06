@@ -6,8 +6,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +24,7 @@ from patchloop.memory.models import (
     memory_record_matches_semantic_filters,
 )
 from patchloop.security import SecretRedactor
+from patchloop.sqlite_support import connect
 
 MEMORY_STORE_SCHEMA_VERSION = 1
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_./:-]+|[\u4e00-\u9fff]+")
@@ -199,23 +199,8 @@ class SQLiteMemoryStore:
         self.vector_index = vector_index
         if not self.path.is_file():
             raise MemoryStoreError("memory store requires an existing PatchLoop database")
-        with self._connect() as connection:
+        with connect(self.path) as connection:
             initialize_memory_schema(connection)
-
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=10.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        try:
-            yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def save_source(self, source: MemorySource) -> MemorySource:
         return self.save_batch(sources=[source]).sources[0]
@@ -238,7 +223,7 @@ class SQLiteMemoryStore:
         safe_sources = [self._redact_source(source) for source in sources]
         safe_records = [self._redact_record(record) for record in records]
         safe_compactions = [self._redact_compaction(report) for report in compactions]
-        with self._connect() as connection:
+        with connect(self.path) as connection:
             source_id_map: dict[str, str] = {}
             persisted_sources: list[MemorySource] = []
             for source in safe_sources:
@@ -274,7 +259,7 @@ class SQLiteMemoryStore:
         return self.save_batch(sources=sources, records=records, compactions=compactions)
 
     def get_source(self, source_id: str) -> MemorySource:
-        with self._connect() as connection:
+        with connect(self.path) as connection:
             row = connection.execute(
                 "SELECT payload_json FROM memory_sources WHERE id = ?", (source_id,)
             ).fetchone()
@@ -283,7 +268,7 @@ class SQLiteMemoryStore:
         return MemorySource.model_validate_json(row["payload_json"])
 
     def get_record(self, record_id: str) -> MemoryRecord:
-        with self._connect() as connection:
+        with connect(self.path) as connection:
             row = connection.execute(
                 "SELECT payload_json FROM memory_records WHERE id = ?", (record_id,)
             ).fetchone()
@@ -292,7 +277,7 @@ class SQLiteMemoryStore:
         return MemoryRecord.model_validate_json(row["payload_json"])
 
     def list_sources(self, task_id: str) -> list[MemorySource]:
-        with self._connect() as connection:
+        with connect(self.path) as connection:
             rows = connection.execute(
                 """
                 SELECT payload_json FROM memory_sources
@@ -303,7 +288,7 @@ class SQLiteMemoryStore:
         return [MemorySource.model_validate_json(row["payload_json"]) for row in rows]
 
     def list_records(self, task_id: str) -> list[MemoryRecord]:
-        with self._connect() as connection:
+        with connect(self.path) as connection:
             rows = connection.execute(
                 """
                 SELECT payload_json FROM memory_records
@@ -314,7 +299,7 @@ class SQLiteMemoryStore:
         return [MemoryRecord.model_validate_json(row["payload_json"]) for row in rows]
 
     def list_compactions(self, task_id: str) -> list[CompressionReport]:
-        with self._connect() as connection:
+        with connect(self.path) as connection:
             rows = connection.execute(
                 """
                 SELECT payload_json FROM memory_compactions
@@ -325,7 +310,7 @@ class SQLiteMemoryStore:
         return [CompressionReport.model_validate_json(row["payload_json"]) for row in rows]
 
     def find_records_by_content_hash(self, task_id: str, content_hash: str) -> list[MemoryRecord]:
-        with self._connect() as connection:
+        with connect(self.path) as connection:
             rows = connection.execute(
                 """
                 SELECT payload_json FROM memory_records
@@ -337,7 +322,7 @@ class SQLiteMemoryStore:
 
     def query(self, query: MemoryQuery) -> MemoryBundle:
         safe_query = self._redact_query(query)
-        with self._connect() as connection:
+        with connect(self.path) as connection:
             records = self._select_records(connection, safe_query)
             records = [
                 record

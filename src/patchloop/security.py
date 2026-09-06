@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RiskLevel(StrEnum):
@@ -88,6 +89,7 @@ class SecretRedactor:
                 key: (
                     self.replacement
                     if re.sub(r"[^a-z]", "", str(key).casefold()) in self._sensitive_names
+                    and not _is_credential_marker(item)
                     else self.redact(item)
                 )
                 for key, item in value.items()
@@ -97,6 +99,119 @@ class SecretRedactor:
         if isinstance(value, tuple):
             return tuple(self.redact(item) for item in value)
         return value
+
+
+class UnresolvedToolArgument(ValueError):
+    """Raised when persisted placeholders reach an execution boundary."""
+
+
+class CredentialBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(pattern=r"^/(?:[^/~]|~[01])+(?:/(?:[^/~]|~[01])+)*$")
+    reference: str = Field(pattern=r"^credential://[A-Za-z0-9._:/-]+$")
+
+
+class CredentialResolver(Protocol):
+    def __call__(self, reference: str) -> str: ...
+
+
+class PersistedToolArguments(BaseModel):
+    """Secret-safe tool arguments; references are resolved only in memory."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    arguments: dict[str, Any]
+    credential_bindings: list[CredentialBinding] = Field(default_factory=list)
+    redacted_paths: list[str] = Field(default_factory=list)
+
+    def materialize(self, resolver: CredentialResolver) -> dict[str, Any]:
+        value = deepcopy(self.arguments)
+        for binding in self.credential_bindings:
+            _set_json_pointer(value, binding.path, resolver(binding.reference))
+        assert_executable_tool_arguments(value)
+        return value
+
+
+def persist_tool_arguments(
+    arguments: dict[str, Any],
+    *,
+    credential_bindings: list[CredentialBinding] | None = None,
+    redactor: SecretRedactor | None = None,
+) -> PersistedToolArguments:
+    """Replace declared secrets with references and redact every other secret."""
+
+    bindings = credential_bindings or []
+    safe = (redactor or SecretRedactor()).redact(deepcopy(arguments))
+    for binding in bindings:
+        _set_json_pointer(safe, binding.path, {"$credential_ref": binding.reference})
+    redacted_paths: list[str] = []
+    _collect_redacted_paths(safe, "", redacted_paths)
+    return PersistedToolArguments(
+        arguments=safe,
+        credential_bindings=bindings,
+        redacted_paths=redacted_paths,
+    )
+
+
+def assert_executable_tool_arguments(arguments: object) -> None:
+    """Reject redaction/reference markers before validation or tool dispatch."""
+
+    if isinstance(arguments, str):
+        if SecretRedactor.replacement in arguments:
+            raise UnresolvedToolArgument("redacted tool arguments cannot be executed")
+        return
+    if isinstance(arguments, dict):
+        if "$credential_ref" in arguments:
+            raise UnresolvedToolArgument("credential reference must be resolved before execution")
+        for value in arguments.values():
+            assert_executable_tool_arguments(value)
+        return
+    if isinstance(arguments, (list, tuple)):
+        for value in arguments:
+            assert_executable_tool_arguments(value)
+
+
+def _set_json_pointer(value: dict[str, Any], pointer: str, replacement: object) -> None:
+    parts = [part.replace("~1", "/").replace("~0", "~") for part in pointer.split("/")[1:]]
+    current: Any = value
+    for part in parts[:-1]:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            current = current[int(part)]
+        else:
+            raise ValueError(f"credential path does not exist: {pointer}")
+    if not parts:
+        raise ValueError(f"credential path does not exist: {pointer}")
+    final = parts[-1]
+    if isinstance(current, dict) and final in current:
+        current[final] = replacement
+    elif isinstance(current, list) and final.isdigit() and int(final) < len(current):
+        current[int(final)] = replacement
+    else:
+        raise ValueError(f"credential path does not exist: {pointer}")
+
+
+def _collect_redacted_paths(value: object, path: str, output: list[str]) -> None:
+    if isinstance(value, str) and SecretRedactor.replacement in value:
+        output.append(path or "/")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            escaped = str(key).replace("~", "~0").replace("/", "~1")
+            _collect_redacted_paths(item, f"{path}/{escaped}", output)
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _collect_redacted_paths(item, f"{path}/{index}", output)
+
+
+def _is_credential_marker(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"$credential_ref"}
+        and isinstance(value["$credential_ref"], str)
+        and value["$credential_ref"].startswith("credential://")
+    )
 
 
 class UntrustedContentGuard:

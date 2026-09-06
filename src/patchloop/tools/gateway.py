@@ -15,6 +15,8 @@ from patchloop.security import (
     ApprovalRequest,
     RiskAssessment,
     RiskLevel,
+    UnresolvedToolArgument,
+    assert_executable_tool_arguments,
 )
 from patchloop.tools.base import (
     PathDeniedError,
@@ -171,6 +173,17 @@ class ToolGateway:
                 success=False,
                 error_kind=ErrorKind.INVALID_ARGUMENTS,
                 output=call.arguments_error,
+            )
+            return self._finish(task_id, call, result, started)
+        try:
+            assert_executable_tool_arguments(call.arguments)
+        except UnresolvedToolArgument as exc:
+            result = ToolResult(
+                call_id=call.id,
+                tool_name=call.name,
+                success=False,
+                error_kind=ErrorKind.INVALID_ARGUMENTS,
+                output=str(exc),
             )
             return self._finish(task_id, call, result, started)
         if (

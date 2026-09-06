@@ -1,11 +1,13 @@
+import json
 from pathlib import Path
 
 import pytest
 
 from patchloop.domain import AgentStep, StepStatus, Task, TaskReport, ToolCall, ToolResult
-from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
+from patchloop.persistence import CheckpointSchemaError, RuntimeCheckpoint, SQLiteStore
 from patchloop.prompt_cache import CacheEpoch
 from patchloop.providers import ModelMessage
+from patchloop.sqlite_support import connect_write
 from patchloop.storage import ArtifactStore, JsonTaskStore, TaskNotFoundError
 
 
@@ -111,3 +113,38 @@ def test_sqlite_tool_call_ids_are_scoped_to_task(tmp_path: Path) -> None:
 
     assert store.get_tool_result(first_task.id, call.id) == first_result
     assert store.get_tool_result(second_task.id, call.id) == second_result
+
+
+def test_checkpoint_adapter_accepts_legacy_payload_without_version(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "patchloop.db")
+    task = Task(id="task-1", goal="Resume", repository=str(tmp_path))
+    store.save_task(task)
+    payload = RuntimeCheckpoint(task_id=task.id, next_step_index=0, messages=[]).model_dump(
+        mode="json"
+    )
+    payload.pop("schema_version")
+    with connect_write(store.path) as connection:
+        connection.execute(
+            "INSERT INTO checkpoints (task_id, payload_json, updated_at) VALUES (?, ?, ?)",
+            (task.id, json.dumps(payload), payload["updated_at"]),
+        )
+
+    assert store.get_checkpoint(task.id).schema_version == "1.0"
+
+
+def test_checkpoint_adapter_rejects_unknown_schema(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "patchloop.db")
+    task = Task(id="task-1", goal="Resume", repository=str(tmp_path))
+    store.save_task(task)
+    payload = RuntimeCheckpoint(task_id=task.id, next_step_index=0, messages=[]).model_dump(
+        mode="json"
+    )
+    payload["schema_version"] = "2.0"
+    with connect_write(store.path) as connection:
+        connection.execute(
+            "INSERT INTO checkpoints (task_id, payload_json, updated_at) VALUES (?, ?, ?)",
+            (task.id, json.dumps(payload), payload["updated_at"]),
+        )
+
+    with pytest.raises(CheckpointSchemaError, match="not supported"):
+        store.get_checkpoint(task.id)

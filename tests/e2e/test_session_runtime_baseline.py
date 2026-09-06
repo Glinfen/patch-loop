@@ -10,7 +10,7 @@ import pytest
 from patchloop.domain import Task, ToolResult
 from patchloop.events import EventLogger
 from patchloop.memory.manager import MemoryManagerSnapshot
-from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
+from patchloop.persistence import RUNTIME_SCHEMA_VERSION, RuntimeCheckpoint, SQLiteStore
 from patchloop.prompt_cache import CacheEpochSnapshot
 from tests.support.session_faults import FaultPoint, run_runtime_fault_worker
 
@@ -76,9 +76,23 @@ def test_session_legacy_database_is_readable_by_current_store(tmp_path: Path) ->
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
+        # The schema-migrations table legitimately gains the runtime row when
+        # the current store upgrades the legacy database; data tables must not
+        # gain or lose rows.
+        data_row_counts = {
+            table: count
+            for table, count in manifest["row_counts"].items()
+            if table != "patchloop_schema_migrations"
+        }
         row_counts = {
             table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-            for table in manifest["row_counts"]
+            for table in data_row_counts
+        }
+        migrations = {
+            str(row[0]): int(row[1])
+            for row in connection.execute(
+                "SELECT component, version FROM patchloop_schema_migrations"
+            ).fetchall()
         }
     assert {
         "tasks",
@@ -92,7 +106,8 @@ def test_session_legacy_database_is_readable_by_current_store(tmp_path: Path) ->
         "memory_compactions",
         "patchloop_schema_migrations",
     }.issubset(tables)
-    assert row_counts == manifest["row_counts"]
+    assert row_counts == data_row_counts
+    assert migrations == {"memory": 1, "runtime": RUNTIME_SCHEMA_VERSION}
 
 
 def _run_fault_case(root: Path, point: FaultPoint) -> tuple[list[dict[str, object]], SQLiteStore]:

@@ -8,9 +8,18 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, TypeVar
 
-from patchloop.domain import SessionStatus, Task, TaskOutcome, TaskRuntimeCondition
+from patchloop.domain import (
+    SessionStatus,
+    Task,
+    TaskOutcome,
+    TaskRuntimeCondition,
+    ToolCall,
+    ToolResult,
+)
+from patchloop.events import SessionEvent, effect_commit_event_id, journal_event_id
 from patchloop.execution.models import (
     Approval,
+    ApprovalStatus,
     ControlRequest,
     ControlStatus,
     Effect,
@@ -165,6 +174,14 @@ class SessionStore(Protocol):
 
     def append_turn(self, turn: Turn, *, expected_version: int | None = None) -> Turn: ...
 
+    def list_turns(self, session_id: str, *, after_sequence: int = 0) -> list[Turn]: ...
+
+    def append_event(
+        self, event: SessionEvent, *, expected_sequence: int | None = None
+    ) -> SessionEvent: ...
+
+    def list_events(self, session_id: str, *, after_sequence: int = 0) -> list[SessionEvent]: ...
+
     def start_task(self, session_id: str, task: Task, *, expected_version: int) -> Task: ...
 
     def request_pause(
@@ -184,6 +201,16 @@ class RuntimeStore(Protocol):
     def get_task(self, task_id: str) -> Task: ...
 
     def update_task(self, task: Task, *, expected_version: int) -> Task: ...
+
+    def commit_tool_result(
+        self,
+        task_id: str,
+        call: ToolCall,
+        result: ToolResult,
+        *,
+        expected_version: int | None = None,
+        lease_guard: LeaseGuard | None = None,
+    ) -> ToolResult: ...
 
     def claim_execution(
         self, execution: Execution, *, expected_version: int | None = None
@@ -243,6 +270,8 @@ class RuntimeStore(Protocol):
         lease_guard: LeaseGuard,
     ) -> SessionCheckpoint: ...
 
+    def get_session_checkpoint(self, task_id: str) -> SessionCheckpoint: ...
+
 
 class Store(SessionStore, RuntimeStore, Protocol):
     """Combined backend boundary for a composition root."""
@@ -275,6 +304,8 @@ class FakeStore:
         self.controls: dict[str, ControlRequest] = {}
         self.recoveries: dict[str, RecoveryDisposition] = {}
         self.checkpoints: dict[str, SessionCheckpoint] = {}
+        self.events: dict[str, list[SessionEvent]] = {}
+        self.tool_results: dict[tuple[str, str], tuple[ToolCall, ToolResult]] = {}
 
     @staticmethod
     def _copy(value: _T) -> _T:
@@ -290,7 +321,13 @@ class FakeStore:
             raise ValueError(f"session already exists: {session.id}")
         self.sessions[session.id] = self._copy(session)
         self.turns[session.id] = []
-        return self._copy(session)
+        self.events[session.id] = []
+        return self._journal(
+            session,
+            event_id=journal_event_id("session.created", session.id, session.version),
+            event_type="session.created",
+            data={"workspace_ref": session.workspace_ref},
+        )
 
     def list_sessions(self, workspace_ref: str | None = None) -> list[Session]:
         values: list[Session] = list(self.sessions.values())
@@ -312,6 +349,32 @@ class FakeStore:
             if turn.sequence > after_sequence
         ]
 
+    def append_event(
+        self, event: SessionEvent, *, expected_sequence: int | None = None
+    ) -> SessionEvent:
+        session = self.get_session(event.session_id)
+        events = self.events.setdefault(session.id, [])
+        for existing in events:
+            if existing.id != event.id:
+                continue
+            comparable = event.model_copy(update={"sequence": existing.sequence})
+            if existing == comparable:
+                return self._copy(existing)
+            raise ValueError(f"event already exists with different content: {event.id}")
+        self._check_version(session.id, session.event_sequence, expected_sequence)
+        assigned = event.model_copy(update={"sequence": session.event_sequence + 1})
+        events.append(assigned)
+        self.sessions[session.id] = session.model_copy(update={"event_sequence": assigned.sequence})
+        return self._copy(assigned)
+
+    def list_events(self, session_id: str, *, after_sequence: int = 0) -> list[SessionEvent]:
+        self.get_session(session_id)
+        return [
+            self._copy(event)
+            for event in self.events.get(session_id, [])
+            if event.sequence > after_sequence
+        ]
+
     def close_session(self, session_id: str, *, expected_version: int) -> Session:
         session = self.get_session(session_id)
         self._check_version(session.id, session.version, expected_version)
@@ -320,8 +383,11 @@ class FakeStore:
         closed = session.model_copy(
             update={"status": SessionStatus.CLOSED, "version": session.version + 1}
         )
-        self.sessions[session_id] = self._copy(closed)
-        return self._copy(closed)
+        return self._journal(
+            closed,
+            event_id=journal_event_id("session.closed", closed.id, closed.version),
+            event_type="session.closed",
+        )
 
     def request_pause(self, request: ControlRequest, *, expected_version: int) -> ControlRequest:
         if request.kind.value != "pause":
@@ -335,28 +401,52 @@ class FakeStore:
 
     def append_turn(self, turn: Turn, *, expected_version: int | None = None) -> Turn:
         session = self.get_session(turn.session_id)
+        if session.status is SessionStatus.CLOSED:
+            raise ValueError("cannot append a turn to a closed session")
         turns = self.turns.setdefault(session.id, [])
         if turn.client_submission_id is not None:
             for existing in turns:
                 if existing.client_submission_id != turn.client_submission_id:
                     continue
-                if existing.content == turn.content and existing.role is turn.role:
+                if (
+                    existing.content == turn.content
+                    and existing.role is turn.role
+                    and existing.resource_refs == turn.resource_refs
+                    and (turn.task_id is None or existing.task_id == turn.task_id)
+                ):
                     return self._copy(existing)
                 raise SubmissionConflict(session.id, turn.client_submission_id)
         self._check_version(session.id, session.version, expected_version)
+        if turn.task_id is not None:
+            task = self.get_task(turn.task_id)
+            if task.session_id != session.id:
+                raise ValueError("turn task does not belong to its session")
         assigned = turn.model_copy(
             update={"sequence": len(turns) + 1, "task_id": turn.task_id or session.active_task_id}
         )
         turns.append(assigned)
-        self.sessions[session.id] = session.model_copy(
-            update={"version": session.version + 1, "event_sequence": session.event_sequence + 1}
+        self._journal(
+            session.model_copy(update={"version": session.version + 1}),
+            event_id=journal_event_id("turn.appended", assigned.id, assigned.sequence),
+            event_type="turn.appended",
+            task_id=assigned.task_id,
+            data={"turn_id": assigned.id, "role": assigned.role.value},
         )
         return self._copy(assigned)
 
     def create_task(self, task: Task) -> Task:
         if task.id in self.tasks:
             raise ValueError(f"task already exists: {task.id}")
+        if task.session_id is not None:
+            self.get_session(task.session_id)
         self.tasks[task.id] = self._copy(task)
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("task.created", task.id, task.version),
+                event_type="task.created",
+                task_id=task.id,
+            )
         return self._copy(task)
 
     def get_task(self, task_id: str) -> Task:
@@ -386,6 +476,9 @@ class FakeStore:
         except KeyError as exc:
             raise KeyError(f"checkpoint not found: {task_id}") from exc
 
+    def get_session_checkpoint(self, task_id: str) -> SessionCheckpoint:
+        return self.get_checkpoint(task_id)
+
     def start_task(self, session_id: str, task: Task, *, expected_version: int) -> Task:
         session = self.get_session(session_id)
         self._check_version(session.id, session.version, expected_version)
@@ -396,23 +489,53 @@ class FakeStore:
         if task.outcome is not TaskOutcome.ACTIVE:
             raise ValueError("a new session task must have an active outcome")
         bound = task.model_copy(update={"session_id": session_id})
-        self.create_task(bound)
-        self.sessions[session_id] = session.model_copy(
-            update={"active_task_id": bound.id, "version": session.version + 1}
+        if bound.id in self.tasks:
+            raise ValueError(f"task already exists: {bound.id}")
+        self.tasks[bound.id] = self._copy(bound)
+        self._journal(
+            session.model_copy(update={"active_task_id": bound.id, "version": session.version + 1}),
+            event_id=journal_event_id("task.started", bound.id, bound.version),
+            event_type="task.started",
+            task_id=bound.id,
+            data={"outcome": bound.outcome.value, "condition": bound.runtime_condition.value},
         )
         return self._copy(bound)
 
     def update_task(self, task: Task, *, expected_version: int) -> Task:
         current = self.get_task(task.id)
         self._check_version(task.id, current.version, expected_version)
+        if current.session_id != task.session_id:
+            raise ValueError("task session binding is immutable")
+        if current.outcome is not TaskOutcome.ACTIVE and task.outcome is not current.outcome:
+            raise ValueError("terminal task outcome is immutable")
+        if (
+            current.runtime_condition is TaskRuntimeCondition.RECOVERY_REQUIRED
+            and task.runtime_condition is not TaskRuntimeCondition.RECOVERY_REQUIRED
+        ):
+            raise RecoveryRequired(current.id)
         updated = task.model_copy(update={"version": current.version + 1})
         self.tasks[task.id] = self._copy(updated)
+        session: Session | None = None
         if updated.outcome is not TaskOutcome.ACTIVE and updated.session_id is not None:
             session = self.get_session(updated.session_id)
             if session.active_task_id == updated.id:
-                self.sessions[session.id] = session.model_copy(
+                session = session.model_copy(
                     update={"active_task_id": None, "version": session.version + 1}
                 )
+        elif updated.session_id is not None:
+            session = self.get_session(updated.session_id)
+        if session is not None:
+            self._journal(
+                session,
+                event_id=journal_event_id("task.updated", updated.id, updated.version),
+                event_type="task.updated",
+                task_id=updated.id,
+                data={
+                    "outcome": updated.outcome.value,
+                    "condition": updated.runtime_condition.value,
+                    "version": updated.version,
+                },
+            )
         return self._copy(updated)
 
     def claim_execution(
@@ -445,6 +568,18 @@ class FakeStore:
                 "version": task.version + 1,
             }
         )
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("execution.claimed", claimed.id, claimed.generation),
+                event_type="execution.claimed",
+                task_id=task.id,
+                data={
+                    "execution_id": claimed.id,
+                    "owner_id": claimed.owner_id,
+                    "generation": claimed.generation,
+                },
+            )
         return self._copy(claimed)
 
     def _assert_guard(self, guard: LeaseGuard) -> Execution:
@@ -472,6 +607,8 @@ class FakeStore:
         expected_version: int,
         lease_guard: LeaseGuard | None = None,
     ) -> list[Effect]:
+        if not effects:
+            return []
         if lease_guard is not None:
             self._assert_guard(lease_guard)
         task_ids = {effect.task_id for effect in effects}
@@ -479,8 +616,8 @@ class FakeStore:
             raise ValueError("one prepare batch must belong to one task")
         task_id = next(iter(task_ids))
         task = self.get_task(task_id)
-        self._check_version(task_id, task.version, expected_version)
         result: list[Effect] = []
+        new_effects: list[Effect] = []
         for effect in effects:
             existing = self.effects.get(effect.id)
             if existing is not None:
@@ -494,22 +631,66 @@ class FakeStore:
                 result.append(self._copy(candidate))
                 break
             else:
-                self._check_version(task_id, task.version, expected_version)
-                self.effects[effect.id] = self._copy(effect)
+                pending = next(
+                    (
+                        candidate
+                        for candidate in new_effects
+                        if candidate.id == effect.id
+                        or candidate.identity_key() == effect.identity_key()
+                    ),
+                    None,
+                )
+                if pending is not None:
+                    pending.assert_identity_compatible(effect)
+                    result.append(self._copy(pending))
+                    continue
+                new_effects.append(effect)
                 result.append(self._copy(effect))
+        if new_effects:
+            self._check_version(task_id, task.version, expected_version)
+            for effect in new_effects:
+                self.effects[effect.id] = self._copy(effect)
+            if task.session_id is not None:
+                effect_ids = [effect.id for effect in new_effects]
+                self._journal(
+                    self.get_session(task.session_id),
+                    event_id=journal_event_id("effects.prepared", task.id, ",".join(effect_ids)),
+                    event_type="effects.prepared",
+                    task_id=task.id,
+                    data={"effect_ids": effect_ids},
+                )
         return result
 
     def decide_approval(
         self, approval: Approval, *, expected_version: int | None = None
     ) -> Approval:
-        existing = self.approvals.get(approval.id)
+        self.get_effect(approval.effect_id)
+        existing = next(
+            (
+                candidate
+                for candidate in self.approvals.values()
+                if candidate.effect_id == approval.effect_id
+            ),
+            None,
+        )
         if existing is None:
             self.approvals[approval.id] = self._copy(approval)
+            self._journal_approval(approval, "approval.requested")
             return self._copy(approval)
-        if existing.status is not approval.status:
-            raise ApprovalConflict(approval.id, existing.status.value, approval.status.value)
+        if existing == approval:
+            return self._copy(existing)
         self._check_version(approval.id, existing.version, expected_version)
-        return self._copy(existing)
+        if existing.status is not ApprovalStatus.PENDING or approval.status not in {
+            ApprovalStatus.APPROVED,
+            ApprovalStatus.DENIED,
+            ApprovalStatus.EXPIRED,
+        }:
+            raise ApprovalConflict(approval.id, existing.status.value, approval.status.value)
+        if approval.version != existing.version + 1:
+            raise StaleVersion(approval.id, existing.version + 1, approval.version)
+        self.approvals[approval.id] = self._copy(approval)
+        self._journal_approval(approval, "approval.decided")
+        return self._copy(approval)
 
     def claim_effect(
         self, effect_id: str, *, expected_version: int, lease_guard: LeaseGuard
@@ -523,6 +704,16 @@ class FakeStore:
             update={"status": EffectStatus.EXECUTING, "version": current.version + 1}
         )
         self.effects[effect_id] = self._copy(claimed)
+        task = self.get_task(claimed.task_id)
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("effect.claimed", claimed.id, claimed.version),
+                event_type="effect.claimed",
+                task_id=task.id,
+                trace_id=claimed.provider_call_id,
+                data={"effect_id": claimed.id},
+            )
         return claimed
 
     def commit_effect(
@@ -553,13 +744,81 @@ class FakeStore:
                 "version": current.version + 1,
             }
         )
+        task = self.get_task(effect.task_id)
+        if task.session_id is None:
+            raise ValueError("effect task is not bound to a session")
+        session = self.get_session(task.session_id)
+        event = SessionEvent(
+            id=effect_commit_event_id(committed.id, committed.version),
+            session_id=session.id,
+            task_id=task.id,
+            trace_id=committed.provider_call_id,
+            sequence=session.event_sequence + 1,
+            type="effect.committed",
+            data={
+                "effect_id": committed.id,
+                "status": committed.status.value,
+                "result_ref": result_ref,
+                "observation_ref": observation_ref,
+            },
+        )
         self.effects[effect.id] = self._copy(committed)
+        self.events.setdefault(session.id, []).append(event)
+        self.sessions[session.id] = session.model_copy(update={"event_sequence": event.sequence})
+        checkpoint = self.checkpoints.get(task.id)
+        if checkpoint is not None:
+            self.checkpoints[task.id] = checkpoint.model_copy(
+                update={"event_sequence": event.sequence}
+            )
         return self._copy(committed)
+
+    def commit_tool_result(
+        self,
+        task_id: str,
+        call: ToolCall,
+        result: ToolResult,
+        *,
+        expected_version: int | None = None,
+        lease_guard: LeaseGuard | None = None,
+    ) -> ToolResult:
+        if result.call_id != call.id:
+            raise ValueError("tool result does not belong to the call")
+        if lease_guard is not None:
+            self._assert_guard(lease_guard)
+        task = self.get_task(task_id)
+        key = (task_id, call.id)
+        existing = self.tool_results.get(key)
+        if existing is not None:
+            if existing != (call, result):
+                raise ValueError(f"tool call already committed with different content: {call.id}")
+            return self._copy(existing[1])
+        self._check_version(task_id, task.version, expected_version)
+        self.tool_results[key] = (self._copy(call), self._copy(result))
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("tool_result.committed", call.id, task_id),
+                event_type="tool_result.committed",
+                task_id=task_id,
+                trace_id=call.id,
+                data={"call_id": call.id, "tool_name": call.name, "success": result.success},
+            )
+        return self._copy(result)
 
     def request_control(self, request: ControlRequest, *, expected_version: int) -> ControlRequest:
         task = self.get_task(request.task_id)
         self._check_version(request.task_id, task.version, expected_version)
+        if request.id in self.controls:
+            raise ValueError(f"control request already exists: {request.id}")
         self.controls[request.id] = self._copy(request)
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("control.requested", request.id, request.version),
+                event_type="control.requested",
+                task_id=task.id,
+                data={"control_id": request.id, "kind": request.kind.value},
+            )
         return self._copy(request)
 
     def settle_control(
@@ -573,6 +832,15 @@ class FakeStore:
         self._check_version(request_id, current.version, expected_version)
         current.transition(status)
         self.controls[request_id] = self._copy(current)
+        task = self.get_task(current.task_id)
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("control.updated", current.id, current.version),
+                event_type="control.updated",
+                task_id=task.id,
+                data={"control_id": current.id, "status": current.status.value},
+            )
         return self._copy(current)
 
     def resolve_recovery(
@@ -595,6 +863,20 @@ class FakeStore:
         self.recoveries[disposition.id] = self._copy(disposition)
         updated = task.model_copy(update={"runtime_condition": target, "version": task.version + 1})
         self.tasks[task_id] = self._copy(updated)
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id(
+                    "recovery.resolved", disposition.id, disposition.kind.value
+                ),
+                event_type="recovery.resolved",
+                task_id=task.id,
+                data={
+                    "disposition_id": disposition.id,
+                    "effect_id": disposition.unknown_effect_id,
+                    "kind": disposition.kind.value,
+                },
+            )
         return self._copy(updated)
 
     def commit_checkpoint(
@@ -607,8 +889,77 @@ class FakeStore:
         self._assert_guard(lease_guard)
         task = self.get_task(checkpoint.task_id)
         self._check_version(checkpoint.task_id, task.version, expected_version)
+        if task.session_id != checkpoint.session_id:
+            raise ValueError("checkpoint session does not own its task")
+        session = self.get_session(checkpoint.session_id)
+        if checkpoint.event_sequence > session.event_sequence:
+            raise ValueError("checkpoint event cursor is ahead of the session journal")
+        turns = self.turns.get(session.id, [])
+        max_turn_sequence = max((turn.sequence for turn in turns), default=0)
+        if checkpoint.consumed_input_sequence > max_turn_sequence:
+            raise ValueError("checkpoint input cursor is ahead of persisted turns")
+        if checkpoint.turn_id is not None:
+            turn = next((turn for turn in turns if turn.id == checkpoint.turn_id), None)
+            if turn is None or turn.task_id not in {None, checkpoint.task_id}:
+                raise ValueError("checkpoint turn is not part of its session/task")
+        if len(checkpoint.pending_effect_ids) != len(set(checkpoint.pending_effect_ids)):
+            raise ValueError("checkpoint pending Effect IDs must be unique")
+        for effect_id in checkpoint.pending_effect_ids:
+            effect = self.effects.get(effect_id)
+            if effect is None or effect.task_id != checkpoint.task_id:
+                raise ValueError("checkpoint references an Effect outside its task")
         self.checkpoints[checkpoint.task_id] = self._copy(checkpoint)
+        self._journal(
+            self.get_session(checkpoint.session_id),
+            event_id=journal_event_id(
+                "checkpoint.committed", checkpoint.task_id, checkpoint.updated_at.isoformat()
+            ),
+            event_type="checkpoint.committed",
+            task_id=checkpoint.task_id,
+            data={"consumed_input_sequence": checkpoint.consumed_input_sequence},
+        )
         return self._copy(checkpoint)
+
+    def _journal(
+        self,
+        session: Session,
+        *,
+        event_id: str,
+        event_type: str,
+        task_id: str | None = None,
+        trace_id: str | None = None,
+        data: dict[str, object] | None = None,
+    ) -> Session:
+        event = SessionEvent(
+            id=event_id,
+            session_id=session.id,
+            type=event_type,
+            task_id=task_id,
+            trace_id=trace_id,
+            sequence=session.event_sequence + 1,
+            data={} if data is None else data,
+        )
+        self.events.setdefault(session.id, []).append(event)
+        updated = session.model_copy(update={"event_sequence": event.sequence})
+        self.sessions[session.id] = self._copy(updated)
+        return self._copy(updated)
+
+    def _journal_approval(self, approval: Approval, event_type: str) -> None:
+        effect = self.get_effect(approval.effect_id)
+        task = self.get_task(effect.task_id)
+        if task.session_id is None:
+            return
+        self._journal(
+            self.get_session(task.session_id),
+            event_id=journal_event_id(event_type, approval.id, approval.version),
+            event_type=event_type,
+            task_id=task.id,
+            data={
+                "approval_id": approval.id,
+                "effect_id": effect.id,
+                "status": approval.status.value,
+            },
+        )
 
 
 __all__ = [

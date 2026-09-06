@@ -12,6 +12,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from patchloop.domain import TaskRuntimeCondition
+from patchloop.security import CredentialBinding
 from patchloop.session.models import SessionCheckpoint
 
 EXECUTION_SCHEMA_VERSION: Literal["1.0"] = "1.0"
@@ -146,6 +147,8 @@ class Effect(BaseModel):
     action_kind: str = Field(default="unknown", min_length=1, max_length=64)
     arguments_summary: dict[str, Any] = Field(default_factory=dict)
     arguments_fingerprint: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
+    credential_bindings: list[CredentialBinding] = Field(default_factory=list)
+    redacted_argument_paths: list[str] = Field(default_factory=list)
     status: EffectStatus = EffectStatus.PREPARED
     approval_id: str | None = Field(default=None, min_length=1)
     result_ref: str | None = Field(default=None, min_length=1)
@@ -177,6 +180,10 @@ class Effect(BaseModel):
             "action_kind": self.action_kind,
             "arguments_summary": self.arguments_summary,
             "arguments_fingerprint": argument_fingerprint,
+            "credential_bindings": [
+                binding.model_dump(mode="json") for binding in self.credential_bindings
+            ],
+            "redacted_argument_paths": self.redacted_argument_paths,
             "tool_name": self.tool_name,
         }
         return hashlib.sha256(

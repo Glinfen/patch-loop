@@ -4,7 +4,8 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from patchloop.cli import app
-from patchloop.domain import Task, TaskExecutionConfig, TaskStatus
+from patchloop.domain import Task, TaskExecutionConfig, TaskStatus, ToolCall
+from patchloop.execution.models import ApprovalStatus
 from patchloop.memory import (
     MemoryKind,
     MemoryRecord,
@@ -314,6 +315,102 @@ def test_cli_resumes_running_task(tmp_path: Path, monkeypatch: object) -> None:
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["status"] == "completed"
     assert store.get_task(task.id).status is TaskStatus.COMPLETED
+
+
+def test_legacy_run_requires_persisted_approval_before_non_interactive_write(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    target = tmp_path / "README.md"
+    target.write_text("# Before\n", encoding="utf-8")
+    provider = FakeProvider(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="plan-legacy",
+                        name="update_plan",
+                        arguments={
+                            "items": [{"description": "Update README", "status": "running"}]
+                        },
+                    )
+                ]
+            ),
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="write-legacy",
+                        name="replace_text",
+                        arguments={
+                            "path": "README.md",
+                            "old_text": "Before",
+                            "new_text": "After",
+                        },
+                    )
+                ]
+            ),
+            ModelResponse(content="Updated after explicit approval."),
+        ]
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "patchloop.cli.DeepSeekProvider.from_env",
+        lambda *_: provider,
+    )
+
+    started = runner.invoke(
+        app,
+        [
+            "run",
+            "Update README",
+            "--repo",
+            str(tmp_path),
+            "--allow-write",
+            "--sandbox",
+            "local",
+            "--non-interactive",
+        ],
+    )
+
+    assert started.exit_code == 10, started.output
+    waiting = json.loads(started.output)
+    assert waiting["status"] == "waiting_for_approval"
+    assert waiting["pending_approvals"][0]["id"]
+    assert target.read_text(encoding="utf-8") == "# Before\n"
+
+    status = runner.invoke(
+        app,
+        ["status", waiting["task_id"], "--repo", str(tmp_path)],
+    )
+    status_payload = json.loads(status.output)
+    assert status.exit_code == 0, status.output
+    assert status_payload["session_id"] == waiting["session_id"]
+    assert status_payload["status"] == "waiting_for_approval"
+    assert status_payload["pending_approvals"][0]["id"]
+
+    approval_id = waiting["pending_approvals"][0]["id"]
+    decided = runner.invoke(
+        app,
+        [
+            "approval",
+            "--repo",
+            str(tmp_path),
+            "decide",
+            approval_id,
+            "--approve",
+            "--source",
+            "ci",
+        ],
+    )
+    resumed = runner.invoke(
+        app,
+        ["resume", waiting["task_id"], "--repo", str(tmp_path)],
+    )
+
+    assert decided.exit_code == 0, decided.output
+    assert resumed.exit_code == 0, resumed.output
+    assert json.loads(resumed.output)["status"] == "completed"
+    assert target.read_text(encoding="utf-8") == "# After\n"
+    store = SQLiteStore(tmp_path / ".patchloop" / "patchloop.db")
+    assert store.get_approval(approval_id).status is ApprovalStatus.CONSUMED
 
 
 def test_cli_indexes_searches_and_benchmarks_repository(tmp_path: Path) -> None:

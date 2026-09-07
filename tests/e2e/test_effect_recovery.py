@@ -533,6 +533,7 @@ def test_explicit_approved_retry_executes_new_effect_once(tmp_path: Path) -> Non
         unknown_effect_id=unknown.id,
         retry_effect=retry,
         approval=approval,
+        duplicate_risk_acknowledged=True,
         evidence={"duplicate_risk_acknowledged": True},
         decision_source="operator",
         expected_version=recovery_task.version,

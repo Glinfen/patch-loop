@@ -1,183 +1,332 @@
 # PatchLoop
 
-PatchLoop 是一个面向真实代码仓库的本地优先 Coding Agent。它能够理解自然语言开发任务，自主检索代码、制定计划、调用受控工具修改文件、运行测试，并根据执行结果迭代修复，最终产出可审查的代码补丁和执行报告。
+PatchLoop 是一个运行在本地代码仓库中的命令行 Coding Agent。你可以用自然语言描述开发任务，
+让它检索代码、制定计划、修改文件、运行测试，并根据执行结果继续修复，最终得到可审查的 diff、
+执行报告和完整轨迹。
 
+PatchLoop 默认以只读权限启动。文件写入和命令执行必须显式授权，命令可在受限 Docker 容器中
+运行；任务状态、检查点、记忆和事件保存在目标仓库的 `.patchloop/` 目录中，进程中断后可以继续。
 
-- Agent 核心闭环：规划、执行、观察、反思与恢复。
-- 代码智能：仓库索引、符号检索、上下文压缩和依赖分析。
-- 工程能力：沙箱隔离、权限控制、可观测性、测试与持续集成。
-- 系统评测：任务成功率、成本、时延、工具调用效率和回归分析。
-- 产品完成度：CLI 优先，可选 Web 控制台，支持全过程回放和人工审批。
+## 功能
 
-## 文档
+- 自然语言驱动的“检索 → 规划 → 修改 → 测试 → 修复 → 汇报”执行闭环。
+- Python AST 索引与混合代码检索，返回文件、行号、符号、片段和排序依据。
+- 结构化计划、原子文件修改、受限命令执行、测试运行和 Git diff 检查。
+- SQLite 持久化、步骤检查点、任务恢复，以及对已确认工具结果的安全回放。
+- 工作记忆、语义记忆和情景记忆，支持预算化上下文、压缩谱系和可解释召回。
+- Session、Task 与 Workspace 执行租约，防止多个执行者同时写入同一工作区。
+- Docker 命令沙箱、权限策略、风险审批、路径边界检查和敏感信息脱敏。
+- JSONL 事件轨迹、任务回放、指标统计、上下文诊断和机器可读评测。
+- DeepSeek OpenAI-compatible Provider，支持 thinking、重试、Token 用量和成本统计。
 
-- [第二阶段项目目标](docs/PHASE_2_PROJECT_GOALS.md)：将研究型 Runtime 原型推进为可持续使用的本地单 Agent，定义 Session、Provider、Approval、Skills、Sandbox、Git 工作流和真实评测目标。
-- [第二阶段模块开发计划](docs/PHASE_2_DEVELOPMENT_PLAN.md)：按模块描述下一阶段开发范围、产物、依赖和总体出口；各模块的细化任务将在启动时单独制定。
-- [实施计划](docs/IMPLEMENTATION_PLAN.md)：技术方案、阶段里程碑、验收标准、风险与交付物。
-- [Week 1 验收记录](docs/milestones/WEEK_01_ACCEPTANCE.md)：安装、CLI、测试、类型检查和覆盖率证据。
-- [Week 2 验收记录](docs/milestones/WEEK_02_ACCEPTANCE.md)：Plan-Execute、补丁、测试、diff 和最终报告证据。
-- [Week 3 验收记录](docs/milestones/WEEK_03_ACCEPTANCE.md)：错误分类、失败恢复、重规划和预算控制证据。
-- [Week 4 验收记录](docs/milestones/WEEK_04_ACCEPTANCE.md)：SQLite 持久化、检查点恢复和完整 CLI 生命周期证据。
-- [Week 5 验收记录](docs/milestones/WEEK_05_ACCEPTANCE.md)：Python AST 索引、可解释混合检索和 Recall@1 对比证据。
-- [Week 6 验收记录](docs/milestones/WEEK_06_ACCEPTANCE.md)：上下文预算、结构化任务记忆和长任务证据保留验收。
-- [Week 7 验收记录](docs/milestones/WEEK_07_ACCEPTANCE.md)：Docker 沙箱、风险审批、敏感信息脱敏和任务回放验收。
-- [Week 8 验收记录](docs/milestones/WEEK_08_ACCEPTANCE.md)：固定 30 任务集、并发重试和四变体机器可读评测验收。
-- [评测协议](docs/EVALUATION.md)：清单格式、仓库指纹、成功判定、基线定义和运行方式。
-- [Week 9 验收记录](docs/milestones/WEEK_09_ACCEPTANCE.md)：失败分类、组件消融、两阶段优化及 5 轮稳定性证据。
-- [端到端代码任务评测](docs/CODING_BENCHMARK.md)：真实修改、独立测试、变更范围约束和模型运行方式。
-- [DeepSeek V4 Flash 评测结果](docs/CODING_BENCHMARK_RESULTS.md)：6 个代码任务的优化前后成功率、成本、时延与限制。
-- [Hard Suite 评测结果](docs/CODING_BENCHMARK_HARD_RESULTS.md)：5 个隐藏测试任务从 40% 到 100% 的失败分析与运行时优化证据。
-- [真实 Agent 长上下文记忆首场景验收](docs/milestones/LCM_REAL_AGENT_ACCEPTANCE.md)：DeepSeek V4 Flash 在冲突、噪声和提示注入证据下的真实修改、隐藏测试、记忆指标与失败驱动优化。
-- [提示缓存优化开发计划](docs/PROMPT_CACHE_OPTIMIZATION_PLAN.md)：针对真实场景约 36.2% 的提示缓存命中率，规划逐步观测、稳定前缀、精简记忆投影、cache epoch 与冷热验收。
-- [提示缓存架构重构计划](docs/PROMPT_CACHE_ARCHITECTURE_REFACTOR_PLAN.md)：第一阶段结束后的架构收口；在保持 PCO 行为兼容的前提下聚合 `prompt_cache` 领域，并为第二阶段 Session 与 Provider 扩展清理 Runtime 边界。
-- [PCO-00 验收](docs/milestones/PCO_00_ACCEPTANCE.md)：缓存用量已贯通报告、检查点、metrics 与 replay；新真实基线命中率为 4.31%，下一步进入请求指纹诊断。
-- [PCO-01 验收](docs/milestones/PCO_01_ACCEPTANCE.md)：新增安全请求指纹、区段级前缀诊断、缓存布局归因及恢复安全快照。
-- [PCO-02 验收](docs/milestones/PCO_02_ACCEPTANCE.md)：新增 legacy/stable 布局开关、冻结工具面和独立动态记忆消息。
-- [PCO-03 验收](docs/milestones/PCO_03_ACCEPTANCE.md)：拆分精简 Provider 记忆投影与完整审计投影，并保持安全过滤和确定性排序。
-- [PCO-04 验收](docs/milestones/PCO_04_ACCEPTANCE.md)：引入 cache epoch、冻结前缀脊柱和两阶段历史压缩协议。
-- [PCO-05 验收](docs/milestones/PCO_05_ACCEPTANCE.md)：引入 epoch 记忆快照、确定性增量发布和恢复重放去重。
-- [PCO-06 验收](docs/milestones/PCO_06_ACCEPTANCE.md)：新增 Fake 前缀缓存模拟、六配置矩阵、真实 Provider 字段采集和逐步瀑布报告。
-- [PCO-07 验收](docs/milestones/PCO_07_ACCEPTANCE.md)：新增缓存质量门禁、Memory 2.0 安全/恢复证据和 legacy/stable 灰度回退策略。
+## 环境要求
 
-## 推荐项目周期
+- Python 3.12 或更高版本。
+- Git。
+- DeepSeek API Key，或兼容端点的 API Key、Base URL 与模型 ID。
+- Docker（推荐）：用于隔离测试和命令执行。不使用 Docker 时可以选择本地执行后端，但它不提供
+  操作系统级隔离。
 
-按照每周 15～20 小时投入，建议用 10 周完成一个可写入简历并可现场演示的版本：
+## 安装
 
-1. 前 4 周完成单 Agent MVP 和端到端闭环。
-2. 第 5～7 周补齐检索、沙箱、可观测性和稳定性。
-3. 第 8～9 周完成基准评测、性能优化和对比实验。
-4. 第 10 周完成演示、文档、技术文章和简历材料。
-
-## 最终演示场景
-
-在一个陌生的中型开源仓库中输入任务，例如“修复 Issue 中描述的分页边界错误，并补充回归测试”。PatchLoop 应能够：
-
-1. 扫描仓库并定位相关模块。
-2. 给出带依据的执行计划。
-3. 在隔离环境中修改代码并运行测试。
-4. 遇到失败后读取错误信息并自动迭代。
-5. 输出补丁、测试结果、关键决策、调用成本及完整轨迹。
-
-项目详细范围和验收口径以 `docs` 目录中的文档为准。
-
-## 当前进度
-
-项目已完成前七周运行时、安全与可观测性切片：
-
-- `Task`、`AgentStep`、`ToolCall`、`ToolResult` 等领域模型。
-- 模型无关的 Provider 协议和确定性 Fake Provider。
-- DeepSeek V4 Flash Provider，支持 thinking、工具调用、重试和用量统计。
-- 带参数校验、路径边界和错误分类的 Tool Gateway。
-- `list_files`、`read_file`、`search_text` 三个只读工具。
-- 显式 `update_plan`，写入和执行前必须先建立计划。
-- 原子 `create_file`、结构化 `apply_patch`、精确 `replace_text` 工具。
-- 受限 `run_command`、`run_tests` 和 `get_diff` 工具。
-- 默认只读的权限策略，以及仓库路径和符号链接边界检查。
-- 有步骤、时间、Token、费用、工具失败和重规划预算的 Agent 执行循环。
-- 测试/语法/命令失败分类，失败后强制重新规划和重复错误检测。
-- SQLite 任务、步骤、工具调用、检查点和产物存储，以及 JSONL 事件轨迹。
-- 完成步骤边界检查点、工作区变更快照和中断后恢复，不重复已确认的写操作。
-- 包含变更、验证、工具统计和 Token 用量的最终报告与持久化产物。
-- `run`、`status`、`resume`、`cancel`、`diff`、`trace` 等任务生命周期命令。
-- 默认非交互运行，并把权限集合随任务持久化，恢复时沿用原权限边界。
-- Python AST 仓库索引，可提取模块、类、函数、方法、引用和源码—测试映射。
-- `search_code` 混合检索工具，融合关键词、符号、轻量语义、符号距离、文件类型、最近访问和测试关联特征。
-- 每条代码定位结果包含文件、行号、符号、片段、来源、特征分数和排序理由。
-- 可复现的 `benchmark-search` 对比命令；第五周固定 4 任务集上 Recall@1 从 0.25 提升至 1.00。
-- Context Engine 同时预算消息和工具 Schema，按任务相关性、新近度及原子 assistant/tool 调用组裁剪历史。
-- 被裁剪步骤生成结构化任务记忆，保留未完成计划、关键证据、失败和历史决策。
-- 大型工具输出进入模型前保留头尾并附加截断元数据，完整结果仍用于报告和审计。
-- `context.built` 轨迹和 `context` CLI 展示预算占用、选择步骤、丢弃步骤和记忆大小。
-- Docker 命令沙箱默认关闭网络，并限制挂载目录、CPU、内存、进程数、Linux capabilities、根文件系统和运行时间。
-- Tool Gateway 对读、写、执行和危险动作进行低、中、高、严重四级风险判断；交互模式逐次审批，非交互模式只接受显式权限预授权。
-- 凭据脱敏统一覆盖 Provider 上下文、JSONL Trace、SQLite 检查点和任务产物。
-- Trace 具有稳定事件 ID、任务 Trace ID 和连续序号；`metrics` 与 `replay` 可定位失败步骤、审批结果、工具耗时、Token 和费用。
-- 版本化评测清单以仓库树 SHA-256 锁定环境，30 个任务覆盖 bugfix、feature、test、documentation，easy/medium/hard 各 10 个。
-- `benchmark` 支持 1～64 个并发 worker、失败重试、确定性结果排序，以及 single-shot、no-plan、text-only、PatchLoop 四变体对比。
-- 第八周固定代码定位切片中，四变体成功率分别为 70%、80%、80% 和 100%；完整任务级结果保存在机器可读 JSON 中。
-- `experiment` 一条命令运行规划、检索、反思消融，自动归类失败、比较优化阶段，并以结果指纹、最小/最大成功率和标准差检查重复稳定性。
-- 第九周 5 轮实验中完整系统稳定为 100%；去规划为 100%、去检索为 50%、去反思为 80%，所有变体结果标准差为 0，离线模型费用为 0 美元。
-- 端到端代码任务包含 6 个基础任务、5 个 hard 任务和 4 个 advanced 任务；后两套使用 Agent 结束后才注入的锁定隐藏测试，覆盖跨文件事务、版本迁移、状态解析与测试生成，并拒绝越界文件变更。
-- `benchmark-memory` 可生成 20～120 步固定长历史，对比 recent-only 与 TaskMemory V1；LCM-00 的 DeepSeek 三轮基线分别为 0/24 和 22/24，并单独报告关键事实、陈旧事实和重复失败风险。
-- 分层记忆 V1 契约已固定工作、语义、情景三类记忆，以及不可变来源、双向替代链、预算化召回和可追踪压缩报告；Runtime 自动抽取与集成将在后续 LCM 任务完成。
-- Memory Store 已接入共享 SQLite，支持原子迁移、写前脱敏、恢复去重、内容与步骤索引、压缩谱系、可选向量评分协议和任务级联清理；默认路径不依赖网络或外部向量数据库。
-- `memory` CLI 可按类型、状态、步骤和查询检查记忆，逐条展示总分、评分分量、来源与召回原因；`metrics` 和 `replay` 同步展示库存、耗时、压缩比、安全过滤及每个模型步骤使用的记忆。
-- `experiment-memory` 运行 LCM-10 的六种记忆消融，输出失败 taxonomy、结果指纹和仅针对最高频两类失败的优化阶段。
-- 首个 DeepSeek V4 Flash 真实长上下文场景已完成：12/12 份证据读取、仅修改目标文件、公开测试 1/1、隐藏测试 5/5，并记录 20 次记忆检索、3 次压缩、10 条语义替代、0 条过期命中和 15 次安全过滤。
-- 后续真实记忆场景扩展现已悬挂：该运行约 80k 提示缓存 Token 命中、141k 未命中；PCO-00～PCO-07 已完成缓存观测、稳定前缀、epoch、评测与门禁，当前先执行 PCR-00～PCR-05 的等价架构重构，避免继续扩大 Runtime 和顶层模块耦合。
-
-## 本地开发
-
-需要 Python 3.12 或更高版本：
+从源码安装：
 
 ```bash
-python -m pip install -e ".[dev]"
-ruff check .
-ruff format --check .
-mypy
-pytest
+git clone https://github.com/Glinfen/patch-loop.git
+cd patch-loop
+python -m venv .venv
 ```
 
-创建并读取任务：
+激活虚拟环境：
 
 ```bash
-patchloop task create "修复分页边界错误" --repo /path/to/repository
-patchloop task show <task-id> --repo /path/to/repository
-patchloop tools --repo /path/to/repository
-patchloop status <task-id> --repo /path/to/repository
-patchloop diff <task-id> --repo /path/to/repository
-patchloop trace <task-id> --repo /path/to/repository
-patchloop context <task-id> --repo /path/to/repository
-patchloop metrics <task-id> --repo /path/to/repository
-patchloop memory <task-id> --repo /path/to/repository \
-  --kind semantic --status active --step 4 --query "分页接口约束"
-patchloop replay <task-id> --repo /path/to/repository
-patchloop resume <task-id> --repo /path/to/repository
-patchloop cancel <task-id> --repo /path/to/repository
-patchloop index --repo /path/to/repository
-patchloop search "分页边界实现" --repo /path/to/repository --limit 5
-patchloop benchmark-search --tasks benchmarks/retrieval_tasks.json --root .
-patchloop benchmark --manifest benchmarks/evaluation_manifest.json --root . \
-  --variant all --jobs 4 --retries 1 \
-  --output benchmarks/results/week08_evaluation.json
-patchloop experiment --manifest benchmarks/evaluation_manifest.json --root . \
-  --repeats 5 --jobs 4 \
-  --output benchmarks/results/week09_experiments.json
-patchloop benchmark-code --manifest benchmarks/coding_tasks.json --root . \
-  --sandbox docker --repeats 1 \
-  --output benchmarks/results/code_benchmark_latest.json
-patchloop benchmark-memory --manifest benchmarks/memory_tasks.json --root . \
-  --variant task_memory_v1 --mode deterministic --repeats 3 \
-  --output benchmarks/results/lcm00_task_memory_v1.json
-patchloop experiment-memory --manifest benchmarks/memory_tasks.json --root . \
-  --mode deterministic --repeats 3 \
-  --output benchmarks/results/lcm10_memory_ablation.json
+# Linux / macOS
+source .venv/bin/activate
 ```
 
-运行 DeepSeek V4 Flash Agent：
+```powershell
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+```
 
-首次使用执行工具前构建标准沙箱镜像：
+安装 PatchLoop：
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install .
+patchloop --help
+```
+
+如果要使用默认 Docker 沙箱，先构建镜像：
 
 ```bash
 docker build -f docker/sandbox.Dockerfile -t patchloop-sandbox:py313 .
 ```
 
-```powershell
-$env:DEEPSEEK_API_KEY = Read-Host "DeepSeek API key" -MaskInput
-patchloop run "修复分页边界错误并运行回归测试" `
-  --repo C:\path\to\repository `
-  --allow-write `
-  --allow-execute `
-  --sandbox docker `
-  --max-context-tokens 32000 `
-  --max-tool-output-chars 8000 `
-  --max-cost-usd 1.0
+## 配置模型
+
+最少只需设置 API Key：
+
+```bash
+export DEEPSEEK_API_KEY="your-api-key"
 ```
 
-密钥默认从进程环境变量读取；`benchmark-code` 和模型模式的 `benchmark-memory` 还可以显式读取评测根目录下已被 Git 忽略的 `.env`。Provider 上下文、任务、轨迹、SQLite 和产物会对 API Key、Bearer Token、密码及常见敏感字段统一脱敏。默认权限为只读；只有显式传入 `--allow-write` 和 `--allow-execute` 才允许修改文件与运行测试。默认执行后端是无网络 Docker 沙箱；`--sandbox local` 仅用于受信任环境的兼容调试，不提供操作系统级隔离。
+```powershell
+$env:DEEPSEEK_API_KEY = Read-Host "DeepSeek API key" -MaskInput
+```
 
-上述两个评测命令的 `.env` 支持 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL_ID` 以及对应的 `DEEPSEEK_*` 变量；显式进程环境变量优先。`benchmark-memory --mode deterministic` 不读取 `.env`。对任意目标仓库执行 `run` 或 `resume` 时不会自动信任仓库内的 `.env`。
+也可以覆盖服务地址和模型：
 
-当前版本已完成“检索 → 规划 → 修改 → 沙箱测试 → diff → 汇报 → 回放”的确定性端到端闭环，并接入 DeepSeek V4 Flash、SQLite 检查点、任务恢复、可解释 Repository Intelligence、预算化上下文记忆、安全策略与可观测性。流式输出属于后续阶段。
+| 环境变量 | 备用变量 | 用途 | 默认值 |
+| --- | --- | --- | --- |
+| `DEEPSEEK_API_KEY` | `LLM_API_KEY` | API 凭据 | 无 |
+| `DEEPSEEK_BASE_URL` | `LLM_BASE_URL` | OpenAI-compatible API 地址 | `https://api.deepseek.com` |
+| `DEEPSEEK_MODEL` | `LLM_MODEL_ID` | 模型名称 | `deepseek-v4-flash` |
 
-`benchmarks/fixtures/calculator_bug` 提供了第一个固定缺陷仓库，后续写入闭环以 `benchmarks/tasks/calculator_bug.json` 作为自动验收任务。
+`run`、`resume` 和 Session 的 `start/resume` 只读取当前进程环境变量，不会自动信任目标仓库中的
+`.env`。Provider 上下文、SQLite、轨迹和任务产物会对常见 API Key、Bearer Token、密码及敏感
+字段进行脱敏。
+
+## 快速开始
+
+先准备一个独立 Git 仓库。不要把第一次试运行指向 PatchLoop 自身或包含重要未提交改动的目录：
+
+```bash
+mkdir -p /tmp/patchloop-demo
+cd /tmp/patchloop-demo
+git init
+printf '# Demo\n' > README.md
+git add README.md
+git commit -m "initial state"
+```
+
+以下命令中的 `/path/to/repository` 均替换为这个独立仓库的绝对路径。
+
+### 1. 创建并启动 Session
+
+创建 Session；输出中的 `session_id` 用于后续命令：
+
+```bash
+patchloop session --repo /path/to/repository create
+```
+
+启动任务。只有 `start` 和 `resume` 会获取 Execution 并调用模型：
+
+```bash
+patchloop session --repo /path/to/repository start <session-id> \
+  "修复分页边界错误并补充回归测试" \
+  --allow-write \
+  --allow-execute \
+  --sandbox docker
+```
+
+默认权限仍然只有读取：
+
+- `--allow-write` 允许 PatchLoop 创建和修改仓库文件。
+- `--allow-execute` 允许 PatchLoop 运行受限命令和测试。
+- `--sandbox docker` 使用无网络、受资源限制的 Docker 沙箱。
+- `--sandbox local` 直接在主机运行命令，仅适合受信任的仓库和环境。
+
+`create` 和 `enter` 不会自行执行未知动作。任务数据库、检查点、事件轨迹与报告保存在目标仓库的
+`.patchloop/` 中。
+
+### 2. 从第二终端补充约束或控制执行
+
+`start` 正在运行时，可以从另一个终端读取状态并追加约束：
+
+```bash
+patchloop session --repo /path/to/repository show <session-id>
+patchloop session --repo /path/to/repository send <session-id> \
+  "不要修改公共 API；先补充边界回归测试" \
+  --client-submission-id constraint-001
+```
+
+`client-submission-id` 可用于安全重试提交；相同 ID 和内容不会生成重复 Turn。暂停和最终取消也可
+从第二终端提交：
+
+```bash
+patchloop session --repo /path/to/repository pause <session-id>
+patchloop session --repo /path/to/repository cancel <session-id>
+```
+
+执行中的 Ctrl+C 会提交 pause 并显示清理状态；退出 `session enter` 只离开交互界面，不会取消任务。
+
+### 3. 明确审批并继续
+
+写入或执行动作需要持久化的一次性 Approval。缺少授权时，`start` 或 `resume` 返回
+`waiting_for_approval`、Approval ID 和退出码 10，后端动作不会执行：
+
+```bash
+patchloop approval --repo /path/to/repository list <task-id>
+patchloop approval --repo /path/to/repository decide <approval-id> --approve --source operator
+patchloop session --repo /path/to/repository resume <session-id>
+```
+
+拒绝动作时使用 `--deny`。Approval 精确绑定 Effect、参数、工作区、策略版本和配置版本，只能消费
+一次；审批命令本身不会隐式启动新的执行者。
+
+CI 也必须执行相同的显式 `list → decide → resume` 流程。旧 `run --non-interactive` 和默认的
+`non_interactive=true` 不再自动批准写入或执行；该选项仅保留兼容性，不能作为授权。
+
+### 4. 重启和 unknown Effect 恢复
+
+终端或 PatchLoop 进程退出后，重新运行以下命令即可读取 workspace-local SQLite 中的状态：
+
+```bash
+patchloop session --repo /path/to/repository show <session-id>
+patchloop session --repo /path/to/repository resume <session-id>
+```
+
+普通暂停或审批等待可直接恢复。如果状态为 `recovery_required`，先查看证据：
+
+```bash
+patchloop session --repo /path/to/repository recover <session-id>
+```
+
+此状态表示原动作结果未知。普通 `resume` 或 `approval decide` 不会重试它。应根据外部证据选择确认
+成功、确认失败、放弃或创建全新的重试 Effect：
+
+```bash
+patchloop session --repo /path/to/repository recover <session-id> \
+  --effect-id <effect-id> \
+  --confirm-success \
+  --result "verified result" \
+  --evidence '{"verified_by":"operator"}'
+
+patchloop session --repo /path/to/repository recover <session-id> \
+  --effect-id <effect-id> \
+  --retry \
+  --acknowledge-duplicate-risk \
+  --evidence '{"reviewed_by":"operator"}'
+```
+
+原动作可能已经产生外部副作用，因此重试可能重复执行。JSON 模式必须显式传入
+`--acknowledge-duplicate-risk`；`--human` 模式可以进行交互确认。新重试仍会生成独立 Approval，
+需要批准后再 `resume`。
+
+### 5. 查看 diff、报告和轨迹
+
+`session show` 返回活动目标、计划变化、模型/工具边界、测试结果、Execution 所有权、待审批项和
+可复制的下一步命令。也可以使用兼容的 Task 查询入口：
+
+## 任务恢复与检查
+
+`session start` 或兼容入口 `run` 输出的 Task ID 可用于后续操作：
+
+```bash
+patchloop status <task-id> --repo /path/to/repository
+patchloop diff <task-id> --repo /path/to/repository
+patchloop trace <task-id> --repo /path/to/repository
+patchloop metrics <task-id> --repo /path/to/repository
+patchloop context <task-id> --repo /path/to/repository
+patchloop replay <task-id> --repo /path/to/repository
+patchloop resume <task-id> --repo /path/to/repository
+patchloop cancel <task-id> --repo /path/to/repository
+```
+
+其中：
+
+- `status` 查看任务状态、预算和最终报告。
+- `diff` 查看 PatchLoop 记录的代码变更。
+- `trace` 查看逐步事件轨迹。
+- `metrics` 查看耗时、工具调用、Token、费用和失败统计。
+- `context` 查看模型上下文预算、裁剪结果和记忆占用。
+- `replay` 按顺序回放执行过程。
+- `resume` 从持久化检查点继续未完成任务。
+- `cancel` 请求取消任务。
+
+## 旧数据库升级与回退
+
+升级 PatchLoop 前先停止该仓库的所有 PatchLoop 执行者，并复制整个 `.patchloop/` 目录作为外部
+备份。新版本第一次打开 `.patchloop/patchloop.db` 时会在事务中升级旧库；有既有数据时还会在
+`.patchloop/backups/` 创建升级前 SQLite 快照和同名 JSON manifest：
+
+```bash
+patchloop session --repo /path/to/repository list
+```
+
+升级不会重复创建映射。旧的已完成 Task 会映射为只读 Session；无法证明安全恢复的旧活动 Task
+会进入 `recovery_required`，必须通过 `session recover` 核验，不能直接重跑。
+
+需要回退时：
+
+1. 停止所有 PatchLoop 执行者，确认没有进程仍在写该仓库。
+2. 找到 `.patchloop/backups/*.sqlite` 及其 `.sqlite.json` manifest。
+3. 使用经过校验的回退函数恢复升级前快照；它会先保留当前升级后数据库。
+4. 再安装 manifest 中记录的兼容 PatchLoop 版本。不要用旧版本直接打开升级后的数据库。
+
+```bash
+python -c "from pathlib import Path; from patchloop.sqlite_support import restore_migration_backup; print(restore_migration_backup(Path('/path/to/repository/.patchloop/patchloop.db'), Path('/path/to/repository/.patchloop/backups/<backup>.sqlite'), writers_stopped=True))"
+```
+
+如果外部备份与自动快照都不存在，不要尝试手工删除表或修改 schema version；保留数据库并先恢复
+备份或升级到兼容版本。
+
+## 代码检索
+
+建立或刷新仓库索引：
+
+```bash
+patchloop index --repo /path/to/repository
+```
+
+检索代码：
+
+```bash
+patchloop search "分页边界实现" --repo /path/to/repository --limit 5
+```
+
+查看 Agent 可用工具：
+
+```bash
+patchloop tools --repo /path/to/repository
+```
+
+## 记忆检查
+
+可以按类型、状态、步骤和查询条件检查任务记忆：
+
+```bash
+patchloop memory <task-id> \
+  --repo /path/to/repository \
+  --kind semantic \
+  --status active \
+  --step 4 \
+  --query "分页接口约束"
+```
+
+每条结果会展示来源、召回原因、评分分量和替代关系，便于判断 Agent 为什么使用某段历史信息。
+
+## 安全说明
+
+- 默认只读；写入与执行必须由命令行参数显式开启。
+- 文件工具限制在目标仓库内，并检查路径穿越和符号链接边界。
+- Docker 沙箱默认关闭网络，并限制挂载、CPU、内存、进程数、Linux capabilities 和运行时间。
+- Workspace writer 使用数据库租约和 fencing generation，旧执行者不能提交新结果或释放新 owner
+  的租约。
+- 租约过期后仍会核验受管进程树或容器；无法确认已停止时，任务进入
+  `recovery_required`，不会直接开放新的写执行。
+- 本地沙箱不提供系统级隔离。对不可信仓库或命令，应使用 Docker 后端。
+
+## 常用命令
+
+| 命令 | 用途 |
+| --- | --- |
+| `patchloop session create/start` | 创建 Session 并启动活动 Task |
+| `patchloop session show/send` | 查看 Session 或追加持久化约束 |
+| `patchloop session pause/cancel/resume/close` | 控制 Session 生命周期 |
+| `patchloop session recover` | 检查并显式处置 unknown Effect |
+| `patchloop approval list/decide` | 查看和决定一次性精确审批 |
+| `patchloop run/resume` | 兼容的旧任务启动和恢复入口 |
+| `patchloop status` | 查看任务状态和报告 |
+| `patchloop diff` | 查看代码变更 |
+| `patchloop trace` | 查看事件轨迹 |
+| `patchloop replay` | 回放任务执行过程 |
+| `patchloop metrics` | 查看运行指标与成本 |
+| `patchloop context` | 检查上下文构建结果 |
+| `patchloop memory` | 检索和解释任务记忆 |
+| `patchloop index` | 建立仓库代码索引 |
+| `patchloop search` | 执行混合代码检索 |
+| `patchloop tools` | 列出可用工具及输入 Schema |
+
+运行 `patchloop <command> --help` 可以查看某个命令的全部参数。

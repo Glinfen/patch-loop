@@ -122,6 +122,30 @@ def test_confirm_result_persists_evidence_and_terminal_effect(recovery_store: ob
     )
 
 
+def test_persisted_recovery_helpers_do_not_require_callers_to_rebuild_effect_identity(
+    recovery_store: object,
+) -> None:
+    task, unknown = _unknown_effect(recovery_store)
+    service = RecoveryService(recovery_store)
+
+    assert service.pending(task.id) == [unknown]
+
+    resolution = service.confirm_persisted_result(
+        task_id=task.id,
+        unknown_effect_id=unknown.id,
+        success=True,
+        output="verified by operator",
+        evidence={"ticket": "INC-43"},
+        decision_source="cli",
+    )
+
+    assert resolution.task.runtime_condition is TaskRuntimeCondition.IDLE
+    assert service.pending(task.id) == []
+    result = recovery_store.get_tool_result(task.id, unknown.provider_call_id)
+    assert result is not None
+    assert result.output == "verified by operator"
+
+
 def test_create_retry_keeps_unknown_and_requires_new_exact_approval(
     recovery_store: object,
 ) -> None:
@@ -154,6 +178,7 @@ def test_create_retry_keeps_unknown_and_requires_new_exact_approval(
         unknown_effect_id=unknown.id,
         retry_effect=retry,
         approval=approval,
+        duplicate_risk_acknowledged=True,
         evidence={"duplicate_risk_acknowledged": True},
         decision_source="operator",
         expected_version=task.version,
@@ -170,6 +195,49 @@ def test_create_retry_keeps_unknown_and_requires_new_exact_approval(
     assert original_observation is not None
     assert '"backend_result": "unknown"' in original_observation.output
     assert retry.id in original_observation.output
+
+
+def test_retry_pending_builds_a_new_exact_effect_and_approval(recovery_store: object) -> None:
+    task, unknown = _unknown_effect(recovery_store)
+
+    resolution = RecoveryService(recovery_store).retry_pending(
+        task_id=task.id,
+        unknown_effect_id=unknown.id,
+        duplicate_risk_acknowledged=True,
+        evidence={"duplicate_risk_acknowledged": True},
+        decision_source="cli",
+        policy_version="policy-1",
+        config_version="1",
+    )
+
+    assert resolution.retry_effect is not None
+    assert resolution.retry_effect.id != unknown.id
+    assert resolution.retry_effect.retry_of_effect_id == unknown.id
+    assert resolution.retry_effect.status is EffectStatus.WAITING_FOR_APPROVAL
+    assert resolution.retry_approval is not None
+    assert resolution.retry_approval.effect_id == resolution.retry_effect.id
+
+
+def test_retry_pending_rejects_missing_duplicate_risk_acknowledgement_without_mutation(
+    recovery_store: object,
+) -> None:
+    task, unknown = _unknown_effect(recovery_store)
+    service = RecoveryService(recovery_store)
+
+    with pytest.raises(ValueError, match="duplicate-risk acknowledgement"):
+        service.retry_pending(
+            task_id=task.id,
+            unknown_effect_id=unknown.id,
+            duplicate_risk_acknowledged=False,
+            evidence={"operator_note": "retry requested"},
+            decision_source="cli",
+            policy_version="policy-1",
+            config_version="1",
+        )
+
+    assert service.pending(task.id) == [unknown]
+    assert recovery_store.list_effects(task.id) == [unknown]
+    assert recovery_store.get_recovery_disposition_for_effect(unknown.id) is None
 
 
 def test_abandon_cancels_task_but_preserves_unknown_evidence(recovery_store: object) -> None:

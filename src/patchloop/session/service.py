@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import builtins
-from typing import TYPE_CHECKING, Any, Protocol
+import time
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from patchloop.domain import (
     Task,
@@ -12,7 +13,7 @@ from patchloop.domain import (
     TaskRuntimeCondition,
     TaskStatus,
 )
-from patchloop.execution.models import ControlKind, ControlRequest
+from patchloop.execution.models import ControlKind, ControlRequest, ControlStatus, Execution
 from patchloop.session.models import Session, Turn, TurnRole
 
 if TYPE_CHECKING:
@@ -54,6 +55,68 @@ class SessionService:
 
     def get(self, session_id: str) -> Session:
         return self.store.get_session(session_id)
+
+    def turns(self, session_id: str, *, after_sequence: int = 0) -> builtins.list[Turn]:
+        """Return persisted conversation turns in Session sequence order."""
+
+        return self.store.list_turns(session_id, after_sequence=after_sequence)
+
+    def active_task(self, session_id: str) -> Task | None:
+        """Return the active Task without exposing Store access to callers."""
+
+        session = self.store.get_session(session_id)
+        if session.active_task_id is None:
+            return None
+        return self.store.get_task(session.active_task_id)
+
+    def task(self, task_id: str) -> Task:
+        """Return a Task through the shared application-service boundary."""
+
+        return self.store.get_task(task_id)
+
+    def cancel_task(self, task_id: str) -> Task:
+        """Request cancellation through the task-compatible service surface."""
+
+        cancel = getattr(self.store, "cancel_task", None)
+        if not callable(cancel):
+            raise RuntimeError("Session store does not support task cancellation")
+        return cast(Task, cancel(task_id))
+
+    def control(self, request_id: str) -> ControlRequest:
+        """Return a persisted control request for cleanup/status reporting."""
+
+        return self.store.get_control_request(request_id)
+
+    def executions(self, task_id: str) -> builtins.list[Execution]:
+        """Return execution attempts in generation order."""
+
+        return self.store.list_executions(task_id)
+
+    def checkpoint(self, task_id: str) -> Any:
+        """Return the version-adapted checkpoint projection for presentation."""
+
+        return self._load_runtime_checkpoint(task_id)
+
+    def wait_for_control(
+        self,
+        request_id: str,
+        *,
+        timeout_seconds: float = 5.0,
+        poll_interval_seconds: float = 0.05,
+    ) -> ControlRequest:
+        """Wait briefly for cleanup to settle, returning the latest durable state."""
+
+        if timeout_seconds < 0 or poll_interval_seconds <= 0:
+            raise ValueError("control wait timing must be positive")
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            request = self.store.get_control_request(request_id)
+            if request.status in {ControlStatus.SETTLED, ControlStatus.CLEANUP_FAILED}:
+                return request
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return request
+            time.sleep(min(poll_interval_seconds, remaining))
 
     def append_message(
         self,
@@ -147,6 +210,17 @@ class SessionService:
             return task
         if task.status is TaskStatus.CREATED:
             return self.runtime.run(task)
+        checkpoint = self._load_runtime_checkpoint(task.id)
+        return self.runtime.resume(task, checkpoint)
+
+    def resume_task(self, task_id: str) -> Task:
+        """Resume either a Session Task or a legacy Task through one service."""
+
+        task = self.store.get_task(task_id)
+        if task.session_id is not None:
+            return self.resume(task.session_id)
+        if self.runtime is None:
+            raise RuntimeError("Session runtime is not configured")
         checkpoint = self._load_runtime_checkpoint(task.id)
         return self.runtime.resume(task, checkpoint)
 

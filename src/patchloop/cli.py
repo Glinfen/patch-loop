@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import IntEnum
+from functools import cached_property
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Never, cast
 
 import typer
 
@@ -39,7 +43,10 @@ from patchloop.evaluation import (
     load_memory_manifest,
     summarize_cache_run,
 )
-from patchloop.events import EventLogger
+from patchloop.events import EventLogger, lease_owner_summary
+from patchloop.execution.approvals import ApprovalService
+from patchloop.execution.models import Approval, Effect
+from patchloop.execution.recovery import RecoveryService
 from patchloop.intelligence import (
     RepositoryIndexer,
     RepositorySearch,
@@ -50,10 +57,21 @@ from patchloop.intelligence import (
 from patchloop.memory import MemoryKind, MemoryQuery, MemoryStatus, MemoryStoreError
 from patchloop.observability import TaskMetrics, TaskReplay
 from patchloop.persistence import SQLiteStore
-from patchloop.providers import DeepSeekProvider
+from patchloop.persistence_contracts import (
+    ApprovalConflict,
+    ContractError,
+    InputRevisionConflict,
+    LeaseConflict,
+    LeaseLost,
+    RecoveryRequired,
+    StaleVersion,
+    SubmissionConflict,
+)
+from patchloop.providers import DeepSeekProvider, ModelProvider
 from patchloop.runtime import AgentRuntime
 from patchloop.sandbox import DockerSandbox, DockerSandboxConfig, LocalProcessSandbox
-from patchloop.security import ApprovalRequest, RiskLevel
+from patchloop.security import RiskLevel
+from patchloop.session import SessionService
 from patchloop.storage import ArtifactStore, TaskNotFoundError
 from patchloop.tools import (
     ApplyPatchTool,
@@ -77,7 +95,56 @@ from patchloop.tools.base import Tool
 
 app = typer.Typer(help="PatchLoop local-first coding agent runtime.", no_args_is_help=True)
 task_app = typer.Typer(help="Create and inspect local tasks.", no_args_is_help=True)
+session_app = typer.Typer(help="Manage persistent PatchLoop sessions.", no_args_is_help=True)
+approval_app = typer.Typer(help="Inspect and decide persistent approvals.", no_args_is_help=True)
 app.add_typer(task_app, name="task")
+app.add_typer(session_app, name="session")
+app.add_typer(approval_app, name="approval")
+
+CLI_SCHEMA_VERSION = "1.0"
+
+
+class CliExitCode(IntEnum):
+    SUCCESS = 0
+    EXECUTION_FAILED = 1
+    USAGE_ERROR = 2
+    WAITING_FOR_APPROVAL = 10
+    PAUSED = 11
+    CONFLICT = 12
+    RECOVERY_REQUIRED = 13
+    CANCELLED = 14
+
+
+class InvalidRepository(ValueError):
+    """The selected workspace path is missing or is not a directory."""
+
+
+class CliUsageError(ValueError):
+    """A command configuration error that maps to the stable usage exit code."""
+
+
+@dataclass(frozen=True)
+class WorkspaceServices:
+    """Workspace-local application services available to CLI commands."""
+
+    repository: Path
+    json_output: bool = True
+
+    @cached_property
+    def store(self) -> SQLiteStore:
+        return _sqlite_store(self.repository)
+
+    @cached_property
+    def session(self) -> SessionService:
+        return SessionService(self.store)
+
+    @cached_property
+    def approval(self) -> ApprovalService:
+        return ApprovalService(self.store)
+
+    @cached_property
+    def recovery(self) -> RecoveryService:
+        return RecoveryService(self.store)
 
 
 def _state_dir(repository: Path) -> Path:
@@ -86,6 +153,1001 @@ def _state_dir(repository: Path) -> Path:
 
 def _sqlite_store(repository: Path) -> SQLiteStore:
     return SQLiteStore(_state_dir(repository) / "patchloop.db")
+
+
+def _workspace_services(repository: Path, *, json_output: bool = True) -> WorkspaceServices:
+    """Resolve the service boundary for a repository selected by the CLI."""
+
+    resolved = repository.resolve()
+    if not resolved.exists():
+        raise InvalidRepository(f"repository does not exist: {resolved}")
+    if not resolved.is_dir():
+        raise InvalidRepository(f"repository is not a directory: {resolved}")
+    return WorkspaceServices(repository=resolved, json_output=json_output)
+
+
+def _set_workspace_context(context: typer.Context, repository: Path, *, json_output: bool) -> None:
+    context.obj = _workspace_services(repository, json_output=json_output)
+
+
+@session_app.callback()
+def session_group(
+    context: typer.Context,
+    repo: Annotated[
+        Path,
+        typer.Option(resolve_path=True),
+    ] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json/--human")] = True,
+) -> None:
+    """Resolve the workspace used by all Session commands."""
+
+    try:
+        _set_workspace_context(context, repo, json_output=json_output)
+    except InvalidRepository as exc:
+        _command_error(exc)
+
+
+@approval_app.callback()
+def approval_group(
+    context: typer.Context,
+    repo: Annotated[
+        Path,
+        typer.Option(resolve_path=True),
+    ] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json/--human")] = True,
+) -> None:
+    """Resolve the workspace used by all Approval commands."""
+
+    try:
+        _set_workspace_context(context, repo, json_output=json_output)
+    except InvalidRepository as exc:
+        _command_error(exc)
+
+
+def _services_from_context(context: typer.Context) -> WorkspaceServices:
+    services = context.obj
+    if not isinstance(services, WorkspaceServices):
+        raise RuntimeError("workspace services are not configured")
+    return services
+
+
+def _echo_json(value: object) -> None:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    typer.echo(json.dumps(value, ensure_ascii=False, indent=2))
+
+
+def _echo_json_line(value: object) -> None:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    typer.echo(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def _command_error(exc: Exception) -> Never:
+    message = exc.args[0] if isinstance(exc, KeyError) and exc.args else str(exc)
+    conflict_types = (
+        ApprovalConflict,
+        InputRevisionConflict,
+        LeaseConflict,
+        LeaseLost,
+        StaleVersion,
+        SubmissionConflict,
+    )
+    if isinstance(exc, conflict_types):
+        category = "conflict"
+        exit_code = CliExitCode.CONFLICT
+    elif isinstance(exc, RecoveryRequired):
+        category = "recovery_required"
+        exit_code = CliExitCode.RECOVERY_REQUIRED
+    elif isinstance(exc, (KeyError, TaskNotFoundError)):
+        category = "not_found"
+        exit_code = CliExitCode.EXECUTION_FAILED
+    elif isinstance(exc, CliUsageError):
+        category = "usage_error"
+        exit_code = CliExitCode.USAGE_ERROR
+    elif isinstance(exc, InvalidRepository):
+        category = "invalid_repository"
+        exit_code = CliExitCode.EXECUTION_FAILED
+    elif isinstance(exc, ValueError):
+        category = "invalid_state"
+        exit_code = CliExitCode.EXECUTION_FAILED
+    else:
+        category = "execution_failed"
+        exit_code = CliExitCode.EXECUTION_FAILED
+    _echo_json(
+        {
+            "schema_version": CLI_SCHEMA_VERSION,
+            "session_id": None,
+            "task_id": None,
+            "execution_id": None,
+            "status": "error",
+            "latest_sequence": 0,
+            "pending_approvals": [],
+            "recovery_items": [],
+            "error_category": category,
+            "error": {
+                "category": category,
+                "message": str(message),
+                "details": getattr(exc, "details", {}),
+            },
+            "next_command": None,
+            "next_commands": [],
+        }
+    )
+    raise typer.Exit(code=int(exit_code)) from None
+
+
+def _provider_from_env() -> ModelProvider:
+    try:
+        return DeepSeekProvider.from_env()
+    except ValueError as exc:
+        raise CliUsageError(str(exc)) from exc
+
+
+def _session_runtime_service(
+    services: WorkspaceServices,
+    task: Task,
+    *,
+    provider: ModelProvider | None = None,
+) -> SessionService:
+    provider = _provider_from_env() if provider is None else provider
+    sandbox = _create_sandbox(
+        task.execution.sandbox_backend,
+        task.execution.sandbox_image,
+    )
+    trace = EventLogger(_state_dir(services.repository) / "traces" / f"{task.id}.jsonl")
+    gateway = ToolGateway(
+        ToolContext(services.repository, sandbox),
+        _all_tools(),
+        trace,
+        _tool_policy(task),
+    )
+    runtime = AgentRuntime(provider, gateway, trace, services.store)
+    return SessionService(services.store, runtime)
+
+
+def _tool_policy(task: Task) -> ToolPolicy:
+    permissions = frozenset(PermissionLevel(value) for value in task.execution.allowed_permissions)
+    return ToolPolicy(
+        permissions,
+        approval_threshold=RiskLevel.MEDIUM,
+        approval_handler=None,
+    )
+
+
+def _pause_interrupted_session(services: WorkspaceServices, session_id: str) -> None:
+    """Persist Ctrl+C as pause and drive cleanup to a durable boundary when possible."""
+
+    try:
+        request = services.session.request_pause(session_id)
+        task = services.session.active_task(session_id)
+        if task is not None:
+            with suppress(
+                ContractError,
+                OSError,
+                RuntimeError,
+                TaskNotFoundError,
+                ValueError,
+            ):
+                _session_runtime_service(services, task).resume(session_id)
+        current = services.session.wait_for_control(request.id)
+        current_task = services.session.active_task(session_id)
+        _echo_json(
+            _command_payload(
+                services,
+                data={
+                    "interrupted": True,
+                    "control": current.model_dump(mode="json"),
+                    "task": (
+                        None if current_task is None else current_task.model_dump(mode="json")
+                    ),
+                },
+                session_id=session_id,
+                task=current_task,
+            )
+        )
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _echo_json(
+            {
+                "schema_version": CLI_SCHEMA_VERSION,
+                "session_id": session_id,
+                "task_id": None,
+                "execution_id": None,
+                "status": "error",
+                "latest_sequence": 0,
+                "pending_approvals": [],
+                "recovery_items": [],
+                "error_category": "pause_request_failed",
+                "error": {
+                    "category": "pause_request_failed",
+                    "message": str(exc),
+                    "details": getattr(exc, "details", {}),
+                },
+                "next_command": None,
+                "next_commands": [],
+            }
+        )
+    raise typer.Exit(code=130)
+
+
+def _task_diff_projection(services: WorkspaceServices, task: Task) -> str:
+    if task.report is not None:
+        return task.report.diff or "No changes."
+    try:
+        checkpoint = services.session.checkpoint(task.id)
+    except (KeyError, TaskNotFoundError):
+        return "No changes."
+    context = ToolContext(services.repository)
+    context.changes.restore(checkpoint.change_snapshot)
+    return context.changes.diff() or "No changes."
+
+
+def _activity_projection(services: WorkspaceServices, task: Task) -> list[dict[str, object]]:
+    events = EventLogger(_state_dir(services.repository) / "traces" / f"{task.id}.jsonl").read()
+    replay = TaskReplay.from_events(task.id, events)
+    visible = {
+        "model.completed",
+        "tool.completed",
+        "tool.replayed",
+        "approval.waiting",
+        "effect.recovery_required",
+        "task.paused",
+        "task.completed",
+        "task.failed",
+        "task.cancelled",
+    }
+    return [
+        {
+            "sequence": frame.sequence,
+            "type": frame.type,
+            "step": frame.step,
+            "summary": frame.summary,
+            "data": frame.data,
+        }
+        for frame in replay.frames
+        if frame.type in visible
+    ]
+
+
+def _execution_projection(services: WorkspaceServices, task: Task) -> dict[str, object] | None:
+    executions = services.session.executions(task.id)
+    if not executions:
+        return None
+    execution = executions[-1]
+    active = execution.status.value not in {
+        "completed",
+        "failed",
+        "cancelled",
+        "released",
+    } and execution.lease_expires_at > datetime.now(UTC)
+    return {
+        "id": execution.id,
+        "status": execution.status.value,
+        "generation": execution.generation,
+        "owner": lease_owner_summary(execution.owner_id),
+        "lease_expires_at": execution.lease_expires_at.isoformat(),
+        "active": active,
+        "attempts": len(executions),
+    }
+
+
+def _next_commands(
+    services: WorkspaceServices,
+    session_id: str,
+    task: Task | None,
+    approvals: list[Approval],
+    recoveries: list[Effect],
+    *,
+    session_open: bool = True,
+) -> list[str]:
+    repository = json.dumps(str(services.repository), ensure_ascii=False)
+    prefix = f"patchloop session --repo {repository}"
+    if task is None:
+        return [f'{prefix} start {session_id} "<goal>"'] if session_open else []
+    inspection_commands = [
+        f"patchloop status {task.id} --repo {repository}",
+        f"patchloop diff {task.id} --repo {repository}",
+        f"patchloop replay {task.id} --repo {repository}",
+    ]
+    if task.outcome.value != "active":
+        return inspection_commands
+    commands = [
+        f'{prefix} send {session_id} "<message>"',
+        f"{prefix} pause {session_id}",
+        f"{prefix} cancel {session_id}",
+        *inspection_commands,
+    ]
+    if task.runtime_condition.value in {"paused", "idle", "waiting_for_approval"}:
+        commands.insert(0, f"{prefix} resume {session_id}")
+    for approval in approvals:
+        if approval.status.value != "pending":
+            continue
+        approval_prefix = f"patchloop approval --repo {repository} decide {approval.id}"
+        commands.extend([f"{approval_prefix} --approve", f"{approval_prefix} --deny"])
+    for effect in recoveries:
+        commands.append(f"{prefix} recover {session_id} --effect-id {effect.id}")
+    return commands
+
+
+def _task_presentation(
+    services: WorkspaceServices,
+    session_id: str,
+    task: Task,
+    approvals: list[Approval],
+    recoveries: list[Effect],
+) -> dict[str, object]:
+    payload = task.model_dump(mode="json")
+    activity = _activity_projection(services, task)
+    current_plan = task.plan
+    if current_plan is None:
+        with suppress(KeyError, TaskNotFoundError):
+            current_plan = services.session.checkpoint(task.id).plan
+    plan_changes = [
+        item
+        for item in activity
+        if item["type"] in {"tool.completed", "tool.replayed"}
+        and isinstance(item["data"], dict)
+        and isinstance(item["data"].get("call"), dict)
+        and item["data"]["call"].get("name") == "update_plan"
+    ]
+    test_results: list[object] = (
+        []
+        if task.report is None
+        else [item.model_dump(mode="json") for item in task.report.validations]
+    )
+    if not test_results:
+        test_results = [
+            item["data"]["result"]
+            for item in activity
+            if item["type"] in {"tool.completed", "tool.replayed"}
+            and isinstance(item["data"], dict)
+            and isinstance(item["data"].get("call"), dict)
+            and item["data"]["call"].get("name") in {"run_tests", "run_command"}
+            and isinstance(item["data"].get("result"), dict)
+        ]
+    payload.update(
+        {
+            "workspace": str(services.repository),
+            "execution": _execution_projection(services, task),
+            "activity": activity,
+            "plan": (None if current_plan is None else current_plan.model_dump(mode="json")),
+            "plan_changes": plan_changes,
+            "test_results": test_results,
+            "diff": _task_diff_projection(services, task),
+            "next_commands": _next_commands(
+                services,
+                session_id,
+                task,
+                approvals,
+                recoveries,
+            ),
+        }
+    )
+    return payload
+
+
+def _effective_task_status(task: Task) -> str:
+    condition = task.runtime_condition.value
+    if condition in {"waiting_for_approval", "pausing", "paused", "recovery_required"}:
+        return condition
+    return task.outcome.value if task.outcome.value != "active" else condition
+
+
+def _task_exit_code(task: Task) -> CliExitCode:
+    return {
+        "waiting_for_approval": CliExitCode.WAITING_FOR_APPROVAL,
+        "pausing": CliExitCode.PAUSED,
+        "paused": CliExitCode.PAUSED,
+        "recovery_required": CliExitCode.RECOVERY_REQUIRED,
+        "failed": CliExitCode.EXECUTION_FAILED,
+        "cancelled": CliExitCode.CANCELLED,
+    }.get(_effective_task_status(task), CliExitCode.SUCCESS)
+
+
+def _command_payload(
+    services: WorkspaceServices,
+    *,
+    data: dict[str, object] | None = None,
+    session_id: str | None = None,
+    task: Task | None = None,
+    approvals: list[Approval] | None = None,
+    recoveries: list[Effect] | None = None,
+    status: str = "ok",
+    next_commands: list[str] | None = None,
+) -> dict[str, object]:
+    session = None
+    if session_id is not None:
+        with suppress(KeyError):
+            session = services.session.get(session_id)
+    approvals = list(approvals or ())
+    recoveries = list(recoveries or ())
+    if task is not None:
+        status = _effective_task_status(task)
+        if not approvals:
+            approvals = services.approval.list(task.id)
+        if not recoveries:
+            recoveries = services.recovery.pending(task.id)
+    execution = None if task is None else _execution_projection(services, task)
+    commands = list(next_commands or ())
+    if not commands and session_id is not None:
+        commands = _next_commands(
+            services,
+            session_id,
+            task,
+            approvals,
+            recoveries,
+            session_open=session is None or session.status.value == "open",
+        )
+    payload = dict(data or {})
+    payload.update(
+        {
+            "schema_version": CLI_SCHEMA_VERSION,
+            "session_id": session_id,
+            "task_id": None if task is None else task.id,
+            "execution_id": None if execution is None else execution["id"],
+            "status": status,
+            "latest_sequence": 0 if session is None else session.event_sequence,
+            "pending_approvals": [
+                {
+                    "id": approval.id,
+                    "effect_id": approval.effect_id,
+                    "status": approval.status.value,
+                    "action": approval.action_summary,
+                    "resources": approval.resource_summary,
+                }
+                for approval in approvals
+                if approval.status.value == "pending"
+            ],
+            "recovery_items": [
+                {
+                    "id": effect.id,
+                    "tool_name": effect.tool_name,
+                    "action_kind": effect.action_kind,
+                    "evidence": effect.reconciliation_evidence,
+                }
+                for effect in recoveries
+            ],
+            "error_category": None,
+            "error": None,
+            "next_command": commands[0] if commands else None,
+            "next_commands": commands,
+        }
+    )
+    return payload
+
+
+def _echo_task_result(
+    services: WorkspaceServices,
+    session_id: str,
+    task: Task,
+    *,
+    exit_for_state: bool = False,
+) -> None:
+    approvals = services.approval.list(task.id)
+    recoveries = services.recovery.pending(task.id)
+    presentation = _task_presentation(services, session_id, task, approvals, recoveries)
+    _echo_json(
+        _command_payload(
+            services,
+            data=presentation,
+            session_id=session_id,
+            task=task,
+            approvals=approvals,
+            recoveries=recoveries,
+            next_commands=cast(list[str], presentation["next_commands"]),
+        )
+    )
+    if exit_for_state and (exit_code := _task_exit_code(task)) is not CliExitCode.SUCCESS:
+        raise typer.Exit(code=int(exit_code))
+
+
+@session_app.command("create")
+def create_session(context: typer.Context) -> None:
+    """Create a persistent Session for this workspace without starting work."""
+
+    services = _services_from_context(context)
+    try:
+        session = services.session.create(str(services.repository))
+    except (ContractError, ValueError) as exc:
+        _command_error(exc)
+    _echo_json(
+        _command_payload(
+            services,
+            data=session.model_dump(mode="json"),
+            session_id=session.id,
+            status=session.status.value,
+        )
+    )
+
+
+@session_app.command("list")
+def list_sessions(context: typer.Context) -> None:
+    """List Sessions belonging to this workspace."""
+
+    services = _services_from_context(context)
+    sessions = services.session.list(str(services.repository))
+    _echo_json(
+        _command_payload(
+            services,
+            data={"items": [session.model_dump(mode="json") for session in sessions]},
+        )
+    )
+
+
+@session_app.command("show")
+def show_session(
+    context: typer.Context,
+    session_id: Annotated[str, typer.Argument()],
+) -> None:
+    """Show persisted conversation and current execution state."""
+
+    services = _services_from_context(context)
+    try:
+        session = services.session.get(session_id)
+        turns = services.session.turns(session_id)
+        task = services.session.active_task(session_id)
+        approvals = [] if task is None else services.approval.list(task.id)
+        recoveries = [] if task is None else services.recovery.pending(task.id)
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    presentation = (
+        None
+        if task is None
+        else _task_presentation(services, session_id, task, approvals, recoveries)
+    )
+    data: dict[str, object] = {
+        "session": session.model_dump(mode="json"),
+        "workspace": str(services.repository),
+        "turns": [turn.model_dump(mode="json") for turn in turns],
+        "active_task": presentation,
+        "approvals": [approval.model_dump(mode="json") for approval in approvals],
+        "recovery_required": [effect.model_dump(mode="json") for effect in recoveries],
+        "next_commands": _next_commands(
+            services,
+            session_id,
+            task,
+            approvals,
+            recoveries,
+            session_open=session.status.value == "open",
+        ),
+    }
+    _echo_json(
+        _command_payload(
+            services,
+            data=data,
+            session_id=session.id,
+            task=task,
+            approvals=approvals,
+            recoveries=recoveries,
+            status=session.status.value,
+            next_commands=cast(list[str], data["next_commands"]),
+        )
+    )
+
+
+@session_app.command("start")
+def start_session_task(
+    context: typer.Context,
+    session_id: Annotated[str, typer.Argument()],
+    goal: Annotated[str, typer.Argument(help="Natural-language development goal.")],
+    allow_write: Annotated[bool, typer.Option()] = False,
+    allow_execute: Annotated[bool, typer.Option()] = False,
+    sandbox: Annotated[
+        str, typer.Option(help="Command sandbox backend: docker or local.")
+    ] = "docker",
+) -> None:
+    """Create the Session's active Task and run it until the next boundary."""
+
+    services = _services_from_context(context)
+    permissions = [PermissionLevel.READ.value]
+    if allow_write:
+        permissions.append(PermissionLevel.WRITE.value)
+    if allow_execute:
+        permissions.append(PermissionLevel.EXECUTE.value)
+    try:
+        task = services.session.start_task(
+            session_id,
+            goal,
+            execution=TaskExecutionConfig(
+                allowed_permissions=permissions,
+                non_interactive=True,
+                sandbox_backend=sandbox,
+            ),
+        )
+    except (ContractError, KeyError, OSError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    try:
+        result = _session_runtime_service(services, task).resume(session_id)
+    except KeyboardInterrupt:
+        _pause_interrupted_session(services, session_id)
+    except (ContractError, KeyError, OSError, RuntimeError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    _echo_task_result(services, session_id, result, exit_for_state=True)
+
+
+@session_app.command("send")
+def send_session_message(
+    context: typer.Context,
+    session_id: Annotated[str, typer.Argument()],
+    message: Annotated[str, typer.Argument()],
+    client_submission_id: Annotated[str | None, typer.Option()] = None,
+) -> None:
+    """Persist a message for the active Task."""
+
+    services = _services_from_context(context)
+    try:
+        if services.session.active_task(session_id) is None:
+            raise ValueError(f"session {session_id} has no active task")
+        turn = services.session.append_message(
+            session_id,
+            message,
+            client_submission_id=client_submission_id,
+        )
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    task = services.session.active_task(session_id)
+    _echo_json(
+        _command_payload(
+            services,
+            data=turn.model_dump(mode="json"),
+            session_id=session_id,
+            task=task,
+        )
+    )
+
+
+@session_app.command("pause")
+def pause_session(context: typer.Context, session_id: Annotated[str, typer.Argument()]) -> None:
+    """Persist a pause request for the active Task."""
+
+    services = _services_from_context(context)
+    try:
+        request = services.session.request_pause(session_id)
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    task = services.session.active_task(session_id)
+    _echo_json(
+        _command_payload(
+            services,
+            data=request.model_dump(mode="json"),
+            session_id=session_id,
+            task=task,
+            status="pause_requested",
+        )
+    )
+
+
+@session_app.command("cancel")
+def cancel_session(context: typer.Context, session_id: Annotated[str, typer.Argument()]) -> None:
+    """Persist a final cancellation request for the active Task."""
+
+    services = _services_from_context(context)
+    try:
+        request = services.session.request_cancel(session_id)
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    task = services.session.active_task(session_id)
+    _echo_json(
+        _command_payload(
+            services,
+            data=request.model_dump(mode="json"),
+            session_id=session_id,
+            task=task,
+            status="cancel_requested",
+        )
+    )
+
+
+@session_app.command("resume")
+def resume_session(context: typer.Context, session_id: Annotated[str, typer.Argument()]) -> None:
+    """Resume the active Task without changing its persisted authorization."""
+
+    services = _services_from_context(context)
+    try:
+        task = services.session.active_task(session_id)
+        if task is None:
+            raise ValueError(f"session {session_id} has no active task")
+    except (ContractError, KeyError, OSError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    try:
+        result = _session_runtime_service(services, task).resume(session_id)
+    except KeyboardInterrupt:
+        _pause_interrupted_session(services, session_id)
+    except (ContractError, KeyError, OSError, RuntimeError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    _echo_task_result(services, session_id, result, exit_for_state=True)
+
+
+@session_app.command("close")
+def close_session(context: typer.Context, session_id: Annotated[str, typer.Argument()]) -> None:
+    """Close a Session which has no active Task."""
+
+    services = _services_from_context(context)
+    try:
+        session = services.session.close(session_id)
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    _echo_json(
+        _command_payload(
+            services,
+            data=session.model_dump(mode="json"),
+            session_id=session.id,
+            status=session.status.value,
+        )
+    )
+
+
+@session_app.command("recover")
+def show_session_recovery(
+    context: typer.Context,
+    session_id: Annotated[str, typer.Argument()],
+    effect_id: Annotated[str | None, typer.Option()] = None,
+    abandon: Annotated[bool, typer.Option()] = False,
+    retry: Annotated[bool, typer.Option()] = False,
+    acknowledge_duplicate_risk: Annotated[
+        bool,
+        typer.Option(
+            "--acknowledge-duplicate-risk",
+            help="Acknowledge that retry may repeat an external side effect.",
+        ),
+    ] = False,
+    confirm_success: Annotated[bool, typer.Option()] = False,
+    confirm_failure: Annotated[bool, typer.Option()] = False,
+    result: Annotated[str, typer.Option()] = "",
+    evidence: Annotated[str, typer.Option(help="JSON object with operator evidence.")] = "{}",
+    source: Annotated[str, typer.Option()] = "cli",
+) -> None:
+    """Inspect or explicitly resolve an Effect whose result is unknown."""
+
+    services = _services_from_context(context)
+    try:
+        task = services.session.active_task(session_id)
+        effects = [] if task is None else services.recovery.pending(task.id)
+        actions = sum((abandon, retry, confirm_success, confirm_failure))
+        if actions == 0:
+            repository = json.dumps(str(services.repository), ensure_ascii=False)
+            command_prefix = f"patchloop session --repo {repository} recover {session_id}"
+            items = [
+                {
+                    **effect.model_dump(mode="json"),
+                    "result_state": "unknown",
+                    "retry_may_duplicate_external_side_effect": True,
+                    "retry_requires_duplicate_risk_acknowledgement": True,
+                    "warning": (
+                        "The original action result is unknown. Retrying may repeat an "
+                        "external side effect."
+                    ),
+                    "next_commands": [
+                        f"{command_prefix} --effect-id {effect.id} --confirm-success "
+                        '--result "<observed result>" --evidence \'{"verified_by":"<name>"}\'',
+                        f"{command_prefix} --effect-id {effect.id} --retry "
+                        "--acknowledge-duplicate-risk "
+                        "--evidence '{\"duplicate_risk_acknowledged\":true}'",
+                        f"{command_prefix} --effect-id {effect.id} --abandon "
+                        '--evidence \'{"reason":"<reason>"}\'',
+                    ],
+                }
+                for effect in effects
+            ]
+            _echo_json(
+                _command_payload(
+                    services,
+                    data={"items": items},
+                    session_id=session_id,
+                    task=task,
+                    recoveries=effects,
+                    next_commands=[
+                        command
+                        for item in items
+                        for command in cast(list[str], item["next_commands"])
+                    ],
+                )
+            )
+            return
+        if actions != 1 or effect_id is None or task is None:
+            raise ValueError(
+                "choose exactly one recovery action and provide --effect-id for an active task"
+            )
+        evidence_value = json.loads(evidence)
+        if not isinstance(evidence_value, dict) or not evidence_value:
+            raise ValueError("recovery action requires a non-empty JSON evidence object")
+        if abandon:
+            resolution = services.recovery.abandon_pending(
+                task_id=task.id,
+                unknown_effect_id=effect_id,
+                evidence=evidence_value,
+                decision_source=source,
+            )
+        elif retry:
+            if not acknowledge_duplicate_risk:
+                if services.json_output:
+                    raise ValueError(
+                        "--retry requires --acknowledge-duplicate-risk because the "
+                        "original action result is unknown and retry may duplicate it"
+                    )
+                acknowledge_duplicate_risk = typer.confirm(
+                    "The original action result is unknown and retry may duplicate an "
+                    "external side effect. Create a new retry Effect?",
+                    default=False,
+                )
+            resolution = services.recovery.retry_pending(
+                task_id=task.id,
+                unknown_effect_id=effect_id,
+                duplicate_risk_acknowledged=acknowledge_duplicate_risk,
+                evidence=evidence_value,
+                decision_source=source,
+                policy_version=_tool_policy(task).version,
+                config_version=services.session.get(session_id).config_version,
+            )
+        else:
+            resolution = services.recovery.confirm_persisted_result(
+                task_id=task.id,
+                unknown_effect_id=effect_id,
+                success=confirm_success,
+                output=result,
+                evidence=evidence_value,
+                decision_source=source,
+            )
+    except (ContractError, json.JSONDecodeError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    resolution_data: dict[str, object] = {
+        "task": resolution.task.model_dump(mode="json"),
+        "disposition": resolution.disposition.model_dump(mode="json"),
+        "retry_effect": (
+            None
+            if resolution.retry_effect is None
+            else resolution.retry_effect.model_dump(mode="json")
+        ),
+        "retry_approval": (
+            None
+            if resolution.retry_approval is None
+            else resolution.retry_approval.model_dump(mode="json")
+        ),
+    }
+    approvals = services.approval.list(resolution.task.id)
+    recoveries = services.recovery.pending(resolution.task.id)
+    presentation = _task_presentation(
+        services,
+        session_id,
+        resolution.task,
+        approvals,
+        recoveries,
+    )
+    presentation["recovery_resolution"] = resolution_data
+    _echo_json(
+        _command_payload(
+            services,
+            data=presentation,
+            session_id=session_id,
+            task=resolution.task,
+            approvals=approvals,
+            recoveries=recoveries,
+            next_commands=cast(list[str], presentation["next_commands"]),
+        )
+    )
+    if (exit_code := _task_exit_code(resolution.task)) is not CliExitCode.SUCCESS:
+        raise typer.Exit(code=int(exit_code))
+
+
+@session_app.command("enter")
+def enter_session(
+    context: typer.Context,
+    session_id: Annotated[str, typer.Argument()],
+) -> None:
+    """Enter a lightweight persistent-message loop; use /exit to leave it."""
+
+    services = _services_from_context(context)
+    try:
+        services.session.get(session_id)
+    except (ContractError, KeyError, ValueError) as exc:
+        _command_error(exc)
+    if not services.json_output:
+        typer.echo(f"Entered session {session_id}. Use /exit to leave without cancelling.")
+    while True:
+        try:
+            message = input() if services.json_output else typer.prompt("message")
+        except (KeyboardInterrupt, typer.Abort):
+            _pause_interrupted_session(services, session_id)
+        if message.strip() in {"/exit", "/quit"}:
+            exit_payload = _command_payload(
+                services,
+                data={"exited": True, "control_requested": False},
+                session_id=session_id,
+                task=services.session.active_task(session_id),
+                status="exited",
+                next_commands=[],
+            )
+            (_echo_json_line if services.json_output else _echo_json)(exit_payload)
+            return
+        if not message.strip():
+            continue
+        try:
+            if services.session.active_task(session_id) is None:
+                raise ValueError(f"session {session_id} has no active task")
+            turn = services.session.append_message(session_id, message)
+        except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+            _command_error(exc)
+        turn_payload = _command_payload(
+            services,
+            data=turn.model_dump(mode="json"),
+            session_id=session_id,
+            task=services.session.active_task(session_id),
+        )
+        (_echo_json_line if services.json_output else _echo_json)(turn_payload)
+
+
+@approval_app.command("list")
+def list_approvals(
+    context: typer.Context,
+    task_id: Annotated[str, typer.Argument()],
+) -> None:
+    """List persisted approval requests for a Task."""
+
+    services = _services_from_context(context)
+    try:
+        approvals = services.approval.list(task_id)
+        task = services.approval.task(task_id)
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    repository = json.dumps(str(services.repository), ensure_ascii=False)
+    items = [
+        {
+            **approval.model_dump(mode="json"),
+            "next_commands": (
+                [
+                    f"patchloop approval --repo {repository} decide {approval.id} --approve",
+                    f"patchloop approval --repo {repository} decide {approval.id} --deny",
+                ]
+                if approval.status.value == "pending"
+                else []
+            ),
+        }
+        for approval in approvals
+    ]
+    _echo_json(
+        _command_payload(
+            services,
+            data={"items": items},
+            session_id=task.session_id,
+            task=task,
+            approvals=approvals,
+            next_commands=[
+                command for item in items for command in cast(list[str], item["next_commands"])
+            ],
+        )
+    )
+
+
+@approval_app.command("decide")
+def decide_approval(
+    context: typer.Context,
+    approval_id: Annotated[str, typer.Argument()],
+    approved: Annotated[bool, typer.Option("--approve/--deny")],
+    source: Annotated[str, typer.Option()] = "cli",
+) -> None:
+    """Approve once or deny an exact persisted Effect request."""
+
+    services = _services_from_context(context)
+    try:
+        approval, effect, task = services.approval.decide_current(
+            approval_id,
+            approved=approved,
+            source=source,
+        )
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    _echo_json(
+        _command_payload(
+            services,
+            data={
+                "approval": approval.model_dump(mode="json"),
+                "effect": effect.model_dump(mode="json"),
+                "task": task.model_dump(mode="json"),
+            },
+            session_id=task.session_id,
+            task=task,
+        )
+    )
 
 
 def _all_tools() -> list[Tool]:
@@ -111,22 +1173,6 @@ def _create_sandbox(backend: str, image: str) -> DockerSandbox | LocalProcessSan
     if backend == "local":
         return LocalProcessSandbox()
     raise ValueError(f"unsupported sandbox backend: {backend}")
-
-
-def _approval_handler(
-    non_interactive: bool,
-) -> Callable[[ApprovalRequest], bool]:
-    if non_interactive:
-        return lambda request: True
-
-    def prompt(request: ApprovalRequest) -> bool:
-        arguments = json.dumps(request.arguments, ensure_ascii=False, sort_keys=True)
-        return typer.confirm(
-            f"Approve {request.risk} risk action {request.tool_name} with {arguments}?",
-            default=False,
-        )
-
-    return prompt
 
 
 @task_app.command("create")
@@ -759,12 +1805,21 @@ def task_status(
         typer.Option(exists=True, file_okay=False, resolve_path=True),
     ] = Path("."),
 ) -> None:
+    services = _workspace_services(repo)
     try:
-        task = _sqlite_store(repo).get_task(task_id)
-    except TaskNotFoundError:
-        typer.echo(f"task not found: {task_id}", err=True)
-        raise typer.Exit(code=1) from None
-    typer.echo(task.model_dump_json(indent=2))
+        task = services.session.task(task_id)
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    if task.session_id is not None:
+        _echo_task_result(services, task.session_id, task)
+        return
+    _echo_json(
+        _command_payload(
+            services,
+            data=task.model_dump(mode="json"),
+            task=task,
+        )
+    )
 
 
 @app.command("cancel")
@@ -775,12 +1830,21 @@ def cancel_task(
         typer.Option(exists=True, file_okay=False, resolve_path=True),
     ] = Path("."),
 ) -> None:
+    services = _workspace_services(repo)
     try:
-        task = _sqlite_store(repo).cancel_task(task_id)
-    except TaskNotFoundError:
-        typer.echo(f"task not found: {task_id}", err=True)
-        raise typer.Exit(code=1) from None
-    typer.echo(task.model_dump_json(indent=2))
+        task = services.session.cancel_task(task_id)
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    if task.session_id is not None:
+        _echo_task_result(services, task.session_id, task)
+        return
+    _echo_json(
+        _command_payload(
+            services,
+            data=task.model_dump(mode="json"),
+            task=task,
+        )
+    )
 
 
 @app.command("diff")
@@ -836,7 +1900,7 @@ def run_task(
     max_tool_failures: Annotated[int, typer.Option(min=0, max=1_000)] = 10,
     non_interactive: Annotated[
         bool,
-        typer.Option(help="Run without approval prompts; suitable for CI."),
+        typer.Option(help="Disable prompts; restricted actions still require approval."),
     ] = True,
     sandbox: Annotated[
         str,
@@ -851,12 +1915,6 @@ def run_task(
         typer.Option(help="Prompt layout: legacy (rollback) or stable (PCO-02)."),
     ] = "legacy",
 ) -> None:
-    try:
-        provider = DeepSeekProvider.from_env()
-    except ValueError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2) from None
-
     repository = repo.resolve()
     permissions = {PermissionLevel.READ}
     if allow_write:
@@ -864,63 +1922,49 @@ def run_task(
     if allow_execute:
         permissions.add(PermissionLevel.EXECUTE)
     try:
-        command_sandbox = _create_sandbox(sandbox, sandbox_image)
-    except (ValueError, OSError) as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2) from None
-    try:
         cache_layout = PromptCacheLayout(prompt_cache_layout)
     except ValueError:
         typer.echo("prompt_cache_layout must be legacy or stable", err=True)
         raise typer.Exit(code=2) from None
-    task = Task(
-        goal=goal,
-        repository=str(repository),
-        budget=TaskBudget(
-            max_steps=max_steps,
-            max_input_tokens=max_input_tokens,
-            max_output_tokens=max_output_tokens,
-            max_context_tokens=max_context_tokens,
-            max_working_memory_tokens=max_working_memory_tokens,
-            max_tool_output_chars=max_tool_output_chars,
-            context_recent_steps=context_recent_steps,
-            max_cost_usd=max_cost_usd,
-            max_tool_failures=max_tool_failures,
-        ),
-        execution=TaskExecutionConfig(
-            allowed_permissions=sorted(permission.value for permission in permissions),
-            non_interactive=non_interactive,
-            sandbox_backend=sandbox,
-            sandbox_image=sandbox_image,
-            prompt_cache_layout=cache_layout,
-        ),
+    services = _workspace_services(repository)
+    try:
+        provider = _provider_from_env()
+    except CliUsageError as exc:
+        _command_error(exc)
+    budget = TaskBudget(
+        max_steps=max_steps,
+        max_input_tokens=max_input_tokens,
+        max_output_tokens=max_output_tokens,
+        max_context_tokens=max_context_tokens,
+        max_working_memory_tokens=max_working_memory_tokens,
+        max_tool_output_chars=max_tool_output_chars,
+        context_recent_steps=context_recent_steps,
+        max_cost_usd=max_cost_usd,
+        max_tool_failures=max_tool_failures,
     )
-    state = _state_dir(repository)
-    store = _sqlite_store(repository)
-    store.save_task(task)
-    trace = EventLogger(state / "traces" / f"{task.id}.jsonl")
-    context = ToolContext(repository, command_sandbox)
-    gateway = ToolGateway(
-        context,
-        _all_tools(),
-        trace,
-        ToolPolicy(
-            frozenset(permissions),
-            approval_threshold=RiskLevel.MEDIUM,
-            approval_handler=_approval_handler(non_interactive),
-        ),
+    execution = TaskExecutionConfig(
+        allowed_permissions=sorted(permission.value for permission in permissions),
+        non_interactive=non_interactive,
+        sandbox_backend=sandbox,
+        sandbox_image=sandbox_image,
+        prompt_cache_layout=cache_layout,
     )
-    result = AgentRuntime(provider, gateway, trace, store).run(task)
-    paths = ArtifactStore(state / "artifacts").save_report(result)
-    for path in paths:
-        store.record_artifact(task.id, path)
-    typer.echo(result.model_dump_json(indent=2))
-    diff = context.changes.diff()
-    if diff:
-        typer.echo("\n--- diff ---\n")
-        typer.echo(diff)
-    if result.status is not TaskStatus.COMPLETED:
-        raise typer.Exit(code=1)
+    try:
+        session = services.session.create(str(repository))
+        task = services.session.start_task(
+            session.id,
+            goal,
+            budget=budget,
+            execution=execution,
+        )
+        result = _session_runtime_service(services, task, provider=provider).resume(session.id)
+    except (ContractError, KeyError, OSError, RuntimeError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    if result.report is not None:
+        paths = ArtifactStore(_state_dir(repository) / "artifacts").save_report(result)
+        for path in paths:
+            services.store.record_artifact(task.id, path)
+    _echo_task_result(services, session.id, result, exit_for_state=True)
 
 
 @app.command("resume")
@@ -931,53 +1975,26 @@ def resume_task(
         typer.Option(exists=True, file_okay=False, resolve_path=True),
     ] = Path("."),
 ) -> None:
-    try:
-        provider = DeepSeekProvider.from_env()
-    except ValueError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2) from None
     repository = repo.resolve()
-    store = _sqlite_store(repository)
+    services = _workspace_services(repository)
     try:
-        task = store.get_task(task_id)
-        checkpoint = store.get_checkpoint(task_id)
-    except TaskNotFoundError:
-        typer.echo(f"task or checkpoint not found: {task_id}", err=True)
-        raise typer.Exit(code=1) from None
+        provider = _provider_from_env()
+    except CliUsageError as exc:
+        _command_error(exc)
+    try:
+        task = services.session.task(task_id)
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
     if task.status is not TaskStatus.RUNNING:
-        typer.echo(f"task cannot resume from status: {task.status}", err=True)
-        raise typer.Exit(code=1)
+        _command_error(ValueError(f"task cannot resume from status: {task.status}"))
     try:
-        permissions = frozenset(
-            PermissionLevel(value) for value in task.execution.allowed_permissions
-        )
-    except ValueError:
-        typer.echo("task contains an invalid permission checkpoint", err=True)
-        raise typer.Exit(code=1) from None
-    trace = EventLogger(_state_dir(repository) / "traces" / f"{task.id}.jsonl")
-    try:
-        command_sandbox = _create_sandbox(
-            task.execution.sandbox_backend,
-            task.execution.sandbox_image,
-        )
-    except (ValueError, OSError) as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from None
-    context = ToolContext(repository, command_sandbox)
-    gateway = ToolGateway(
-        context,
-        _all_tools(),
-        trace,
-        ToolPolicy(
-            permissions,
-            approval_threshold=RiskLevel.MEDIUM,
-            approval_handler=_approval_handler(task.execution.non_interactive),
-        ),
-    )
-    result = AgentRuntime(provider, gateway, trace, store).resume(task, checkpoint)
-    paths = ArtifactStore(_state_dir(repository) / "artifacts").save_report(result)
-    for path in paths:
-        store.record_artifact(task.id, path)
-    typer.echo(result.model_dump_json(indent=2))
-    if result.status is not TaskStatus.COMPLETED:
-        raise typer.Exit(code=1)
+        result = _session_runtime_service(services, task, provider=provider).resume_task(task.id)
+    except (ContractError, KeyError, OSError, RuntimeError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    if result.report is not None:
+        paths = ArtifactStore(_state_dir(repository) / "artifacts").save_report(result)
+        for path in paths:
+            services.store.record_artifact(task.id, path)
+    if result.session_id is None:
+        _command_error(RuntimeError("resumed task was not bound to a Session"))
+    _echo_task_result(services, result.session_id, result, exit_for_state=True)

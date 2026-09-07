@@ -7,39 +7,61 @@
     {
       "task_id": "calculator-division-implementation",
       "query": "division implementation",
-      "expected_paths": ["calculator.py"],
+      "expected_paths": [
+        "calculator.py"
+      ],
       "baseline_paths": [],
-      "hybrid_paths": ["calculator.py"],
+      "hybrid_paths": [
+        "calculator.py"
+      ],
       "baseline_hit": false,
       "hybrid_hit": true
     },
     {
       "task_id": "calculator-regression-test",
       "query": "fractional division regression",
-      "expected_paths": ["test_calculator.py"],
-      "baseline_paths": ["test_calculator.py"],
-      "hybrid_paths": ["test_calculator.py"],
+      "expected_paths": [
+        "test_calculator.py"
+      ],
+      "baseline_paths": [
+        "test_calculator.py"
+      ],
+      "hybrid_paths": [
+        "test_calculator.py"
+      ],
       "baseline_hit": true,
       "hybrid_hit": true
     },
     {
       "task_id": "checkpoint-persistence",
       "query": "checkpoint database persistence",
-      "expected_paths": ["src/patchloop/persistence.py"],
-      "baseline_paths": ["src/patchloop/intelligence/search.py"],
-      "hybrid_paths": ["src/patchloop/persistence_contracts.py"],
+      "expected_paths": [
+        "src/patchloop/persistence.py"
+      ],
+      "baseline_paths": [
+        "src/patchloop/execution/models.py"
+      ],
+      "hybrid_paths": [
+        "src/patchloop/persistence_contracts.py"
+      ],
       "baseline_hit": false,
       "hybrid_hit": false
     },
     {
       "task_id": "repository-ranking",
       "query": "repository search ranking regression test",
-      "expected_paths": ["tests/unit/test_intelligence.py"],
-      "baseline_paths": ["src/patchloop/intelligence/search.py"],
-      "hybrid_paths": ["tests/unit/test_intelligence.py"],
+      "expected_paths": [
+        "tests/unit/test_intelligence.py"
+      ],
+      "baseline_paths": [
+        "src/patchloop/intelligence/search.py"
+      ],
+      "hybrid_paths": [
+        "tests/unit/test_intelligence.py"
+      ],
       "baseline_hit": false,
       "hybrid_hit": true
     }
   ],
-  "generated_at": "2026-08-29T12:03:44.349341Z"
+  "generated_at": "2026-09-07T14:09:30.143863Z"
 }

@@ -6,8 +6,10 @@ import hashlib
 import json
 from dataclasses import dataclass
 from typing import Protocol
+from uuid import uuid4
 
 from patchloop.domain import Task, TaskOutcome, TaskRuntimeCondition, ToolCall, ToolResult
+from patchloop.execution.approvals import build_approval
 from patchloop.execution.models import (
     Approval,
     ApprovalStatus,
@@ -27,6 +29,14 @@ class RecoveryResolution:
 
 
 class RecoveryStore(Protocol):
+    def get_task(self, task_id: str) -> Task: ...
+
+    def get_effect(self, effect_id: str) -> Effect: ...
+
+    def list_effects(self, task_id: str) -> list[Effect]: ...
+
+    def get_recovery_disposition_for_effect(self, effect_id: str) -> RecoveryDisposition | None: ...
+
     def resolve_recovery(
         self,
         disposition: RecoveryDisposition,
@@ -45,6 +55,120 @@ class RecoveryService:
 
     def __init__(self, store: RecoveryStore) -> None:
         self.store = store
+
+    def pending(self, task_id: str) -> list[Effect]:
+        """Return unknown Effects which still require an operator disposition."""
+
+        return [
+            effect
+            for effect in self.store.list_effects(task_id)
+            if effect.status is EffectStatus.UNKNOWN
+            and self.store.get_recovery_disposition_for_effect(effect.id) is None
+        ]
+
+    def confirm_persisted_result(
+        self,
+        *,
+        task_id: str,
+        unknown_effect_id: str,
+        success: bool,
+        output: str,
+        evidence: dict[str, object],
+        decision_source: str,
+    ) -> RecoveryResolution:
+        """Confirm an operator-observed result using the persisted call identity."""
+
+        task = self.store.get_task(task_id)
+        effect = self.store.get_effect(unknown_effect_id)
+        call = ToolCall(
+            id=effect.provider_call_id,
+            name=effect.tool_name,
+            arguments=effect.arguments_summary,
+        )
+        return self.confirm_result(
+            task_id=task.id,
+            unknown_effect_id=effect.id,
+            call=call,
+            result=ToolResult(
+                call_id=call.id,
+                tool_name=call.name,
+                success=success,
+                output=output,
+            ),
+            evidence=evidence,
+            decision_source=decision_source,
+            expected_version=task.version,
+        )
+
+    def abandon_pending(
+        self,
+        *,
+        task_id: str,
+        unknown_effect_id: str,
+        evidence: dict[str, object],
+        decision_source: str,
+    ) -> RecoveryResolution:
+        task = self.store.get_task(task_id)
+        return self.abandon(
+            task_id=task.id,
+            unknown_effect_id=unknown_effect_id,
+            evidence=evidence,
+            decision_source=decision_source,
+            expected_version=task.version,
+        )
+
+    def retry_pending(
+        self,
+        *,
+        task_id: str,
+        unknown_effect_id: str,
+        duplicate_risk_acknowledged: bool,
+        evidence: dict[str, object],
+        decision_source: str,
+        policy_version: str,
+        config_version: str,
+    ) -> RecoveryResolution:
+        """Create a new exact Effect and a fresh one-time Approval."""
+
+        self._require_duplicate_risk_acknowledgement(duplicate_risk_acknowledged)
+        task = self.store.get_task(task_id)
+        unknown = self.store.get_effect(unknown_effect_id)
+        retry = unknown.model_copy(
+            update={
+                "id": f"effect-retry-{uuid4().hex}",
+                "step_id": f"recovery-retry-{uuid4().hex}",
+                "provider_call_id": f"recovery-call-{uuid4().hex}",
+                "retry_of_effect_id": unknown.id,
+                "policy_result": {
+                    **unknown.policy_result,
+                    "decision": "require_approval",
+                    "approval_required": True,
+                },
+                "status": EffectStatus.PREPARED,
+                "approval_id": None,
+                "approval_consumed": False,
+                "reconciliation_evidence": {},
+                "result_ref": None,
+                "observation_ref": None,
+                "version": 1,
+            }
+        )
+        approval = build_approval(
+            task,
+            retry,
+            policy_version=policy_version,
+            config_version=config_version,
+        )
+        return self.create_retry(
+            task_id=task.id,
+            unknown_effect_id=unknown.id,
+            retry_effect=retry,
+            approval=approval,
+            duplicate_risk_acknowledged=duplicate_risk_acknowledged,
+            evidence={**evidence, "duplicate_risk_acknowledged": True},
+            decision_source=decision_source,
+            expected_version=task.version,
+        )
 
     def confirm_result(
         self,
@@ -101,14 +225,16 @@ class RecoveryService:
         unknown_effect_id: str,
         retry_effect: Effect,
         approval: Approval,
+        duplicate_risk_acknowledged: bool,
         evidence: dict[str, object],
         decision_source: str,
         expected_version: int,
     ) -> RecoveryResolution:
+        self._require_duplicate_risk_acknowledgement(duplicate_risk_acknowledged)
         disposition = RecoveryDisposition(
             unknown_effect_id=unknown_effect_id,
             kind=RecoveryDispositionKind.CREATE_RETRY,
-            evidence=evidence,
+            evidence={**evidence, "duplicate_risk_acknowledged": True},
             decision_source=decision_source,
             retry_effect_id=retry_effect.id,
         )
@@ -130,6 +256,14 @@ class RecoveryService:
             ),
             retry_approval=approval,
         )
+
+    @staticmethod
+    def _require_duplicate_risk_acknowledgement(acknowledged: bool) -> None:
+        if not acknowledged:
+            raise ValueError(
+                "retry may duplicate an external side effect; explicit duplicate-risk "
+                "acknowledgement is required"
+            )
 
 
 def validate_recovery_resolution(
@@ -170,6 +304,8 @@ def validate_recovery_resolution(
             else TaskRuntimeCondition.ENDED
         )
     elif disposition.kind is RecoveryDispositionKind.CREATE_RETRY:
+        if disposition.evidence.get("duplicate_risk_acknowledged") is not True:
+            raise ValueError("create_retry requires explicit duplicate-risk acknowledgement")
         if task.outcome is not TaskOutcome.ACTIVE:
             raise ValueError("cannot retry an Effect for a terminal task")
         if retry_effect is None or retry_approval is None or supplied_confirmation:

@@ -275,6 +275,10 @@ class RuntimeStore(Protocol):
 
     def list_tool_results(self, task_id: str) -> list[ToolResult]: ...
 
+    def get_execution(self, execution_id: str) -> Execution: ...
+
+    def list_executions(self, task_id: str) -> list[Execution]: ...
+
     def claim_execution(
         self,
         execution: Execution,
@@ -633,6 +637,16 @@ class FakeStore:
             return self._copy(self.executions[execution_id])
         except KeyError as exc:
             raise KeyError(f"execution not found: {execution_id}") from exc
+
+    def list_executions(self, task_id: str) -> list[Execution]:
+        return sorted(
+            [
+                self._copy(execution)
+                for execution in self.executions.values()
+                if execution.task_id == task_id
+            ],
+            key=lambda execution: (execution.generation, execution.created_at, execution.id),
+        )
 
     def get_effect(self, effect_id: str) -> Effect:
         try:

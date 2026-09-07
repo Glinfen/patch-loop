@@ -1868,6 +1868,17 @@ class SQLiteStore:
             raise KeyError(f"execution not found: {execution_id}")
         return Execution.model_validate_json(row["payload_json"])
 
+    def list_executions(self, task_id: str) -> list[Execution]:
+        with connect(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json FROM executions
+                WHERE task_id = ? ORDER BY generation, created_at, id
+                """,
+                (task_id,),
+            ).fetchall()
+        return [Execution.model_validate_json(row["payload_json"]) for row in rows]
+
     def prepare_effects(
         self,
         effects: Sequence[Effect],

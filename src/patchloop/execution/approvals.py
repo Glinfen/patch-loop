@@ -54,6 +54,14 @@ class EffectPreauthorization(BaseModel):
 
 
 class ApprovalDecisionStore(Protocol):
+    def get_approval(self, approval_id: str) -> Approval: ...
+
+    def list_approvals(self, task_id: str) -> list[Approval]: ...
+
+    def get_effect(self, effect_id: str) -> Effect: ...
+
+    def get_task(self, task_id: str) -> Task: ...
+
     def resolve_effect_approval(
         self,
         approval_id: str,
@@ -72,6 +80,37 @@ class ApprovalService:
 
     def __init__(self, store: ApprovalDecisionStore) -> None:
         self.store = store
+
+    def get(self, approval_id: str) -> Approval:
+        return self.store.get_approval(approval_id)
+
+    def list(self, task_id: str) -> list[Approval]:
+        return self.store.list_approvals(task_id)
+
+    def task(self, task_id: str) -> Task:
+        return self.store.get_task(task_id)
+
+    def decide_current(
+        self,
+        approval_id: str,
+        *,
+        approved: bool,
+        source: str,
+    ) -> tuple[Approval, Effect, Task]:
+        """Decide using the request's persisted, exact execution binding."""
+
+        approval = self.store.get_approval(approval_id)
+        effect = self.store.get_effect(approval.effect_id)
+        task = self.store.get_task(effect.task_id)
+        return self.decide(
+            approval.id,
+            approved=approved,
+            source=source,
+            expected_version=approval.version,
+            workspace_ref=task.repository,
+            policy_version=approval.policy_version,
+            config_version=approval.config_version,
+        )
 
     def decide(
         self,

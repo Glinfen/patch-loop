@@ -109,6 +109,7 @@ def test_fake_store_effect_identity_and_lease_guard() -> None:
         expected_version=session.version,
     )
     execution = store.claim_execution(_execution(), expected_version=task.version)
+    assert store.list_executions(task.id) == [execution]
     guard = LeaseGuard(
         execution.id,
         task.id,

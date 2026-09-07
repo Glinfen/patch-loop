@@ -9,11 +9,32 @@ from pathlib import Path
 
 import pytest
 
-from patchloop.domain import Task, TaskStatus, ToolCall, ToolResult
+from patchloop.domain import (
+    ErrorKind,
+    Task,
+    TaskRuntimeCondition,
+    TaskStatus,
+    ToolCall,
+    ToolResult,
+)
 from patchloop.events import SessionEvent
-from patchloop.execution.models import Approval, Effect, EffectStatus, Execution
+from patchloop.execution.approvals import build_approval
+from patchloop.execution.models import (
+    Approval,
+    ApprovalStatus,
+    Effect,
+    EffectStatus,
+    Execution,
+    RecoveryDisposition,
+    RecoveryDispositionKind,
+)
 from patchloop.persistence import SQLiteStore
-from patchloop.persistence_contracts import FakeStore, LeaseGuard, StaleVersion
+from patchloop.persistence_contracts import (
+    FakeStore,
+    LeaseConflict,
+    LeaseGuard,
+    StaleVersion,
+)
 from patchloop.security import CredentialBinding
 from patchloop.session.models import Session, SessionCheckpoint, Turn, TurnRole
 
@@ -50,7 +71,7 @@ def _effect() -> Effect:
     )
 
 
-def _owned_effect(store: object) -> tuple[LeaseGuard, Effect]:
+def _owned_prepared_effect(store: object) -> tuple[LeaseGuard, Effect]:
     session = store.create_session(Session(id="session-1", workspace_ref="workspace"))
     task = store.start_task(
         session.id,
@@ -68,6 +89,11 @@ def _owned_effect(store: object) -> tuple[LeaseGuard, Effect]:
     effect = store.prepare_effects(
         [_effect()], expected_version=store.get_task(task.id).version, lease_guard=guard
     )[0]
+    return guard, effect
+
+
+def _owned_effect(store: object) -> tuple[LeaseGuard, Effect]:
+    guard, effect = _owned_prepared_effect(store)
     return guard, store.claim_effect(effect.id, expected_version=effect.version, lease_guard=guard)
 
 
@@ -161,9 +187,96 @@ def test_approval_decision_is_conditional_and_idempotent(runtime_store: object) 
     assert runtime_store.decide_approval(decided).status.value == "approved"
 
 
+def test_claim_effect_consumes_exact_approval_once(runtime_store: object) -> None:
+    session = runtime_store.create_session(Session(id="session-1", workspace_ref="workspace"))
+    task = runtime_store.start_task(
+        session.id,
+        Task(id="task-1", goal="Edit", repository="workspace"),
+        expected_version=session.version,
+    )
+    execution = runtime_store.claim_execution(_execution(), expected_version=task.version)
+    guard = LeaseGuard(
+        execution.id,
+        task.id,
+        execution.lease_token,
+        execution.generation,
+        execution.owner_id,
+    )
+    prepared = runtime_store.prepare_effects(
+        [
+            _effect().model_copy(
+                update={
+                    "policy_result": {
+                        "decision": "require_approval",
+                        "approval_required": True,
+                    }
+                }
+            )
+        ],
+        expected_version=runtime_store.get_task(task.id).version,
+        lease_guard=guard,
+    )[0]
+    request = build_approval(
+        runtime_store.get_task(task.id),
+        prepared,
+        policy_version="policy-1",
+        config_version="1",
+    )
+    waiting, pending, _ = runtime_store.request_effect_approval(
+        prepared.id,
+        request,
+        expected_version=prepared.version,
+        lease_guard=guard,
+    )
+    decided, authorized, _ = runtime_store.resolve_effect_approval(
+        pending.id,
+        approved=True,
+        source="operator",
+        expected_version=pending.version,
+        workspace_ref="workspace",
+        policy_version="policy-1",
+        config_version="1",
+    )
+
+    claimed = runtime_store.claim_effect(
+        authorized.id,
+        expected_version=authorized.version,
+        lease_guard=guard,
+        effect_fingerprint=authorized.content_fingerprint(),
+        workspace_ref="workspace",
+        policy_version="policy-1",
+        config_version="1",
+        policy_decision="require_approval",
+    )
+
+    assert waiting.status is EffectStatus.WAITING_FOR_APPROVAL
+    assert decided.status is ApprovalStatus.APPROVED
+    assert claimed.status is EffectStatus.EXECUTING
+    assert claimed.approval_id is None
+    assert claimed.approval_consumed is True
+    assert runtime_store.get_approval(pending.id).status is ApprovalStatus.CONSUMED
+    with pytest.raises(LeaseConflict):
+        runtime_store.claim_effect(
+            claimed.id,
+            expected_version=claimed.version,
+            lease_guard=guard,
+        )
+
+
 def test_commit_effect_advances_event_and_checkpoint_atomically(runtime_store: object) -> None:
     guard, claimed = _owned_effect(runtime_store)
     task = runtime_store.get_task(claimed.task_id)
+    call = ToolCall(
+        id=claimed.provider_call_id,
+        name=claimed.tool_name,
+        arguments=claimed.arguments_summary,
+    )
+    result = ToolResult(
+        call_id=call.id,
+        tool_name=call.name,
+        success=True,
+        output="written",
+    )
     runtime_store.commit_checkpoint(
         SessionCheckpoint(session_id="session-1", task_id=task.id),
         expected_version=task.version,
@@ -176,6 +289,8 @@ def test_commit_effect_advances_event_and_checkpoint_atomically(runtime_store: o
         result_ref="result-1",
         observation_ref="observation-1",
         lease_guard=guard,
+        call=call,
+        result=result,
     )
 
     assert committed.version == claimed.version + 1
@@ -188,6 +303,68 @@ def test_commit_effect_advances_event_and_checkpoint_atomically(runtime_store: o
     assert event.type == "effect.committed"
     assert event.data["effect_id"] == committed.id
     assert runtime_store.get_session_checkpoint(task.id).event_sequence == event.sequence
+    assert runtime_store.get_tool_result(task.id, call.id) == result
+
+
+@pytest.mark.parametrize("status", [EffectStatus.DENIED, EffectStatus.CANCELLED])
+def test_settle_unexecuted_effect_pairs_provider_observation(
+    runtime_store: object,
+    status: EffectStatus,
+) -> None:
+    guard, prepared = _owned_prepared_effect(runtime_store)
+    call = ToolCall(
+        id=prepared.provider_call_id,
+        name=prepared.tool_name,
+        arguments=prepared.arguments_summary,
+    )
+    result = ToolResult(
+        call_id=call.id,
+        tool_name=call.name,
+        success=False,
+        error_kind=ErrorKind.PERMISSION_DENIED,
+        output=f'{{"backend_invoked": false, "effect_status": "{status.value}"}}',
+    )
+
+    settled = runtime_store.settle_unexecuted_effect(
+        prepared.id,
+        status=status,
+        expected_version=prepared.version,
+        call=call,
+        result=result,
+        lease_guard=guard,
+    )
+
+    assert settled.status is status
+    assert settled.result_ref == f"tool-result:{prepared.task_id}:{call.id}"
+    assert runtime_store.get_tool_result(prepared.task_id, call.id) == result
+    event = next(
+        event for event in runtime_store.list_events("session-1") if event.type == "effect.settled"
+    )
+    assert event.data == {"effect_id": prepared.id, "status": status.value}
+
+
+def test_mark_effect_unknown_requires_task_recovery(runtime_store: object) -> None:
+    guard, claimed = _owned_effect(runtime_store)
+    evidence = {"source": "result_missing", "tool_name": claimed.tool_name}
+
+    unknown, task = runtime_store.mark_effect_unknown(
+        claimed.id,
+        expected_version=claimed.version,
+        evidence=evidence,
+        lease_guard=guard,
+    )
+
+    assert unknown.status is EffectStatus.UNKNOWN
+    assert unknown.reconciliation_evidence == evidence
+    assert task.runtime_condition is TaskRuntimeCondition.RECOVERY_REQUIRED
+    assert runtime_store.get_effect(claimed.id) == unknown
+    assert runtime_store.get_task(task.id) == task
+    event = next(
+        event
+        for event in runtime_store.list_events("session-1")
+        if event.type == "effect.recovery_required"
+    )
+    assert event.data["effect_id"] == claimed.id
 
 
 def test_checkpoint_cursors_and_effects_must_be_backed_by_session_facts(
@@ -305,6 +482,17 @@ def test_commit_effect_rolls_back_when_event_insert_fails(tmp_path: Path) -> Non
     store.fail_events = False
     guard, claimed = _owned_effect(store)
     before = store.list_events("session-1")
+    call = ToolCall(
+        id=claimed.provider_call_id,
+        name=claimed.tool_name,
+        arguments=claimed.arguments_summary,
+    )
+    result = ToolResult(
+        call_id=call.id,
+        tool_name=call.name,
+        success=True,
+        output="written",
+    )
     store.fail_events = True
 
     with pytest.raises(RuntimeError, match="injected event failure"):
@@ -314,9 +502,112 @@ def test_commit_effect_rolls_back_when_event_insert_fails(tmp_path: Path) -> Non
             result_ref="result-1",
             observation_ref="observation-1",
             lease_guard=guard,
+            call=call,
+            result=result,
         )
 
     persisted = store.get_effect(claimed.id)
     assert persisted.status is EffectStatus.EXECUTING
     assert persisted.result_ref is None
+    assert store.get_tool_result(claimed.task_id, call.id) is None
     assert store.list_events("session-1") == before
+
+
+def test_mark_effect_unknown_rolls_back_when_event_insert_fails(tmp_path: Path) -> None:
+    store = _FailingEventStore(tmp_path / "reconcile-rollback.db")
+    guard, claimed = _owned_effect(store)
+    before_task = store.get_task(claimed.task_id)
+    before_events = store.list_events("session-1")
+    store.fail_events = True
+
+    with pytest.raises(RuntimeError, match="injected event failure"):
+        store.mark_effect_unknown(
+            claimed.id,
+            expected_version=claimed.version,
+            evidence={"source": "result_missing"},
+            lease_guard=guard,
+        )
+
+    assert store.get_effect(claimed.id) == claimed
+    assert store.get_task(claimed.task_id) == before_task
+    assert store.list_events("session-1") == before_events
+
+
+def test_settle_unexecuted_effect_rolls_back_when_event_insert_fails(tmp_path: Path) -> None:
+    store = _FailingEventStore(tmp_path / "settle-effect-rollback.db")
+    guard, prepared = _owned_prepared_effect(store)
+    call = ToolCall(
+        id=prepared.provider_call_id,
+        name=prepared.tool_name,
+        arguments=prepared.arguments_summary,
+    )
+    result = ToolResult(
+        call_id=call.id,
+        tool_name=call.name,
+        success=False,
+        error_kind=ErrorKind.PERMISSION_DENIED,
+        output="denied without execution",
+    )
+    before_events = store.list_events("session-1")
+    store.fail_events = True
+
+    with pytest.raises(RuntimeError, match="injected event failure"):
+        store.settle_unexecuted_effect(
+            prepared.id,
+            status=EffectStatus.DENIED,
+            expected_version=prepared.version,
+            call=call,
+            result=result,
+            lease_guard=guard,
+        )
+
+    assert store.get_effect(prepared.id) == prepared
+    assert store.get_tool_result(prepared.task_id, call.id) is None
+    assert store.list_events("session-1") == before_events
+
+
+def test_confirm_recovery_rolls_back_when_event_insert_fails(tmp_path: Path) -> None:
+    store = _FailingEventStore(tmp_path / "recovery-resolution-rollback.db")
+    guard, claimed = _owned_effect(store)
+    unknown, recovery_task = store.mark_effect_unknown(
+        claimed.id,
+        expected_version=claimed.version,
+        evidence={"source": "result_missing"},
+        lease_guard=guard,
+    )
+    call = ToolCall(
+        id=unknown.provider_call_id,
+        name=unknown.tool_name,
+        arguments=unknown.arguments_summary,
+    )
+    result = ToolResult(
+        call_id=call.id,
+        tool_name=call.name,
+        success=True,
+        output="verified",
+    )
+    disposition = RecoveryDisposition(
+        id="recovery-1",
+        unknown_effect_id=unknown.id,
+        kind=RecoveryDispositionKind.CONFIRM_RESULT,
+        evidence={"verified_by": "operator"},
+        decision_source="operator",
+    )
+    before_events = store.list_events("session-1")
+    store.fail_events = True
+
+    with pytest.raises(RuntimeError, match="injected event failure"):
+        store.resolve_recovery(
+            disposition,
+            task_id=recovery_task.id,
+            expected_version=recovery_task.version,
+            confirmed_call=call,
+            confirmed_result=result,
+        )
+
+    assert store.get_effect(unknown.id) == unknown
+    assert store.get_task(recovery_task.id) == recovery_task
+    assert store.get_tool_result(recovery_task.id, call.id) is None
+    with pytest.raises(KeyError, match="recovery disposition not found"):
+        store.get_recovery_disposition(disposition.id)
+    assert store.list_events("session-1") == before_events

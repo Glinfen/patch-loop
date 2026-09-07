@@ -7,7 +7,7 @@ from copy import deepcopy
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RiskLevel(StrEnum):
@@ -15,6 +15,12 @@ class RiskLevel(StrEnum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+
+
+class PolicyDecision(StrEnum):
+    ALLOW = "allow"
+    DENY = "deny"
+    REQUIRE_APPROVAL = "require_approval"
 
 
 class UntrustedContentFinding(StrEnum):
@@ -43,7 +49,26 @@ class RiskAssessment(BaseModel):
     risk: RiskLevel
     allowed: bool
     approval_required: bool = False
+    decision: PolicyDecision | None = None
     reason: str
+
+    @model_validator(mode="after")
+    def project_decision(self) -> RiskAssessment:
+        decision = self.decision
+        if decision is None:
+            decision = (
+                PolicyDecision.REQUIRE_APPROVAL
+                if self.approval_required and not self.allowed
+                else PolicyDecision.ALLOW
+                if self.allowed
+                else PolicyDecision.DENY
+            )
+            object.__setattr__(self, "decision", decision)
+        if self.allowed is not (decision is PolicyDecision.ALLOW):
+            raise ValueError("Policy decision and allowed projection disagree")
+        if self.approval_required is not (decision is PolicyDecision.REQUIRE_APPROVAL):
+            raise ValueError("Policy decision and approval projection disagree")
+        return self
 
 
 class UntrustedContentInspection(BaseModel):

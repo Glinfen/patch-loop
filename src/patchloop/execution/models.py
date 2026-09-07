@@ -48,6 +48,7 @@ class EffectStatus(StrEnum):
 class ApprovalStatus(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
+    CONSUMED = "consumed"
     DENIED = "denied"
     EXPIRED = "expired"
 
@@ -152,6 +153,18 @@ class WorkspaceLease(BaseModel):
     updated_at: datetime = Field(default_factory=_now)
 
 
+class FileEffectPrecondition(BaseModel):
+    """Persisted file state used to verify and reconstruct one mutation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(min_length=1)
+    existed: bool
+    original_content: str | None = Field(default=None, repr=False)
+    original_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class Effect(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
@@ -166,10 +179,15 @@ class Effect(BaseModel):
     action_kind: str = Field(default="unknown", min_length=1, max_length=64)
     arguments_summary: dict[str, Any] = Field(default_factory=dict)
     arguments_fingerprint: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
+    policy_result: dict[str, Any] = Field(default_factory=dict)
+    preparation_error: str | None = None
+    file_preconditions: list[FileEffectPrecondition] = Field(default_factory=list)
     credential_bindings: list[CredentialBinding] = Field(default_factory=list)
     redacted_argument_paths: list[str] = Field(default_factory=list)
     status: EffectStatus = EffectStatus.PREPARED
     approval_id: str | None = Field(default=None, min_length=1)
+    approval_consumed: bool = False
+    reconciliation_evidence: dict[str, Any] = Field(default_factory=dict)
     result_ref: str | None = Field(default=None, min_length=1)
     observation_ref: str | None = Field(default=None, min_length=1)
     version: int = Field(default=1, ge=1)
@@ -203,6 +221,11 @@ class Effect(BaseModel):
                 binding.model_dump(mode="json") for binding in self.credential_bindings
             ],
             "redacted_argument_paths": self.redacted_argument_paths,
+            "policy_result": self.policy_result,
+            "preparation_error": self.preparation_error,
+            "file_preconditions": [
+                precondition.model_dump(mode="json") for precondition in self.file_preconditions
+            ],
             "tool_name": self.tool_name,
         }
         return hashlib.sha256(
@@ -256,6 +279,9 @@ class Approval(BaseModel):
     schema_version: Literal["1.0"] = EXECUTION_SCHEMA_VERSION
     id: str = Field(default_factory=lambda: str(uuid4()), min_length=1, max_length=128)
     effect_id: str = Field(min_length=1)
+    effect_fingerprint: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
+    arguments_fingerprint: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
+    workspace_ref: str = ""
     action_summary: str = Field(min_length=1, max_length=2_000)
     resource_summary: str = Field(default="", max_length=2_000)
     policy_version: str = Field(min_length=1, max_length=128)
@@ -266,9 +292,46 @@ class Approval(BaseModel):
     version: int = Field(default=1, ge=1)
     created_at: datetime = Field(default_factory=_now)
 
+    def same_request(self, other: Approval) -> bool:
+        return (
+            self.id == other.id
+            and self.effect_id == other.effect_id
+            and self.effect_fingerprint == other.effect_fingerprint
+            and self.arguments_fingerprint == other.arguments_fingerprint
+            and self.workspace_ref == other.workspace_ref
+            and self.action_summary == other.action_summary
+            and self.resource_summary == other.resource_summary
+            and self.policy_version == other.policy_version
+            and self.config_version == other.config_version
+            and self.status is other.status is ApprovalStatus.PENDING
+        )
+
+    def matches_execution_conditions(
+        self,
+        effect: Effect,
+        *,
+        workspace_ref: str,
+        policy_version: str,
+        config_version: str,
+    ) -> bool:
+        return (
+            self.effect_id == effect.id
+            and self.effect_fingerprint == effect.content_fingerprint()
+            and self.arguments_fingerprint == effect.arguments_fingerprint
+            and self.workspace_ref == workspace_ref
+            and self.policy_version == policy_version
+            and self.config_version == config_version
+        )
+
     def decide(self, approved: bool, source: str) -> Approval:
         target = ApprovalStatus.APPROVED if approved else ApprovalStatus.DENIED
         if self.status is not ApprovalStatus.PENDING:
+            if (
+                approved
+                and self.status is ApprovalStatus.CONSUMED
+                and self.decision_source == source
+            ):
+                return self
             if self.status is target and self.decision_source == source:
                 return self
             from patchloop.persistence_contracts import ApprovalConflict
@@ -279,6 +342,40 @@ class Approval(BaseModel):
                 "status": target,
                 "decision_source": source,
                 "decided_at": _now(),
+                "version": self.version + 1,
+            }
+        )
+
+    def consume(
+        self,
+        effect: Effect,
+        *,
+        workspace_ref: str,
+        policy_version: str,
+        config_version: str,
+    ) -> Approval:
+        """Consume an approved request after rechecking its exact execution binding."""
+
+        if self.status is not ApprovalStatus.APPROVED:
+            from patchloop.persistence_contracts import ApprovalConflict
+
+            raise ApprovalConflict(
+                self.id,
+                self.status.value,
+                ApprovalStatus.CONSUMED.value,
+            )
+        if not self.matches_execution_conditions(
+            effect,
+            workspace_ref=workspace_ref,
+            policy_version=policy_version,
+            config_version=config_version,
+        ):
+            from patchloop.persistence_contracts import ApprovalConflict
+
+            raise ApprovalConflict(self.id, "binding_mismatch", ApprovalStatus.CONSUMED.value)
+        return self.model_copy(
+            update={
+                "status": ApprovalStatus.CONSUMED,
                 "version": self.version + 1,
             }
         )
@@ -339,6 +436,7 @@ class RecoveryDisposition(BaseModel):
     def validate_target(self, runtime_condition: TaskRuntimeCondition) -> None:
         allowed = {
             RecoveryDispositionKind.CONFIRM_RESULT: {
+                TaskRuntimeCondition.IDLE,
                 TaskRuntimeCondition.RUNNING,
                 TaskRuntimeCondition.PAUSED,
                 TaskRuntimeCondition.ENDED,

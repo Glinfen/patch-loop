@@ -327,6 +327,7 @@ class Task(BaseModel):
                 TaskRuntimeCondition.ENDED,
             },
             TaskRuntimeCondition.WAITING_FOR_APPROVAL: {
+                TaskRuntimeCondition.IDLE,
                 TaskRuntimeCondition.RUNNING,
                 TaskRuntimeCondition.PAUSED,
                 TaskRuntimeCondition.RECOVERY_REQUIRED,
@@ -385,6 +386,8 @@ class AgentStep(BaseModel):
     index: int = Field(ge=0)
     status: StepStatus = StepStatus.PENDING
     decision: str | None = None
+    model_response: dict[str, Any] | None = None
+    effect_ids: list[str] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
     error: str | None = None
     started_at: datetime | None = None

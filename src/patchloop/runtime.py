@@ -25,7 +25,24 @@ from patchloop.domain import (
     utc_now,
 )
 from patchloop.events import Event, EventLogger
-from patchloop.execution.models import ControlKind, ControlRequest, ControlStatus
+from patchloop.execution.approvals import ApprovalPending, build_approval
+from patchloop.execution.effects import (
+    ReconcileOutcome,
+    assert_file_preconditions,
+    persist_model_response_batch,
+    reconcile_effect,
+    response_from_step,
+    restore_file_preconditions,
+    revalidate_effect_call,
+)
+from patchloop.execution.models import (
+    ControlKind,
+    ControlRequest,
+    ControlStatus,
+    Effect,
+    EffectStatus,
+    RecoveryDispositionKind,
+)
 from patchloop.execution.ownership import (
     ExecutionOwnership,
     ExecutionOwnershipManager,
@@ -55,13 +72,20 @@ from patchloop.prompt_cache import (
     PromptCacheCoordinator,
     PromptCacheCoordinatorError,
 )
-from patchloop.providers.base import ModelMessage, ModelProvider, ModelUsage, ToolSpec
+from patchloop.providers.base import (
+    ModelMessage,
+    ModelProvider,
+    ModelResponse,
+    ModelUsage,
+    ToolSpec,
+)
 from patchloop.sandbox import (
     LocalProcessSandbox,
     ManagedCommandIdentity,
     ManagedCommandSandbox,
     SandboxCleanupError,
 )
+from patchloop.security import PolicyDecision
 from patchloop.tools.base import PermissionLevel
 from patchloop.tools.gateway import ToolGateway
 
@@ -232,6 +256,9 @@ class AgentRuntime:
         self.gateway.context.replan_count = checkpoint.replan_count
         self.gateway.context.changes.restore(checkpoint.change_snapshot)
         self.gateway.history = list(checkpoint.tool_history)
+        task = self._reconcile_effects(task)
+        if task.runtime_condition is TaskRuntimeCondition.RECOVERY_REQUIRED:
+            return task
         self._input_tokens = checkpoint.input_tokens
         self._output_tokens = checkpoint.output_tokens
         self._cost_usd = checkpoint.cost_usd
@@ -363,14 +390,27 @@ class AgentRuntime:
                 if controlled is not None:
                     return controlled
 
-                step = AgentStep(
+                persisted_step = self._persisted_response_step(task.id, step_index)
+                if persisted_step is None:
+                    persisted_step = self._materialize_recovery_retry_step(
+                        task,
+                        step_index,
+                    )
+                step = persisted_step or AgentStep(
                     task_id=task.id,
                     index=step_index,
                     status=StepStatus.RUNNING,
                     started_at=utc_now(),
                 )
-                self._record_step(step)
-                self._emit("step.started", task, {"step": step_index})
+                if persisted_step is None:
+                    self._record_step(step)
+                    self._emit("step.started", task, {"step": step_index})
+                else:
+                    self._emit(
+                        "step.response_recovered",
+                        task,
+                        {"step": step_index, "effect_ids": step.effect_ids},
+                    )
                 specifications = (
                     state.tool_specifications
                     if state.tool_specifications is not None
@@ -509,9 +549,27 @@ class AgentRuntime:
                         "project_instructions": task.execution.project_instructions,
                     },
                 )
-                self._assert_ownership()
-                response = self.provider.complete(prepared_request.messages, prepared_request.tools)
-                self._assert_ownership()
+                response = response_from_step(step)
+                if response is None:
+                    self._assert_ownership()
+                    response = self.provider.complete(
+                        prepared_request.messages, prepared_request.tools
+                    )
+                    self._assert_ownership()
+                    step, effects = persist_model_response_batch(task, step, response, self.gateway)
+                    if self.state_store is not None:
+                        effects = self.state_store.prepare_effect_batch(
+                            step,
+                            effects,
+                            expected_version=task.version,
+                            lease_guard=self._lease_guard(),
+                        )
+                else:
+                    effects = self._effects_for_step(step)
+                    restore_file_preconditions(
+                        self.gateway,
+                        effects,
+                    )
                 controlled = self._apply_pending_control(task)
                 if controlled is not None:
                     return controlled
@@ -579,8 +637,9 @@ class AgentRuntime:
                         f"identical action repeated {repeated_actions} times",
                     )
 
-                for call in response.tool_calls:
-                    result = self._execute_or_replay(task, call)
+                for position, call in enumerate(response.tool_calls):
+                    effect = effects[position] if position < len(effects) else None
+                    result = self._execute_or_replay(task, call, effect=effect)
                     step.tool_results.append(result)
                     observation, truncated = context_engine.compact_tool_result(result)
                     self._truncated_tool_outputs += int(truncated)
@@ -592,7 +651,7 @@ class AgentRuntime:
                         )
                     )
                     self._observe_memory(task, call, result, step_index)
-                    if not result.success:
+                    if not result.success and not self._is_recovery_retry_placeholder(effect):
                         tool_failures += 1
                         error_fingerprint = json.dumps(
                             {
@@ -671,6 +730,8 @@ class AgentRuntime:
                 )
                 self._persist_checkpoint(state)
                 self._persist_task(task)
+        except ApprovalPending:
+            return task
         except MemoryStoreError as exc:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except WorkingMemoryBudgetError as exc:
@@ -753,12 +814,33 @@ class AgentRuntime:
         paths = ", ".join(changed_paths)
         return f"Completed the plan and verified passing tests for: {paths}."
 
-    def _execute_or_replay(self, task: Task, call: ToolCall) -> ToolResult:
+    def _execute_or_replay(
+        self, task: Task, call: ToolCall, *, effect: Effect | None = None
+    ) -> ToolResult:
         self._assert_ownership()
+        claimed_effect: Effect | None = None
+        approval_consumed = False
+        executable_call = call
+        if effect is not None and self.state_store is not None:
+            effect = self.state_store.get_effect(effect.id)
+            self._yield_for_effect_approval(task, effect)
         persisted = (
             None if self.state_store is None else self.state_store.get_tool_result(task.id, call.id)
         )
         if persisted is not None:
+            recovery_disposition = (
+                None
+                if effect is None or self.state_store is None
+                else self.state_store.get_recovery_disposition_for_effect(effect.id)
+            )
+            if (
+                effect is not None
+                and not persisted.success
+                and recovery_disposition is None
+                and effect.action_kind
+                in {PermissionLevel.WRITE.value, PermissionLevel.EXECUTE.value}
+            ):
+                self.gateway.context.requires_replan = True
             if all(result.call_id != persisted.call_id for result in self.gateway.history):
                 self.gateway.history.append(persisted)
             self._emit(
@@ -767,6 +849,102 @@ class AgentRuntime:
                 {"call_id": call.id, "tool_name": call.name},
             )
             return persisted
+        if (
+            (effect is None or effect.retry_of_effect_id is None)
+            and self._episodic_memory is not None
+            and self._episodic_memory.is_known_failed_action(call)
+        ):
+            return self._block_repeated_effect(task, call)
+        if effect is not None and self.state_store is not None:
+            if effect.status in {EffectStatus.DENIED, EffectStatus.CANCELLED}:
+                reason = (
+                    "Effect was denied before backend execution"
+                    if effect.status is EffectStatus.DENIED
+                    else "Effect was cancelled before backend execution"
+                )
+                result = self.gateway.observe_unexecuted(
+                    task.id,
+                    call,
+                    reason,
+                    effect_status=effect.status.value,
+                    next_action=(
+                        "choose_alternative"
+                        if effect.status is EffectStatus.DENIED
+                        else "await_updated_requirements"
+                    ),
+                )
+                self._settle_unexecuted_effect(effect, call, result)
+                return result
+            if effect.status is not EffectStatus.PREPARED:
+                result = ToolResult(
+                    call_id=call.id,
+                    tool_name=call.name,
+                    success=False,
+                    error_kind=ErrorKind.PERMISSION_DENIED,
+                    output=f"Effect is not executable from state {effect.status.value}",
+                )
+                self.gateway.history.append(result)
+                self.state_store.commit_tool_result(
+                    task.id,
+                    call,
+                    result,
+                    lease_guard=self._lease_guard(),
+                )
+                return result
+            try:
+                executable_call = revalidate_effect_call(effect, call, self.gateway)
+            except ValueError as exc:
+                result = self.gateway.reject_prepared(task.id, call, str(exc))
+                self._settle_unexecuted_effect(effect, call, result)
+                return result
+            try:
+                assert_file_preconditions(effect, self.gateway)
+            except ValueError as exc:
+                result = self.gateway.observe_unexecuted(
+                    task.id,
+                    executable_call,
+                    str(exc),
+                    effect_status=EffectStatus.CANCELLED.value,
+                    next_action="await_updated_requirements",
+                    error_kind=ErrorKind.EXECUTION_ERROR,
+                )
+                self._settle_unexecuted_effect(
+                    effect,
+                    executable_call,
+                    result,
+                    status=EffectStatus.CANCELLED,
+                )
+                return result
+            guard = self._lease_guard()
+            if guard is None:
+                raise LeaseLost(task.id)
+            config_version = self._effect_config_version(task)
+            current_assessment = self.gateway.prepare_call(task.id, executable_call).policy_result
+            current_decision = current_assessment.decision or PolicyDecision.DENY
+            claimed_effect = self.state_store.claim_effect(
+                effect.id,
+                expected_version=effect.version,
+                lease_guard=guard,
+                effect_fingerprint=effect.content_fingerprint(),
+                workspace_ref=task.repository,
+                policy_version=self.gateway.policy.version,
+                config_version=config_version,
+                policy_decision=current_decision.value,
+            )
+            approval_consumed = claimed_effect.approval_consumed
+            self._assert_ownership()
+            try:
+                assert_file_preconditions(effect, self.gateway)
+            except ValueError as exc:
+                result = ToolResult(
+                    call_id=call.id,
+                    tool_name=call.name,
+                    success=False,
+                    error_kind=ErrorKind.EXECUTION_ERROR,
+                    output=str(exc),
+                )
+                self.gateway.history.append(result)
+                return self._commit_claimed_effect(claimed_effect, executable_call, result)
         if self._working_memory is not None and self._working_memory.has_read_call(call):
             raw_path = call.arguments.get("path")
             path = raw_path if isinstance(raw_path, str) else "the requested path"
@@ -781,9 +959,12 @@ class AgentRuntime:
             )
             self.gateway.history.append(result)
             if self.state_store is not None:
-                self.state_store.record_tool_call(
-                    task.id, call, result, lease_guard=self._lease_guard()
-                )
+                if claimed_effect is not None:
+                    self._commit_claimed_effect(claimed_effect, executable_call, result)
+                else:
+                    self.state_store.record_tool_call(
+                        task.id, call, result, lease_guard=self._lease_guard()
+                    )
             payload = {
                 "call": call.model_dump(mode="json"),
                 "result": result.model_dump(mode="json"),
@@ -796,46 +977,275 @@ class AgentRuntime:
                 {"call_id": call.id, "path": path},
             )
             return result
-        if self._episodic_memory is not None and self._episodic_memory.is_known_failed_action(call):
-            result = ToolResult(
-                call_id=call.id,
-                tool_name=call.name,
-                success=False,
-                error_kind=ErrorKind.NO_PROGRESS,
-                output="blocked exact repetition of an unresolved failed action",
+        result = (
+            self.gateway.execute_claimed(
+                task.id,
+                executable_call,
+                approval_consumed=approval_consumed,
             )
-            self.gateway.history.append(result)
-            self.gateway.context.requires_replan = True
-            if self.state_store is not None:
+            if claimed_effect is not None
+            else self.gateway.execute(task.id, call)
+        )
+        self._assert_ownership()
+        if self.state_store is not None:
+            if claimed_effect is not None:
+                self._commit_claimed_effect(claimed_effect, executable_call, result)
+            else:
                 self.state_store.record_tool_call(
                     task.id, call, result, lease_guard=self._lease_guard()
                 )
-            self._emit(
-                "tool.completed",
-                task,
-                {
-                    "call": call.model_dump(mode="json"),
-                    "result": result.model_dump(mode="json"),
-                    "blocked_by_episodic_memory": True,
-                },
-            )
-            self._emit(
-                "episode.repeat_blocked",
-                task,
-                {
-                    "call_id": call.id,
-                    "tool_name": call.name,
-                    "action_fingerprint": self._episodic_memory.action_fingerprint(call),
-                },
-            )
-            return result
-        result = self.gateway.execute(task.id, call)
-        self._assert_ownership()
+        return result
+
+    def _block_repeated_effect(self, task: Task, call: ToolCall) -> ToolResult:
+        if self._episodic_memory is None:
+            raise RuntimeError("episodic memory is unavailable")
+        result = ToolResult(
+            call_id=call.id,
+            tool_name=call.name,
+            success=False,
+            error_kind=ErrorKind.NO_PROGRESS,
+            output="blocked exact repetition of an unresolved failed action",
+        )
+        self.gateway.history.append(result)
+        self.gateway.context.requires_replan = True
         if self.state_store is not None:
             self.state_store.record_tool_call(
                 task.id, call, result, lease_guard=self._lease_guard()
             )
+        self._emit(
+            "tool.completed",
+            task,
+            {
+                "call": call.model_dump(mode="json"),
+                "result": result.model_dump(mode="json"),
+                "blocked_by_episodic_memory": True,
+            },
+        )
+        self._emit(
+            "episode.repeat_blocked",
+            task,
+            {
+                "call_id": call.id,
+                "tool_name": call.name,
+                "action_fingerprint": self._episodic_memory.action_fingerprint(call),
+            },
+        )
         return result
+
+    def _effect_config_version(self, task: Task) -> str:
+        if self.state_store is None or task.session_id is None:
+            return "1"
+        return self.state_store.get_session(task.session_id).config_version
+
+    def _settle_unexecuted_effect(
+        self,
+        effect: Effect,
+        call: ToolCall,
+        result: ToolResult,
+        *,
+        status: EffectStatus = EffectStatus.DENIED,
+    ) -> Effect:
+        if self.state_store is None:
+            return effect.model_copy(update={"status": status})
+        guard = self._lease_guard()
+        if guard is None:
+            raise LeaseLost(effect.task_id)
+        return self.state_store.settle_unexecuted_effect(
+            effect.id,
+            status=status,
+            expected_version=effect.version,
+            call=call,
+            result=result,
+            lease_guard=guard,
+        )
+
+    def _cancel_pending_effects(self, task: Task, reason: str) -> None:
+        """Close every unclaimed Provider call before ending or revising work."""
+
+        if self.state_store is None:
+            return
+        for effect in self.state_store.list_effects(task.id):
+            if effect.status not in {
+                EffectStatus.PREPARED,
+                EffectStatus.WAITING_FOR_APPROVAL,
+            }:
+                continue
+            call = ToolCall(
+                id=effect.provider_call_id,
+                name=effect.tool_name,
+                arguments=effect.arguments_summary,
+            )
+            result = self.gateway.observe_unexecuted(
+                task.id,
+                call,
+                reason,
+                effect_status=EffectStatus.CANCELLED.value,
+                next_action="await_updated_requirements",
+            )
+            self._settle_unexecuted_effect(
+                effect,
+                call,
+                result,
+                status=EffectStatus.CANCELLED,
+            )
+
+    def _reconcile_effects(self, task: Task) -> Task:
+        """Resolve interrupted Effects without invoking a tool backend."""
+
+        if self.state_store is None:
+            return task
+        guard = self._lease_guard()
+        if guard is None:
+            raise LeaseLost(task.id)
+        current_task = task
+        for effect in self.state_store.list_effects(task.id):
+            if effect.status is EffectStatus.UNKNOWN:
+                if self.state_store.get_recovery_disposition_for_effect(effect.id) is not None:
+                    continue
+                _, current_task = self.state_store.mark_effect_unknown(
+                    effect.id,
+                    expected_version=effect.version,
+                    evidence=effect.reconciliation_evidence,
+                    lease_guard=guard,
+                )
+                return current_task
+            if effect.status is not EffectStatus.EXECUTING:
+                continue
+            persisted_result = self.state_store.get_tool_result(task.id, effect.provider_call_id)
+            reconciliation = reconcile_effect(
+                effect,
+                self.gateway,
+                persisted_result=persisted_result,
+            )
+            if reconciliation.outcome is ReconcileOutcome.CONFIRMED_RESULT:
+                result = reconciliation.result
+                if result is None:
+                    raise RuntimeError("confirmed Effect reconciliation has no result")
+                call = ToolCall(
+                    id=effect.provider_call_id,
+                    name=effect.tool_name,
+                    arguments=effect.arguments_summary,
+                )
+                status = EffectStatus.SUCCEEDED if result.success else EffectStatus.FAILED
+                terminal = effect.model_copy(
+                    update={
+                        "status": status,
+                        "reconciliation_evidence": reconciliation.evidence,
+                    }
+                )
+                reference = f"tool-result:{effect.task_id}:{effect.provider_call_id}"
+                self.state_store.commit_effect(
+                    terminal,
+                    expected_version=effect.version,
+                    result_ref=reference,
+                    observation_ref=reference,
+                    lease_guard=guard,
+                    call=None if persisted_result is not None else call,
+                    result=None if persisted_result is not None else result,
+                )
+                if all(item.call_id != result.call_id for item in self.gateway.history):
+                    self.gateway.history.append(result)
+                self._emit(
+                    "effect.reconciled",
+                    current_task,
+                    {
+                        "effect_id": effect.id,
+                        "outcome": reconciliation.outcome.value,
+                        "evidence": reconciliation.evidence,
+                    },
+                )
+                continue
+            if reconciliation.outcome is ReconcileOutcome.RECOVERY_REQUIRED:
+                _, current_task = self.state_store.mark_effect_unknown(
+                    effect.id,
+                    expected_version=effect.version,
+                    evidence=reconciliation.evidence,
+                    lease_guard=guard,
+                )
+                self._emit(
+                    "effect.recovery_required",
+                    current_task,
+                    {
+                        "effect_id": effect.id,
+                        "outcome": reconciliation.outcome.value,
+                        "evidence": reconciliation.evidence,
+                    },
+                )
+                return current_task
+        return current_task
+
+    def _commit_claimed_effect(
+        self,
+        effect: Effect,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> ToolResult:
+        if self.state_store is None:
+            return result
+        guard = self._lease_guard()
+        if guard is None:
+            raise LeaseLost(effect.task_id)
+        status = EffectStatus.SUCCEEDED if result.success else EffectStatus.FAILED
+        terminal = effect.model_copy(update={"status": status})
+        reference = f"tool-result:{effect.task_id}:{call.id}"
+        self.state_store.commit_effect(
+            terminal,
+            expected_version=effect.version,
+            result_ref=reference,
+            observation_ref=reference,
+            lease_guard=guard,
+            call=call,
+            result=result,
+        )
+        return result
+
+    def _yield_for_effect_approval(self, task: Task, effect: Effect) -> None:
+        if effect.status in {
+            EffectStatus.DENIED,
+            EffectStatus.CANCELLED,
+            EffectStatus.SUCCEEDED,
+            EffectStatus.FAILED,
+            EffectStatus.UNKNOWN,
+        }:
+            return
+        if effect.approval_id is not None and effect.status is EffectStatus.PREPARED:
+            return
+        raw_decision = effect.policy_result.get("decision", PolicyDecision.ALLOW.value)
+        decision = PolicyDecision(raw_decision)
+        if effect.status is not EffectStatus.WAITING_FOR_APPROVAL and (
+            decision is not PolicyDecision.REQUIRE_APPROVAL or effect.preparation_error is not None
+        ):
+            return
+        if self.state_store is None:
+            return
+        guard = self._lease_guard()
+        if guard is None:
+            raise LeaseLost(task.id)
+        config_version = self._effect_config_version(task)
+        approval = build_approval(
+            task,
+            effect,
+            policy_version=self.gateway.policy.version,
+            config_version=config_version,
+        )
+        _, persisted_approval, waiting_task = self.state_store.request_effect_approval(
+            effect.id,
+            approval,
+            expected_version=effect.version,
+            lease_guard=guard,
+        )
+        object.__setattr__(task, "runtime_condition", waiting_task.runtime_condition)
+        object.__setattr__(task, "version", waiting_task.version)
+        self._emit(
+            "approval.waiting",
+            task,
+            {
+                "approval_id": persisted_approval.id,
+                "effect_id": effect.id,
+                "tool_name": effect.tool_name,
+            },
+        )
+        raise ApprovalPending(persisted_approval)
 
     def _fail(self, task: Task, kind: ErrorKind, message: str) -> Task:
         task.plan = self.gateway.context.plan
@@ -856,6 +1266,7 @@ class AgentRuntime:
     def _cancel(self, task: Task, control: ControlRequest | None = None) -> Task:
         if control is not None:
             self._settle_control(control)
+        self._cancel_pending_effects(task, "task cancelled before backend execution")
         task.plan = self.gateway.context.plan
         task.report = self._build_report("task cancelled")
         task.transition(TaskStatus.CANCELLED)
@@ -1586,6 +1997,89 @@ class AgentRuntime:
     def _record_step(self, step: AgentStep) -> None:
         if self.state_store is not None:
             self.state_store.record_step(step, lease_guard=self._lease_guard())
+
+    def _persisted_response_step(self, task_id: str, step_index: int) -> AgentStep | None:
+        if self.state_store is None:
+            return None
+        return next(
+            (
+                step
+                for step in self.state_store.list_steps(task_id)
+                if step.index == step_index and step.model_response is not None
+            ),
+            None,
+        )
+
+    def _materialize_recovery_retry_step(
+        self,
+        task: Task,
+        step_index: int,
+    ) -> AgentStep | None:
+        if self.state_store is None:
+            return None
+        retry = next(
+            (
+                effect
+                for effect in self.state_store.list_effects(task.id)
+                if effect.retry_of_effect_id is not None
+                and effect.status is EffectStatus.PREPARED
+                and (
+                    (
+                        disposition := self.state_store.get_recovery_disposition_for_effect(
+                            effect.retry_of_effect_id
+                        )
+                    )
+                    is not None
+                    and disposition.kind is RecoveryDispositionKind.CREATE_RETRY
+                    and disposition.retry_effect_id == effect.id
+                )
+            ),
+            None,
+        )
+        if retry is None:
+            return None
+        call = ToolCall(
+            id=retry.provider_call_id,
+            name=retry.tool_name,
+            arguments=retry.arguments_summary,
+        )
+        response = ModelResponse(
+            content="Execute the explicitly requested recovery retry.",
+            tool_calls=[call],
+        )
+        step = AgentStep(
+            id=retry.step_id,
+            task_id=task.id,
+            index=step_index,
+            status=StepStatus.RUNNING,
+            model_response=response.model_dump(mode="json"),
+            effect_ids=[retry.id],
+            started_at=utc_now(),
+        )
+        self.state_store.prepare_effect_batch(
+            step,
+            [retry],
+            expected_version=task.version,
+            lease_guard=self._lease_guard(),
+        )
+        self._emit(
+            "effect.retry_materialized",
+            task,
+            {"effect_id": retry.id, "retry_of_effect_id": retry.retry_of_effect_id},
+        )
+        return step
+
+    def _is_recovery_retry_placeholder(self, effect: Effect | None) -> bool:
+        if effect is None or effect.status is not EffectStatus.UNKNOWN or self.state_store is None:
+            return False
+        disposition = self.state_store.get_recovery_disposition_for_effect(effect.id)
+        return disposition is not None and disposition.kind is RecoveryDispositionKind.CREATE_RETRY
+
+    def _effects_for_step(self, step: AgentStep) -> list[Effect]:
+        if self.state_store is None:
+            return []
+        effects = {effect.id: effect for effect in self.state_store.list_effects(step.task_id)}
+        return [effects[effect_id] for effect_id in step.effect_ids]
 
     def _with_execution_ownership(self, task: Task, action: Callable[[Task], Task]) -> Task:
         if self.state_store is None:

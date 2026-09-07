@@ -15,6 +15,16 @@ class FileChangeTracker:
         if path not in self._original:
             self._original[path] = path.read_text(encoding="utf-8") if path.exists() else None
 
+    def capture_original(self, path: Path, content: str | None) -> None:
+        """Restore a trusted persisted baseline without reading the current file."""
+
+        resolved = path.resolve(strict=False)
+        try:
+            resolved.relative_to(self.repository)
+        except ValueError as exc:
+            raise ValueError(f"change baseline escapes repository: {path}") from exc
+        self._original.setdefault(resolved, content)
+
     def changed_paths(self) -> list[str]:
         return [
             path.relative_to(self.repository).as_posix()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -10,10 +11,13 @@ from enum import StrEnum
 from typing import Protocol, TypeVar
 
 from patchloop.domain import (
+    AgentStep,
+    ErrorKind,
     SessionStatus,
     Task,
     TaskOutcome,
     TaskRuntimeCondition,
+    TaskStatus,
     ToolCall,
     ToolResult,
 )
@@ -36,6 +40,7 @@ from patchloop.execution.models import (
     RecoveryDispositionKind,
     WorkspaceLease,
 )
+from patchloop.execution.recovery import validate_recovery_resolution
 from patchloop.sandbox import ManagedCommandIdentity, ManagedCommandStatus
 from patchloop.session.models import Session, SessionCheckpoint, Turn
 
@@ -238,6 +243,10 @@ class RuntimeStore(Protocol):
         lease_guard: LeaseGuard | None = None,
     ) -> ToolResult: ...
 
+    def get_tool_result(self, task_id: str, call_id: str) -> ToolResult | None: ...
+
+    def list_tool_results(self, task_id: str) -> list[ToolResult]: ...
+
     def claim_execution(
         self,
         execution: Execution,
@@ -282,12 +291,51 @@ class RuntimeStore(Protocol):
         lease_guard: LeaseGuard | None = None,
     ) -> list[Effect]: ...
 
+    def prepare_effect_batch(
+        self,
+        step: AgentStep,
+        effects: Sequence[Effect],
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard | None = None,
+    ) -> list[Effect]: ...
+
     def decide_approval(
         self, approval: Approval, *, expected_version: int | None = None
     ) -> Approval: ...
 
+    def request_effect_approval(
+        self,
+        effect_id: str,
+        approval: Approval,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard,
+    ) -> tuple[Effect, Approval, Task]: ...
+
+    def resolve_effect_approval(
+        self,
+        approval_id: str,
+        *,
+        approved: bool,
+        source: str,
+        expected_version: int,
+        workspace_ref: str,
+        policy_version: str,
+        config_version: str,
+    ) -> tuple[Approval, Effect, Task]: ...
+
     def claim_effect(
-        self, effect_id: str, *, expected_version: int, lease_guard: LeaseGuard
+        self,
+        effect_id: str,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard,
+        effect_fingerprint: str | None = None,
+        workspace_ref: str | None = None,
+        policy_version: str | None = None,
+        config_version: str | None = None,
+        policy_decision: str | None = None,
     ) -> Effect: ...
 
     def commit_effect(
@@ -298,7 +346,29 @@ class RuntimeStore(Protocol):
         result_ref: str | None,
         observation_ref: str | None,
         lease_guard: LeaseGuard,
+        call: ToolCall | None = None,
+        result: ToolResult | None = None,
     ) -> Effect: ...
+
+    def settle_unexecuted_effect(
+        self,
+        effect_id: str,
+        *,
+        status: EffectStatus,
+        expected_version: int,
+        call: ToolCall,
+        result: ToolResult,
+        lease_guard: LeaseGuard,
+    ) -> Effect: ...
+
+    def mark_effect_unknown(
+        self,
+        effect_id: str,
+        *,
+        expected_version: int,
+        evidence: dict[str, object],
+        lease_guard: LeaseGuard,
+    ) -> tuple[Effect, Task]: ...
 
     def request_control(
         self, request: ControlRequest, *, expected_version: int
@@ -321,7 +391,15 @@ class RuntimeStore(Protocol):
         *,
         task_id: str,
         expected_version: int,
+        confirmed_call: ToolCall | None = None,
+        confirmed_result: ToolResult | None = None,
+        retry_effect: Effect | None = None,
+        retry_approval: Approval | None = None,
     ) -> Task: ...
+
+    def get_recovery_disposition(self, disposition_id: str) -> RecoveryDisposition: ...
+
+    def get_recovery_disposition_for_effect(self, effect_id: str) -> RecoveryDisposition | None: ...
 
     def commit_checkpoint(
         self,
@@ -362,6 +440,7 @@ class FakeStore:
         self.executions: dict[str, Execution] = {}
         self.workspace_leases: dict[str, WorkspaceLease] = {}
         self.effects: dict[str, Effect] = {}
+        self.steps: dict[tuple[str, int], AgentStep] = {}
         self.approvals: dict[str, Approval] = {}
         self.controls: dict[str, ControlRequest] = {}
         self.recoveries: dict[str, RecoveryDisposition] = {}
@@ -531,7 +610,34 @@ class FakeStore:
             raise KeyError(f"effect not found: {effect_id}") from exc
 
     def list_effects(self, task_id: str) -> list[Effect]:
-        return [self._copy(effect) for effect in self.effects.values() if effect.task_id == task_id]
+        return sorted(
+            [self._copy(effect) for effect in self.effects.values() if effect.task_id == task_id],
+            key=lambda effect: (effect.step_id, effect.batch_position),
+        )
+
+    def get_approval(self, approval_id: str) -> Approval:
+        try:
+            return self._copy(self.approvals[approval_id])
+        except KeyError as exc:
+            raise KeyError(f"approval not found: {approval_id}") from exc
+
+    def list_approvals(self, task_id: str) -> list[Approval]:
+        effect_ids = {effect.id for effect in self.effects.values() if effect.task_id == task_id}
+        return sorted(
+            [
+                self._copy(approval)
+                for approval in self.approvals.values()
+                if approval.effect_id in effect_ids
+            ],
+            key=lambda approval: (approval.created_at, approval.id),
+        )
+
+    def list_steps(self, task_id: str) -> list[AgentStep]:
+        return [
+            self._copy(step)
+            for (candidate_task_id, _), step in sorted(self.steps.items())
+            if candidate_task_id == task_id
+        ]
 
     def get_checkpoint(self, task_id: str) -> SessionCheckpoint:
         try:
@@ -1002,6 +1108,71 @@ class FakeStore:
                 )
         return result
 
+    def prepare_effect_batch(
+        self,
+        step: AgentStep,
+        effects: Sequence[Effect],
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard | None = None,
+    ) -> list[Effect]:
+        if step.model_response is None:
+            raise ValueError("an Effect batch requires a persisted model response")
+        if step.effect_ids != [effect.id for effect in effects]:
+            raise ValueError("step Effect IDs must preserve batch order")
+        if any(
+            effect.task_id != step.task_id
+            or effect.step_id != step.id
+            or effect.batch_position != position
+            for position, effect in enumerate(effects)
+        ):
+            raise ValueError("Effect batch does not match its Step")
+        task = self.get_task(step.task_id)
+        self._require_session_guard(task, lease_guard)
+        self._check_version(task.id, task.version, expected_version)
+        key = (step.task_id, step.index)
+        existing = self.steps.get(key)
+        if existing is not None and (
+            existing.id != step.id
+            or (
+                existing.model_response is not None
+                and existing.model_response != step.model_response
+            )
+            or (existing.effect_ids and existing.effect_ids != step.effect_ids)
+        ):
+            raise EffectIdentityConflict(step.id, (step.task_id, step.id, step.index))
+        prepared: list[Effect] = []
+        new_effects: list[Effect] = []
+        for effect in effects:
+            existing_effect = next(
+                (
+                    candidate
+                    for candidate in self.effects.values()
+                    if candidate.id == effect.id
+                    or candidate.identity_key() == effect.identity_key()
+                ),
+                None,
+            )
+            if existing_effect is not None:
+                existing_effect.assert_identity_compatible(effect)
+                prepared.append(self._copy(existing_effect))
+            else:
+                new_effects.append(effect)
+                prepared.append(self._copy(effect))
+        self.steps[key] = self._copy(step)
+        for effect in new_effects:
+            self.effects[effect.id] = self._copy(effect)
+        if new_effects and task.session_id is not None:
+            effect_ids = [effect.id for effect in new_effects]
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("effects.prepared", task.id, ",".join(effect_ids)),
+                event_type="effects.prepared",
+                task_id=task.id,
+                data={"effect_ids": effect_ids, "step_id": step.id},
+            )
+        return prepared
+
     def decide_approval(
         self, approval: Approval, *, expected_version: int | None = None
     ) -> Approval:
@@ -1033,19 +1204,239 @@ class FakeStore:
         self._journal_approval(approval, "approval.decided")
         return self._copy(approval)
 
+    def request_effect_approval(
+        self,
+        effect_id: str,
+        approval: Approval,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard,
+    ) -> tuple[Effect, Approval, Task]:
+        execution = self._assert_guard(lease_guard)
+        current = self.get_effect(effect_id)
+        if current.task_id != execution.task_id:
+            raise LeaseLost(current.task_id)
+        self._check_version(effect_id, current.version, expected_version)
+        if approval.effect_id != effect_id:
+            raise ValueError("approval does not belong to the Effect")
+        if current.status is EffectStatus.WAITING_FOR_APPROVAL:
+            existing = self.approvals.get(current.approval_id or "")
+            if existing is not None and existing.same_request(approval):
+                task = self.get_task(current.task_id)
+                waiting_execution = execution.model_copy(
+                    update={
+                        "status": ExecutionStatus.WAITING_FOR_APPROVAL,
+                        "version": execution.version + 1,
+                    }
+                )
+                waiting_task = task.model_copy(
+                    update={
+                        "runtime_condition": TaskRuntimeCondition.WAITING_FOR_APPROVAL,
+                        "version": task.version + 1,
+                    }
+                )
+                self.executions[execution.id] = self._copy(waiting_execution)
+                self.tasks[task.id] = self._copy(waiting_task)
+                return current, self._copy(existing), self._copy(waiting_task)
+            raise ApprovalConflict(approval.id, "pending", "pending")
+        if current.status is not EffectStatus.PREPARED:
+            raise ValueError(f"Effect cannot request approval from {current.status}")
+        if approval.status is not ApprovalStatus.PENDING:
+            raise ValueError("new approval request must be pending")
+        if approval.id in self.approvals or any(
+            candidate.effect_id == effect_id for candidate in self.approvals.values()
+        ):
+            raise ApprovalConflict(approval.id, "pending", "pending")
+        task = self.get_task(current.task_id)
+        if task.runtime_condition is not TaskRuntimeCondition.RUNNING:
+            raise ValueError("approval can only pause a running Task")
+        waiting_effect = current.model_copy(
+            update={
+                "status": EffectStatus.WAITING_FOR_APPROVAL,
+                "approval_id": approval.id,
+                "version": current.version + 1,
+            }
+        )
+        waiting_execution = execution.model_copy(
+            update={
+                "status": ExecutionStatus.WAITING_FOR_APPROVAL,
+                "version": execution.version + 1,
+            }
+        )
+        waiting_task = task.model_copy(
+            update={
+                "runtime_condition": TaskRuntimeCondition.WAITING_FOR_APPROVAL,
+                "version": task.version + 1,
+            }
+        )
+        self.effects[effect_id] = self._copy(waiting_effect)
+        self.approvals[approval.id] = self._copy(approval)
+        self.executions[execution.id] = self._copy(waiting_execution)
+        self.tasks[task.id] = self._copy(waiting_task)
+        self._journal_approval(approval, "approval.requested")
+        return (
+            self._copy(waiting_effect),
+            self._copy(approval),
+            self._copy(waiting_task),
+        )
+
+    def resolve_effect_approval(
+        self,
+        approval_id: str,
+        *,
+        approved: bool,
+        source: str,
+        expected_version: int,
+        workspace_ref: str,
+        policy_version: str,
+        config_version: str,
+    ) -> tuple[Approval, Effect, Task]:
+        try:
+            current = self._copy(self.approvals[approval_id])
+        except KeyError as exc:
+            raise KeyError(f"approval not found: {approval_id}") from exc
+        effect = self.get_effect(current.effect_id)
+        task = self.get_task(effect.task_id)
+        target = ApprovalStatus.APPROVED if approved else ApprovalStatus.DENIED
+        if current.status is not ApprovalStatus.PENDING:
+            if (
+                approved
+                and current.status is ApprovalStatus.CONSUMED
+                and current.decision_source == source
+            ):
+                return current, effect, task
+            if current.status is target and current.decision_source == source:
+                return current, effect, task
+            raise ApprovalConflict(current.id, current.status.value, target.value)
+        self._check_version(current.id, current.version, expected_version)
+        actual_config: str = (
+            config_version
+            if task.session_id is None
+            else self.get_session(task.session_id).config_version
+        ) or "1"
+        matches = (
+            workspace_ref == task.repository
+            and config_version == actual_config
+            and current.matches_execution_conditions(
+                effect,
+                workspace_ref=workspace_ref,
+                policy_version=policy_version,
+                config_version=config_version,
+            )
+        )
+        if not matches:
+            decided = current.model_copy(
+                update={
+                    "status": ApprovalStatus.EXPIRED,
+                    "decision_source": source,
+                    "decided_at": datetime.now(UTC),
+                    "version": current.version + 1,
+                }
+            )
+            released_effect = effect.model_copy(
+                update={
+                    "status": EffectStatus.PREPARED,
+                    "approval_id": None,
+                    "version": effect.version + 1,
+                }
+            )
+            released_task = task
+            if task.runtime_condition is TaskRuntimeCondition.WAITING_FOR_APPROVAL:
+                released_task = task.model_copy(
+                    update={
+                        "runtime_condition": TaskRuntimeCondition.IDLE,
+                        "version": task.version + 1,
+                    }
+                )
+            self.approvals[current.id] = self._copy(decided)
+            self.effects[effect.id] = self._copy(released_effect)
+            self.tasks[task.id] = self._copy(released_task)
+            self._journal_approval(decided, "approval.expired")
+            return (
+                self._copy(decided),
+                self._copy(released_effect),
+                self._copy(released_task),
+            )
+        decided = current.decide(approved, source)
+        next_effect_status = EffectStatus.PREPARED if approved else EffectStatus.DENIED
+        resolved_effect = effect.model_copy(
+            update={
+                "status": next_effect_status,
+                "version": effect.version + 1,
+            }
+        )
+        resolved_task = task
+        if task.runtime_condition is TaskRuntimeCondition.WAITING_FOR_APPROVAL:
+            resolved_task = task.model_copy(
+                update={
+                    "runtime_condition": TaskRuntimeCondition.IDLE,
+                    "version": task.version + 1,
+                }
+            )
+        self.approvals[current.id] = self._copy(decided)
+        self.effects[effect.id] = self._copy(resolved_effect)
+        self.tasks[task.id] = self._copy(resolved_task)
+        self._journal_approval(decided, "approval.decided")
+        return self._copy(decided), self._copy(resolved_effect), self._copy(resolved_task)
+
     def claim_effect(
-        self, effect_id: str, *, expected_version: int, lease_guard: LeaseGuard
+        self,
+        effect_id: str,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard,
+        effect_fingerprint: str | None = None,
+        workspace_ref: str | None = None,
+        policy_version: str | None = None,
+        config_version: str | None = None,
+        policy_decision: str | None = None,
     ) -> Effect:
         self._assert_guard(lease_guard)
         current = self._copy(self.effects[effect_id])
         self._check_version(effect_id, current.version, expected_version)
         if current.status is not EffectStatus.PREPARED:
             raise LeaseConflict(effect_id)
+        task = self.get_task(current.task_id)
+        actual_workspace = task.repository
+        actual_config: str = (
+            config_version
+            if task.session_id is None
+            else self.get_session(task.session_id).config_version
+        ) or "1"
+        if effect_fingerprint is not None and current.content_fingerprint() != effect_fingerprint:
+            raise EffectIdentityConflict(current.id, current.identity_key())
+        if workspace_ref is not None and workspace_ref != actual_workspace:
+            raise LeaseConflict(effect_id)
+        if config_version is not None and config_version != actual_config:
+            raise LeaseConflict(effect_id)
+        persisted_decision = str(current.policy_result.get("decision", "allow"))
+        if current.preparation_error is not None or persisted_decision == "deny":
+            raise ValueError(f"Effect is not executable: {effect_id}")
+        if policy_decision is not None and policy_decision != persisted_decision:
+            raise ValueError(f"Effect policy changed before execution: {effect_id}")
+        consumed_approval = None
+        if current.approval_id is not None:
+            approval = self._copy(self.approvals[current.approval_id])
+            consumed_approval = approval.consume(
+                current,
+                workspace_ref=workspace_ref or actual_workspace,
+                policy_version=policy_version or approval.policy_version,
+                config_version=config_version or actual_config,
+            )
+        elif persisted_decision == "require_approval":
+            raise ApprovalConflict(effect_id, "missing", "consumed")
         claimed = current.model_copy(
-            update={"status": EffectStatus.EXECUTING, "version": current.version + 1}
+            update={
+                "status": EffectStatus.EXECUTING,
+                "approval_id": None,
+                "approval_consumed": consumed_approval is not None,
+                "version": current.version + 1,
+            }
         )
         self.effects[effect_id] = self._copy(claimed)
-        task = self.get_task(claimed.task_id)
+        if consumed_approval is not None:
+            self.approvals[consumed_approval.id] = self._copy(consumed_approval)
+            self._journal_approval(consumed_approval, "approval.consumed")
         if task.session_id is not None:
             self._journal(
                 self.get_session(task.session_id),
@@ -1065,6 +1456,8 @@ class FakeStore:
         result_ref: str | None,
         observation_ref: str | None,
         lease_guard: LeaseGuard,
+        call: ToolCall | None = None,
+        result: ToolResult | None = None,
     ) -> Effect:
         self._assert_guard(lease_guard)
         current = self._copy(self.effects[effect.id])
@@ -1077,6 +1470,15 @@ class FakeStore:
             EffectStatus.UNKNOWN,
         }:
             raise ValueError(f"effect commit requires a terminal status: {effect.id}")
+        if (call is None) is not (result is None):
+            raise ValueError("Effect commit requires both call and result")
+        if call is not None and result is not None:
+            if call.id != current.provider_call_id or result.call_id != call.id:
+                raise ValueError("tool observation does not belong to the Effect")
+            key = (effect.task_id, call.id)
+            existing = self.tool_results.get(key)
+            if existing is not None and existing != (call, result):
+                raise ValueError(f"tool call already committed with different content: {call.id}")
         committed = effect.model_copy(
             update={
                 "status": effect.status,
@@ -1104,6 +1506,11 @@ class FakeStore:
             },
         )
         self.effects[effect.id] = self._copy(committed)
+        if call is not None and result is not None:
+            self.tool_results[(effect.task_id, call.id)] = (
+                self._copy(call),
+                self._copy(result),
+            )
         self.events.setdefault(session.id, []).append(event)
         self.sessions[session.id] = session.model_copy(update={"event_sequence": event.sequence})
         checkpoint = self.checkpoints.get(task.id)
@@ -1112,6 +1519,122 @@ class FakeStore:
                 update={"event_sequence": event.sequence}
             )
         return self._copy(committed)
+
+    def settle_unexecuted_effect(
+        self,
+        effect_id: str,
+        *,
+        status: EffectStatus,
+        expected_version: int,
+        call: ToolCall,
+        result: ToolResult,
+        lease_guard: LeaseGuard,
+    ) -> Effect:
+        """Pair a denied or cancelled Effect with a non-execution observation."""
+
+        self._assert_guard(lease_guard)
+        current = self.get_effect(effect_id)
+        self._check_version(effect_id, current.version, expected_version)
+        if status not in {EffectStatus.DENIED, EffectStatus.CANCELLED}:
+            raise ValueError("unexecuted Effect must be denied or cancelled")
+        if current.status not in {
+            EffectStatus.PREPARED,
+            EffectStatus.WAITING_FOR_APPROVAL,
+            status,
+        }:
+            raise ValueError(f"Effect cannot be settled from {current.status}")
+        if call.id != current.provider_call_id or result.call_id != call.id:
+            raise ValueError("tool observation does not belong to the Effect")
+        key = (current.task_id, call.id)
+        existing = self.tool_results.get(key)
+        if existing is not None:
+            if existing != (call, result) or current.status is not status:
+                raise ValueError(f"tool call already committed with different content: {call.id}")
+            return current
+        settled = current.model_copy(
+            update={
+                "status": status,
+                "result_ref": f"tool-result:{current.task_id}:{call.id}",
+                "observation_ref": f"tool-result:{current.task_id}:{call.id}",
+                "version": current.version + 1,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        if current.approval_id is not None:
+            approval = self.get_approval(current.approval_id)
+            if approval.status is ApprovalStatus.PENDING:
+                self.approvals[approval.id] = approval.model_copy(
+                    update={
+                        "status": ApprovalStatus.EXPIRED,
+                        "decision_source": "effect_settled",
+                        "decided_at": datetime.now(UTC),
+                        "version": approval.version + 1,
+                    }
+                )
+        self.effects[current.id] = self._copy(settled)
+        self.tool_results[key] = (self._copy(call), self._copy(result))
+        task = self.get_task(current.task_id)
+        if task.session_id is not None:
+            session = self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("effect.settled", settled.id, settled.version),
+                event_type="effect.settled",
+                task_id=task.id,
+                trace_id=settled.provider_call_id,
+                data={"effect_id": settled.id, "status": settled.status.value},
+            )
+            checkpoint = self.checkpoints.get(task.id)
+            if checkpoint is not None:
+                self.checkpoints[task.id] = checkpoint.model_copy(
+                    update={"event_sequence": session.event_sequence}
+                )
+        return self._copy(settled)
+
+    def mark_effect_unknown(
+        self,
+        effect_id: str,
+        *,
+        expected_version: int,
+        evidence: dict[str, object],
+        lease_guard: LeaseGuard,
+    ) -> tuple[Effect, Task]:
+        self._assert_guard(lease_guard)
+        current = self.get_effect(effect_id)
+        self._check_version(effect_id, current.version, expected_version)
+        if current.status not in {EffectStatus.EXECUTING, EffectStatus.UNKNOWN}:
+            raise ValueError(f"Effect cannot require recovery from {current.status}")
+        unknown = current
+        if current.status is EffectStatus.EXECUTING:
+            unknown = current.model_copy(
+                update={
+                    "status": EffectStatus.UNKNOWN,
+                    "reconciliation_evidence": self._copy(evidence),
+                    "version": current.version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self.effects[current.id] = self._copy(unknown)
+        task = self.get_task(current.task_id)
+        recovery_task = task
+        if task.runtime_condition is not TaskRuntimeCondition.RECOVERY_REQUIRED:
+            recovery_task = task.model_copy(
+                update={
+                    "runtime_condition": TaskRuntimeCondition.RECOVERY_REQUIRED,
+                    "version": task.version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self.tasks[task.id] = self._copy(recovery_task)
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("effect.recovery_required", unknown.id, unknown.version),
+                event_type="effect.recovery_required",
+                task_id=task.id,
+                trace_id=unknown.provider_call_id,
+                data={"effect_id": unknown.id, "evidence": self._copy(evidence)},
+            )
+        return self._copy(unknown), self._copy(recovery_task)
 
     def commit_tool_result(
         self,
@@ -1144,6 +1667,17 @@ class FakeStore:
                 data={"call_id": call.id, "tool_name": call.name, "success": result.success},
             )
         return self._copy(result)
+
+    def get_tool_result(self, task_id: str, call_id: str) -> ToolResult | None:
+        existing = self.tool_results.get((task_id, call_id))
+        return None if existing is None else self._copy(existing[1])
+
+    def list_tool_results(self, task_id: str) -> list[ToolResult]:
+        return [
+            self._copy(result)
+            for (candidate_task_id, _), (_, result) in self.tool_results.items()
+            if candidate_task_id == task_id
+        ]
 
     def _require_session_guard(self, task: Task, lease_guard: LeaseGuard | None) -> None:
         if task.session_id is None:
@@ -1208,23 +1742,127 @@ class FakeStore:
         *,
         task_id: str,
         expected_version: int,
+        confirmed_call: ToolCall | None = None,
+        confirmed_result: ToolResult | None = None,
+        retry_effect: Effect | None = None,
+        retry_approval: Approval | None = None,
     ) -> Task:
         task = self.get_task(task_id)
+        existing = self.recoveries.get(disposition.id) or next(
+            (
+                candidate
+                for candidate in self.recoveries.values()
+                if candidate.unknown_effect_id == disposition.unknown_effect_id
+            ),
+            None,
+        )
+        if existing is not None:
+            if existing != disposition:
+                raise RecoveryRequired(task_id, disposition.unknown_effect_id)
+            return self._copy(task)
         self._check_version(task_id, task.version, expected_version)
         if task.runtime_condition is not TaskRuntimeCondition.RECOVERY_REQUIRED:
             raise RecoveryRequired(task_id, disposition.unknown_effect_id)
-        target = {
-            RecoveryDispositionKind.CONFIRM_RESULT: TaskRuntimeCondition.RUNNING,
-            RecoveryDispositionKind.CREATE_RETRY: TaskRuntimeCondition.WAITING_FOR_APPROVAL,
-            RecoveryDispositionKind.ABANDON: TaskRuntimeCondition.ENDED,
-        }[disposition.kind]
-        disposition.validate_target(target)
+        unknown = self.effects.get(disposition.unknown_effect_id)
+        if (
+            unknown is None
+            or unknown.task_id != task_id
+            or unknown.status is not EffectStatus.UNKNOWN
+        ):
+            raise RecoveryRequired(task_id, disposition.unknown_effect_id)
+        target = validate_recovery_resolution(
+            task,
+            unknown,
+            disposition,
+            confirmed_call=confirmed_call,
+            confirmed_result=confirmed_result,
+            retry_effect=retry_effect,
+            retry_approval=retry_approval,
+        )
+        if confirmed_call is not None and confirmed_result is not None:
+            reference = f"tool-result:{task.id}:{confirmed_call.id}"
+            resolved_effect = unknown.model_copy(
+                update={
+                    "status": (
+                        EffectStatus.SUCCEEDED if confirmed_result.success else EffectStatus.FAILED
+                    ),
+                    "result_ref": reference,
+                    "observation_ref": reference,
+                    "reconciliation_evidence": self._copy(disposition.evidence),
+                    "version": unknown.version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self.effects[unknown.id] = self._copy(resolved_effect)
+            self.tool_results[(task.id, confirmed_call.id)] = (
+                self._copy(confirmed_call),
+                self._copy(confirmed_result),
+            )
+        if retry_effect is not None and retry_approval is not None:
+            if retry_effect.id in self.effects or any(
+                candidate.identity_key() == retry_effect.identity_key()
+                for candidate in self.effects.values()
+            ):
+                raise EffectIdentityConflict(retry_effect.id, retry_effect.identity_key())
+            waiting_retry = retry_effect.model_copy(
+                update={
+                    "status": EffectStatus.WAITING_FOR_APPROVAL,
+                    "approval_id": retry_approval.id,
+                }
+            )
+            self.effects[waiting_retry.id] = self._copy(waiting_retry)
+            self.approvals[retry_approval.id] = self._copy(retry_approval)
+            original_call = ToolCall(
+                id=unknown.provider_call_id,
+                name=unknown.tool_name,
+                arguments=unknown.arguments_summary,
+            )
+            original_observation = ToolResult(
+                call_id=original_call.id,
+                tool_name=original_call.name,
+                success=False,
+                error_kind=ErrorKind.PERMISSION_DENIED,
+                output=json.dumps(
+                    {
+                        "backend_result": "unknown",
+                        "effect_status": EffectStatus.UNKNOWN.value,
+                        "next_action": "execute_explicit_retry_after_approval",
+                        "recovery_disposition": disposition.id,
+                        "retry_effect_id": waiting_retry.id,
+                    },
+                    sort_keys=True,
+                ),
+            )
+            self.tool_results[(task.id, original_call.id)] = (
+                self._copy(original_call),
+                self._copy(original_observation),
+            )
         self.recoveries[disposition.id] = self._copy(disposition)
-        updated = task.model_copy(update={"runtime_condition": target, "version": task.version + 1})
+        task_updates: dict[str, object] = {
+            "runtime_condition": target,
+            "version": task.version + 1,
+            "updated_at": datetime.now(UTC),
+        }
+        if disposition.kind is RecoveryDispositionKind.ABANDON:
+            task_updates.update(
+                {
+                    "outcome": TaskOutcome.CANCELLED,
+                    "status": TaskStatus.CANCELLED,
+                }
+            )
+        updated = task.model_copy(update=task_updates)
         self.tasks[task_id] = self._copy(updated)
         if task.session_id is not None:
+            session = self.get_session(task.session_id)
+            if (
+                disposition.kind is RecoveryDispositionKind.ABANDON
+                and session.active_task_id == task.id
+            ):
+                session = session.model_copy(
+                    update={"active_task_id": None, "version": session.version + 1}
+                )
             self._journal(
-                self.get_session(task.session_id),
+                session,
                 event_id=journal_event_id(
                     "recovery.resolved", disposition.id, disposition.kind.value
                 ),
@@ -1237,6 +1875,23 @@ class FakeStore:
                 },
             )
         return self._copy(updated)
+
+    def get_recovery_disposition(self, disposition_id: str) -> RecoveryDisposition:
+        try:
+            return self._copy(self.recoveries[disposition_id])
+        except KeyError as exc:
+            raise KeyError(f"recovery disposition not found: {disposition_id}") from exc
+
+    def get_recovery_disposition_for_effect(self, effect_id: str) -> RecoveryDisposition | None:
+        disposition = next(
+            (
+                candidate
+                for candidate in self.recoveries.values()
+                if candidate.unknown_effect_id == effect_id
+            ),
+            None,
+        )
+        return None if disposition is None else self._copy(disposition)
 
     def commit_checkpoint(
         self,

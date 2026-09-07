@@ -15,6 +15,7 @@ from patchloop.execution.models import (
     SessionCheckpoint,
     WorkspaceLease,
 )
+from patchloop.execution.recovery import RecoveryResolution, RecoveryService
 
 __all__ = [
     "Approval",
@@ -28,6 +29,8 @@ __all__ = [
     "ExecutionStatus",
     "RecoveryDisposition",
     "RecoveryDispositionKind",
+    "RecoveryResolution",
+    "RecoveryService",
     "SessionCheckpoint",
     "WorkspaceLease",
 ]

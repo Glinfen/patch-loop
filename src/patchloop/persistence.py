@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from patchloop.domain import (
     AgentStep,
+    ErrorKind,
     Plan,
     SessionStatus,
     Task,
@@ -41,12 +42,14 @@ from patchloop.execution.models import (
     RecoveryDispositionKind,
     WorkspaceLease,
 )
+from patchloop.execution.recovery import validate_recovery_resolution
 from patchloop.memory.episodic import EpisodicMemorySnapshot
 from patchloop.memory.manager import MemoryManagerSnapshot
 from patchloop.memory.store import SQLiteMemoryStore, initialize_memory_schema
 from patchloop.memory.working import WorkingMemorySnapshot
 from patchloop.persistence_contracts import (
     ApprovalConflict,
+    EffectIdentityConflict,
     LeaseConflict,
     LeaseGuard,
     LeaseLost,
@@ -1921,6 +1924,88 @@ class SQLiteStore:
                     )
             return prepared
 
+    def prepare_effect_batch(
+        self,
+        step: AgentStep,
+        effects: Sequence[Effect],
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard | None = None,
+    ) -> list[Effect]:
+        """Atomically persist one provider response and its ordered Effect identities."""
+
+        if step.model_response is None:
+            raise ValueError("an Effect batch requires a persisted model response")
+        if step.effect_ids != [effect.id for effect in effects]:
+            raise ValueError("step Effect IDs must preserve batch order")
+        if any(
+            effect.task_id != step.task_id
+            or effect.step_id != step.id
+            or effect.batch_position != position
+            for position, effect in enumerate(effects)
+        ):
+            raise ValueError("Effect batch does not match its Step")
+        safe_step = self._redacted_model(step, AgentStep)
+        safe_effects = [self._redacted_effect(effect) for effect in effects]
+        with connect_write(self.path) as connection:
+            task = self._require_task(connection, step.task_id)
+            self._assert_legacy_write_guard(connection, step.task_id, lease_guard)
+            self._check_version(task.id, task.version, expected_version)
+            existing_step_row = connection.execute(
+                "SELECT payload_json FROM agent_steps WHERE task_id = ? AND step_index = ?",
+                (step.task_id, step.index),
+            ).fetchone()
+            if existing_step_row is not None:
+                existing_step = AgentStep.model_validate_json(existing_step_row["payload_json"])
+                if (
+                    existing_step.id != safe_step.id
+                    or (
+                        existing_step.model_response is not None
+                        and existing_step.model_response != safe_step.model_response
+                    )
+                    or (
+                        existing_step.effect_ids
+                        and existing_step.effect_ids != safe_step.effect_ids
+                    )
+                ):
+                    from patchloop.persistence_contracts import EffectIdentityConflict
+
+                    raise EffectIdentityConflict(
+                        safe_step.id, (safe_step.task_id, safe_step.id, safe_step.index)
+                    )
+            prepared: list[Effect] = []
+            new_effects: list[Effect] = []
+            for effect in safe_effects:
+                existing = self._effect_by_id_or_identity(connection, effect)
+                if existing is not None:
+                    existing.assert_identity_compatible(effect)
+                    prepared.append(existing)
+                else:
+                    new_effects.append(effect)
+                    prepared.append(effect)
+            connection.execute(
+                """
+                INSERT INTO agent_steps (task_id, step_index, payload_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(task_id, step_index) DO UPDATE SET
+                    payload_json = excluded.payload_json
+                """,
+                (safe_step.task_id, safe_step.index, self._redacted_json(safe_step)),
+            )
+            for effect in new_effects:
+                self._insert_effect_row(connection, effect)
+            if new_effects and task.session_id is not None:
+                effect_ids = [effect.id for effect in new_effects]
+                self._journal(
+                    connection,
+                    self._require_session(connection, task.session_id),
+                    event_id=journal_event_id("effects.prepared", task.id, ",".join(effect_ids)),
+                    event_type="effects.prepared",
+                    task_id=task.id,
+                    data={"effect_ids": effect_ids, "step_id": safe_step.id},
+                )
+            return prepared
+
     def get_effect(self, effect_id: str) -> Effect:
         with connect(self.path) as connection:
             effect = self._effect_row(connection, effect_id)
@@ -1985,8 +2070,234 @@ class SQLiteStore:
             self._journal_approval(connection, safe, "approval.decided")
             return safe
 
+    def request_effect_approval(
+        self,
+        effect_id: str,
+        approval: Approval,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard,
+    ) -> tuple[Effect, Approval, Task]:
+        """Atomically persist an approval request and yield Runtime ownership state."""
+
+        safe_approval = self._redacted_model(approval, Approval)
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard)
+            current = self._require_effect(connection, effect_id)
+            if current.task_id != execution.task_id:
+                raise LeaseLost(current.task_id)
+            self._check_version(effect_id, current.version, expected_version)
+            if safe_approval.effect_id != effect_id:
+                raise ValueError("approval does not belong to the Effect")
+            if current.status is EffectStatus.WAITING_FOR_APPROVAL:
+                row = connection.execute(
+                    "SELECT payload_json FROM approvals WHERE id = ?",
+                    (current.approval_id,),
+                ).fetchone()
+                existing = (
+                    None if row is None else Approval.model_validate_json(row["payload_json"])
+                )
+                if existing is not None and existing.same_request(safe_approval):
+                    task = self._require_task(connection, current.task_id)
+                    now = datetime.now(UTC)
+                    waiting_execution = execution.model_copy(
+                        update={
+                            "status": ExecutionStatus.WAITING_FOR_APPROVAL,
+                            "version": execution.version + 1,
+                            "updated_at": now,
+                        }
+                    )
+                    waiting_task = task.model_copy(
+                        update={
+                            "runtime_condition": TaskRuntimeCondition.WAITING_FOR_APPROVAL,
+                            "version": task.version + 1,
+                            "updated_at": now,
+                        }
+                    )
+                    self._write_execution_row(connection, waiting_execution)
+                    self._write_task_row(connection, waiting_task)
+                    return current, existing, waiting_task
+                raise ApprovalConflict(safe_approval.id, "pending", "pending")
+            if current.status is not EffectStatus.PREPARED:
+                raise ValueError(f"Effect cannot request approval from {current.status}")
+            if safe_approval.status is not ApprovalStatus.PENDING:
+                raise ValueError("new approval request must be pending")
+            if connection.execute(
+                "SELECT 1 FROM approvals WHERE id = ? OR effect_id = ?",
+                (safe_approval.id, effect_id),
+            ).fetchone():
+                raise ApprovalConflict(safe_approval.id, "pending", "pending")
+            task = self._require_task(connection, current.task_id)
+            if task.runtime_condition is not TaskRuntimeCondition.RUNNING:
+                raise ValueError("approval can only pause a running Task")
+            now = datetime.now(UTC)
+            waiting_effect = current.model_copy(
+                update={
+                    "status": EffectStatus.WAITING_FOR_APPROVAL,
+                    "approval_id": safe_approval.id,
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            waiting_execution = execution.model_copy(
+                update={
+                    "status": ExecutionStatus.WAITING_FOR_APPROVAL,
+                    "version": execution.version + 1,
+                    "updated_at": now,
+                }
+            )
+            waiting_task = task.model_copy(
+                update={
+                    "runtime_condition": TaskRuntimeCondition.WAITING_FOR_APPROVAL,
+                    "version": task.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._write_effect_row(connection, waiting_effect)
+            self._insert_approval_row(connection, safe_approval)
+            self._write_execution_row(connection, waiting_execution)
+            self._write_task_row(connection, waiting_task)
+            self._journal_approval(connection, safe_approval, "approval.requested")
+            return waiting_effect, safe_approval, waiting_task
+
+    def resolve_effect_approval(
+        self,
+        approval_id: str,
+        *,
+        approved: bool,
+        source: str,
+        expected_version: int,
+        workspace_ref: str,
+        policy_version: str,
+        config_version: str,
+    ) -> tuple[Approval, Effect, Task]:
+        """Decide one request after atomically rechecking its exact binding."""
+
+        with connect_write(self.path) as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM approvals WHERE id = ?", (approval_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"approval not found: {approval_id}")
+            current = Approval.model_validate_json(row["payload_json"])
+            effect = self._require_effect(connection, current.effect_id)
+            task = self._require_task(connection, effect.task_id)
+            target = ApprovalStatus.APPROVED if approved else ApprovalStatus.DENIED
+            if current.status is not ApprovalStatus.PENDING:
+                if (
+                    approved
+                    and current.status is ApprovalStatus.CONSUMED
+                    and current.decision_source == source
+                ):
+                    return current, effect, task
+                if current.status is target and current.decision_source == source:
+                    return current, effect, task
+                raise ApprovalConflict(current.id, current.status.value, target.value)
+            self._check_version(current.id, current.version, expected_version)
+            actual_config = (
+                config_version
+                if task.session_id is None
+                else self._require_session(connection, task.session_id).config_version
+            )
+            matches = (
+                workspace_ref == task.repository
+                and config_version == actual_config
+                and current.matches_execution_conditions(
+                    effect,
+                    workspace_ref=workspace_ref,
+                    policy_version=policy_version,
+                    config_version=config_version,
+                )
+            )
+            if not matches:
+                decided = current.model_copy(
+                    update={
+                        "status": ApprovalStatus.EXPIRED,
+                        "decision_source": source,
+                        "decided_at": datetime.now(UTC),
+                        "version": current.version + 1,
+                    }
+                )
+                released_effect = effect.model_copy(
+                    update={
+                        "status": EffectStatus.PREPARED,
+                        "approval_id": None,
+                        "version": effect.version + 1,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                released_task = task
+                if task.runtime_condition is TaskRuntimeCondition.WAITING_FOR_APPROVAL:
+                    released_task = task.model_copy(
+                        update={
+                            "runtime_condition": TaskRuntimeCondition.IDLE,
+                            "version": task.version + 1,
+                            "updated_at": datetime.now(UTC),
+                        }
+                    )
+                self._write_approval_row(connection, decided)
+                self._write_effect_row(connection, released_effect)
+                if released_task is not task:
+                    self._write_task_row(connection, released_task)
+                self._journal_approval(connection, decided, "approval.expired")
+                return decided, released_effect, released_task
+            decided = current.decide(approved, source)
+            next_effect_status = EffectStatus.PREPARED if approved else EffectStatus.DENIED
+            resolved_effect = effect.model_copy(
+                update={
+                    "status": next_effect_status,
+                    "version": effect.version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            resolved_task = task
+            if task.runtime_condition is TaskRuntimeCondition.WAITING_FOR_APPROVAL:
+                resolved_task = task.model_copy(
+                    update={
+                        "runtime_condition": TaskRuntimeCondition.IDLE,
+                        "version": task.version + 1,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+            self._write_approval_row(connection, decided)
+            self._write_effect_row(connection, resolved_effect)
+            if resolved_task is not task:
+                self._write_task_row(connection, resolved_task)
+            self._journal_approval(connection, decided, "approval.decided")
+            return decided, resolved_effect, resolved_task
+
+    def get_approval(self, approval_id: str) -> Approval:
+        with connect(self.path) as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM approvals WHERE id = ?", (approval_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"approval not found: {approval_id}")
+        return Approval.model_validate_json(row["payload_json"])
+
+    def list_approvals(self, task_id: str) -> list[Approval]:
+        with connect(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT approvals.payload_json FROM approvals
+                JOIN effects ON effects.id = approvals.effect_id
+                WHERE effects.task_id = ? ORDER BY approvals.created_at, approvals.id
+                """,
+                (task_id,),
+            ).fetchall()
+        return [Approval.model_validate_json(row["payload_json"]) for row in rows]
+
     def claim_effect(
-        self, effect_id: str, *, expected_version: int, lease_guard: LeaseGuard
+        self,
+        effect_id: str,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard,
+        effect_fingerprint: str | None = None,
+        workspace_ref: str | None = None,
+        policy_version: str | None = None,
+        config_version: str | None = None,
+        policy_decision: str | None = None,
     ) -> Effect:
         with connect_write(self.path) as connection:
             self._assert_guard(connection, lease_guard)
@@ -1994,15 +2305,57 @@ class SQLiteStore:
             self._check_version(effect_id, current.version, expected_version)
             if current.status is not EffectStatus.PREPARED:
                 raise LeaseConflict(effect_id)
+            task = self._require_task(connection, current.task_id)
+            actual_workspace = task.repository
+            actual_config = (
+                config_version
+                if task.session_id is None
+                else self._require_session(connection, task.session_id).config_version
+            ) or "1"
+            if (
+                effect_fingerprint is not None
+                and current.content_fingerprint() != effect_fingerprint
+            ):
+                raise EffectIdentityConflict(current.id, current.identity_key())
+            if workspace_ref is not None and workspace_ref != actual_workspace:
+                raise LeaseConflict(effect_id)
+            if config_version is not None and config_version != actual_config:
+                raise LeaseConflict(effect_id)
+            persisted_decision = str(current.policy_result.get("decision", "allow"))
+            if current.preparation_error is not None or persisted_decision == "deny":
+                raise ValueError(f"Effect is not executable: {effect_id}")
+            if policy_decision is not None and policy_decision != persisted_decision:
+                raise ValueError(f"Effect policy changed before execution: {effect_id}")
+            consumed_approval = None
+            if current.approval_id is not None:
+                row = connection.execute(
+                    "SELECT payload_json FROM approvals WHERE id = ?",
+                    (current.approval_id,),
+                ).fetchone()
+                if row is None:
+                    raise ApprovalConflict(current.approval_id, "missing", "consumed")
+                approval = Approval.model_validate_json(row["payload_json"])
+                consumed_approval = approval.consume(
+                    current,
+                    workspace_ref=workspace_ref or actual_workspace,
+                    policy_version=policy_version or approval.policy_version,
+                    config_version=config_version or actual_config,
+                )
+            elif persisted_decision == "require_approval":
+                raise ApprovalConflict(effect_id, "missing", "consumed")
             claimed = current.model_copy(
                 update={
                     "status": EffectStatus.EXECUTING,
+                    "approval_id": None,
+                    "approval_consumed": consumed_approval is not None,
                     "version": current.version + 1,
                     "updated_at": datetime.now(UTC),
                 }
             )
             self._write_effect_row(connection, claimed)
-            task = self._require_task(connection, claimed.task_id)
+            if consumed_approval is not None:
+                self._write_approval_row(connection, consumed_approval)
+                self._journal_approval(connection, consumed_approval, "approval.consumed")
             if task.session_id is not None:
                 self._journal(
                     connection,
@@ -2023,6 +2376,8 @@ class SQLiteStore:
         result_ref: str | None,
         observation_ref: str | None,
         lease_guard: LeaseGuard,
+        call: ToolCall | None = None,
+        result: ToolResult | None = None,
     ) -> Effect:
         """Atomically persist an Effect result, replay cursor, and journal event."""
 
@@ -2040,6 +2395,27 @@ class SQLiteStore:
                 EffectStatus.UNKNOWN,
             }:
                 raise ValueError(f"effect commit requires a terminal status: {safe.id}")
+            if (call is None) is not (result is None):
+                raise ValueError("Effect commit requires both call and result")
+            safe_call = None if call is None else self._redacted_model(call, ToolCall)
+            safe_result = None if result is None else self._redacted_model(result, ToolResult)
+            if safe_call is not None and safe_result is not None:
+                if safe_call.id != current.provider_call_id or safe_result.call_id != safe_call.id:
+                    raise ValueError("tool observation does not belong to the Effect")
+                existing = connection.execute(
+                    """
+                    SELECT call_json, result_json FROM tool_calls
+                    WHERE task_id = ? AND call_id = ?
+                    """,
+                    (safe.task_id, safe_call.id),
+                ).fetchone()
+                if existing is not None and (
+                    ToolCall.model_validate_json(existing["call_json"]) != safe_call
+                    or ToolResult.model_validate_json(existing["result_json"]) != safe_result
+                ):
+                    raise ValueError(
+                        f"tool call already committed with different content: {safe_call.id}"
+                    )
             committed = safe.model_copy(
                 update={
                     "result_ref": result_ref,
@@ -2049,6 +2425,22 @@ class SQLiteStore:
                 }
             )
             self._write_effect_row(connection, committed)
+            if safe_call is not None and safe_result is not None:
+                connection.execute(
+                    """
+                    INSERT INTO tool_calls
+                        (call_id, task_id, call_json, result_json, completed_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(task_id, call_id) DO NOTHING
+                    """,
+                    (
+                        safe_call.id,
+                        safe.task_id,
+                        self._redacted_json(safe_call),
+                        self._redacted_json(safe_result),
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
             task = self._require_task(connection, committed.task_id)
             if task.session_id is None:
                 raise ValueError("effect task is not bound to a session")
@@ -2075,6 +2467,167 @@ class SQLiteStore:
             self._write_session_row(connection, advanced_session)
             self._advance_checkpoint_event_cursor(connection, task.id, sequence)
             return committed
+
+    def mark_effect_unknown(
+        self,
+        effect_id: str,
+        *,
+        expected_version: int,
+        evidence: dict[str, object],
+        lease_guard: LeaseGuard,
+    ) -> tuple[Effect, Task]:
+        """Atomically stop uncertain execution and require an explicit disposition."""
+
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard)
+            current = self._require_effect(connection, effect_id)
+            if current.task_id != execution.task_id:
+                raise LeaseLost(current.task_id)
+            self._check_version(effect_id, current.version, expected_version)
+            if current.status not in {EffectStatus.EXECUTING, EffectStatus.UNKNOWN}:
+                raise ValueError(f"Effect cannot require recovery from {current.status}")
+            unknown = current
+            if current.status is EffectStatus.EXECUTING:
+                unknown = current.model_copy(
+                    update={
+                        "status": EffectStatus.UNKNOWN,
+                        "reconciliation_evidence": evidence,
+                        "version": current.version + 1,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                unknown = self._redacted_model(unknown, Effect)
+                self._write_effect_row(connection, unknown)
+            task = self._require_task(connection, current.task_id)
+            recovery_task = task
+            if task.runtime_condition is not TaskRuntimeCondition.RECOVERY_REQUIRED:
+                recovery_task = task.model_copy(
+                    update={
+                        "runtime_condition": TaskRuntimeCondition.RECOVERY_REQUIRED,
+                        "version": task.version + 1,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                self._write_task_row(connection, recovery_task)
+            if task.session_id is not None:
+                self._journal(
+                    connection,
+                    self._require_session(connection, task.session_id),
+                    event_id=journal_event_id(
+                        "effect.recovery_required", unknown.id, unknown.version
+                    ),
+                    event_type="effect.recovery_required",
+                    task_id=task.id,
+                    trace_id=unknown.provider_call_id,
+                    data={"effect_id": unknown.id, "evidence": evidence},
+                )
+            return unknown, recovery_task
+
+    def settle_unexecuted_effect(
+        self,
+        effect_id: str,
+        *,
+        status: EffectStatus,
+        expected_version: int,
+        call: ToolCall,
+        result: ToolResult,
+        lease_guard: LeaseGuard,
+    ) -> Effect:
+        """Atomically pair a denied or cancelled Effect with its observation."""
+
+        if status not in {EffectStatus.DENIED, EffectStatus.CANCELLED}:
+            raise ValueError("unexecuted Effect must be denied or cancelled")
+        safe_call = self._redacted_model(call, ToolCall)
+        safe_result = self._redacted_model(result, ToolResult)
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard)
+            current = self._require_effect(connection, effect_id)
+            if current.task_id != execution.task_id:
+                raise LeaseLost(current.task_id)
+            self._check_version(effect_id, current.version, expected_version)
+            if current.status not in {
+                EffectStatus.PREPARED,
+                EffectStatus.WAITING_FOR_APPROVAL,
+                status,
+            }:
+                raise ValueError(f"Effect cannot be settled from {current.status}")
+            if safe_call.id != current.provider_call_id or safe_result.call_id != safe_call.id:
+                raise ValueError("tool observation does not belong to the Effect")
+            existing = connection.execute(
+                """
+                SELECT call_json, result_json FROM tool_calls
+                WHERE task_id = ? AND call_id = ?
+                """,
+                (current.task_id, safe_call.id),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    ToolCall.model_validate_json(existing["call_json"]) != safe_call
+                    or ToolResult.model_validate_json(existing["result_json"]) != safe_result
+                    or current.status is not status
+                ):
+                    raise ValueError(
+                        f"tool call already committed with different content: {safe_call.id}"
+                    )
+                return current
+            reference = f"tool-result:{current.task_id}:{safe_call.id}"
+            settled = current.model_copy(
+                update={
+                    "status": status,
+                    "result_ref": reference,
+                    "observation_ref": reference,
+                    "version": current.version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            settled = self._redacted_model(settled, Effect)
+            self._write_effect_row(connection, settled)
+            if current.approval_id is not None:
+                row = connection.execute(
+                    "SELECT payload_json FROM approvals WHERE id = ?",
+                    (current.approval_id,),
+                ).fetchone()
+                if row is not None:
+                    approval = Approval.model_validate_json(row["payload_json"])
+                    if approval.status is ApprovalStatus.PENDING:
+                        self._write_approval_row(
+                            connection,
+                            approval.model_copy(
+                                update={
+                                    "status": ApprovalStatus.EXPIRED,
+                                    "decision_source": "effect_settled",
+                                    "decided_at": datetime.now(UTC),
+                                    "version": approval.version + 1,
+                                }
+                            ),
+                        )
+            connection.execute(
+                """
+                INSERT INTO tool_calls
+                    (call_id, task_id, call_json, result_json, completed_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    safe_call.id,
+                    current.task_id,
+                    self._redacted_json(safe_call),
+                    self._redacted_json(safe_result),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+            task = self._require_task(connection, current.task_id)
+            if task.session_id is not None:
+                event, _ = self._journal(
+                    connection,
+                    self._require_session(connection, task.session_id),
+                    event_id=journal_event_id("effect.settled", settled.id, settled.version),
+                    event_type="effect.settled",
+                    task_id=task.id,
+                    trace_id=settled.provider_call_id,
+                    data={"effect_id": settled.id, "status": settled.status.value},
+                )
+                self._advance_checkpoint_event_cursor(connection, task.id, event.sequence)
+            return settled
 
     def append_event(
         self, event: SessionEvent, *, expected_sequence: int | None = None
@@ -2220,22 +2773,149 @@ class SQLiteStore:
         *,
         task_id: str,
         expected_version: int,
+        confirmed_call: ToolCall | None = None,
+        confirmed_result: ToolResult | None = None,
+        retry_effect: Effect | None = None,
+        retry_approval: Approval | None = None,
     ) -> Task:
         safe = self._redacted_model(disposition, RecoveryDisposition)
+        safe_call = (
+            None if confirmed_call is None else self._redacted_model(confirmed_call, ToolCall)
+        )
+        safe_result = (
+            None if confirmed_result is None else self._redacted_model(confirmed_result, ToolResult)
+        )
+        safe_retry = None if retry_effect is None else self._redacted_effect(retry_effect)
+        safe_approval = (
+            None if retry_approval is None else self._redacted_model(retry_approval, Approval)
+        )
         with connect_write(self.path) as connection:
             task = self._require_task(connection, task_id)
+            existing_row = connection.execute(
+                """
+                SELECT payload_json FROM recovery_dispositions
+                WHERE id = ? OR unknown_effect_id = ? LIMIT 1
+                """,
+                (safe.id, safe.unknown_effect_id),
+            ).fetchone()
+            if existing_row is not None:
+                existing = RecoveryDisposition.model_validate_json(existing_row["payload_json"])
+                if existing != safe:
+                    raise RecoveryRequired(task_id, safe.unknown_effect_id)
+                return task
             self._check_version(task_id, task.version, expected_version)
             if task.runtime_condition is not TaskRuntimeCondition.RECOVERY_REQUIRED:
                 raise RecoveryRequired(task_id, safe.unknown_effect_id)
             effect = self._require_effect(connection, safe.unknown_effect_id)
             if effect.task_id != task_id or effect.status is not EffectStatus.UNKNOWN:
                 raise RecoveryRequired(task_id, safe.unknown_effect_id)
-            target = {
-                RecoveryDispositionKind.CONFIRM_RESULT: TaskRuntimeCondition.RUNNING,
-                RecoveryDispositionKind.CREATE_RETRY: TaskRuntimeCondition.WAITING_FOR_APPROVAL,
-                RecoveryDispositionKind.ABANDON: TaskRuntimeCondition.ENDED,
-            }[safe.kind]
-            safe.validate_target(target)
+            target = validate_recovery_resolution(
+                task,
+                effect,
+                safe,
+                confirmed_call=safe_call,
+                confirmed_result=safe_result,
+                retry_effect=safe_retry,
+                retry_approval=safe_approval,
+            )
+            if safe_call is not None and safe_result is not None:
+                existing_result = connection.execute(
+                    """
+                    SELECT call_json, result_json FROM tool_calls
+                    WHERE task_id = ? AND call_id = ?
+                    """,
+                    (task.id, safe_call.id),
+                ).fetchone()
+                if existing_result is not None:
+                    if (
+                        ToolCall.model_validate_json(existing_result["call_json"]) != safe_call
+                        or ToolResult.model_validate_json(existing_result["result_json"])
+                        != safe_result
+                    ):
+                        raise ValueError(
+                            f"tool call already committed with different content: {safe_call.id}"
+                        )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO tool_calls
+                            (call_id, task_id, call_json, result_json, completed_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            safe_call.id,
+                            task.id,
+                            self._redacted_json(safe_call),
+                            self._redacted_json(safe_result),
+                            datetime.now(UTC).isoformat(),
+                        ),
+                    )
+                reference = f"tool-result:{task.id}:{safe_call.id}"
+                resolved_effect = effect.model_copy(
+                    update={
+                        "status": (
+                            EffectStatus.SUCCEEDED if safe_result.success else EffectStatus.FAILED
+                        ),
+                        "result_ref": reference,
+                        "observation_ref": reference,
+                        "reconciliation_evidence": safe.evidence,
+                        "version": effect.version + 1,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                self._write_effect_row(connection, resolved_effect)
+            if safe_retry is not None and safe_approval is not None:
+                existing_retry = self._effect_by_id_or_identity(connection, safe_retry)
+                if existing_retry is not None:
+                    raise EffectIdentityConflict(safe_retry.id, safe_retry.identity_key())
+                if connection.execute(
+                    "SELECT 1 FROM approvals WHERE id = ? OR effect_id = ?",
+                    (safe_approval.id, safe_retry.id),
+                ).fetchone():
+                    raise ApprovalConflict(safe_approval.id, "pending", "pending")
+                waiting_retry = safe_retry.model_copy(
+                    update={
+                        "status": EffectStatus.WAITING_FOR_APPROVAL,
+                        "approval_id": safe_approval.id,
+                    }
+                )
+                self._insert_effect_row(connection, waiting_retry)
+                self._insert_approval_row(connection, safe_approval)
+                original_call = ToolCall(
+                    id=effect.provider_call_id,
+                    name=effect.tool_name,
+                    arguments=effect.arguments_summary,
+                )
+                original_observation = ToolResult(
+                    call_id=original_call.id,
+                    tool_name=original_call.name,
+                    success=False,
+                    error_kind=ErrorKind.PERMISSION_DENIED,
+                    output=json.dumps(
+                        {
+                            "backend_result": "unknown",
+                            "effect_status": EffectStatus.UNKNOWN.value,
+                            "next_action": "execute_explicit_retry_after_approval",
+                            "recovery_disposition": safe.id,
+                            "retry_effect_id": waiting_retry.id,
+                        },
+                        sort_keys=True,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO tool_calls
+                        (call_id, task_id, call_json, result_json, completed_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        original_call.id,
+                        task.id,
+                        self._redacted_json(original_call),
+                        self._redacted_json(original_observation),
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
             connection.execute(
                 """
                 INSERT INTO recovery_dispositions (
@@ -2253,18 +2933,37 @@ class SQLiteStore:
                     self._redacted_json(safe),
                 ),
             )
-            updated = task.model_copy(
-                update={
-                    "runtime_condition": target,
-                    "version": task.version + 1,
-                    "updated_at": datetime.now(UTC),
-                }
-            )
+            task_updates: dict[str, object] = {
+                "runtime_condition": target,
+                "version": task.version + 1,
+                "updated_at": datetime.now(UTC),
+            }
+            if safe.kind is RecoveryDispositionKind.ABANDON:
+                task_updates.update(
+                    {
+                        "outcome": TaskOutcome.CANCELLED,
+                        "status": TaskStatus.CANCELLED,
+                    }
+                )
+            updated = task.model_copy(update=task_updates)
             self._write_task_row(connection, updated)
             if task.session_id is not None:
-                self._journal(
+                session = self._require_session(connection, task.session_id)
+                if (
+                    safe.kind is RecoveryDispositionKind.ABANDON
+                    and session.active_task_id == task.id
+                ):
+                    session = session.model_copy(
+                        update={
+                            "active_task_id": None,
+                            "version": session.version + 1,
+                            "updated_at": datetime.now(UTC),
+                        }
+                    )
+                    self._write_session_row(connection, session)
+                event, _ = self._journal(
                     connection,
-                    self._require_session(connection, task.session_id),
+                    session,
                     event_id=journal_event_id("recovery.resolved", safe.id, safe.kind.value),
                     event_type="recovery.resolved",
                     task_id=task.id,
@@ -2274,7 +2973,29 @@ class SQLiteStore:
                         "kind": safe.kind.value,
                     },
                 )
+                self._advance_checkpoint_event_cursor(connection, task.id, event.sequence)
             return updated
+
+    def get_recovery_disposition(self, disposition_id: str) -> RecoveryDisposition:
+        with connect(self.path) as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM recovery_dispositions WHERE id = ?",
+                (disposition_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"recovery disposition not found: {disposition_id}")
+        return RecoveryDisposition.model_validate_json(row["payload_json"])
+
+    def get_recovery_disposition_for_effect(self, effect_id: str) -> RecoveryDisposition | None:
+        with connect(self.path) as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json FROM recovery_dispositions
+                WHERE unknown_effect_id = ?
+                """,
+                (effect_id,),
+            ).fetchone()
+        return None if row is None else RecoveryDisposition.model_validate_json(row["payload_json"])
 
     def commit_checkpoint(
         self,
@@ -2868,6 +3589,26 @@ class SQLiteStore:
                 self._redacted_json(approval),
             ),
         )
+
+    def _write_approval_row(self, connection: sqlite3.Connection, approval: Approval) -> None:
+        cursor = connection.execute(
+            """
+            UPDATE approvals SET
+                status = ?, decision_source = ?, decided_at = ?,
+                version = ?, payload_json = ?
+            WHERE id = ?
+            """,
+            (
+                approval.status.value,
+                approval.decision_source,
+                None if approval.decided_at is None else approval.decided_at.isoformat(),
+                approval.version,
+                self._redacted_json(approval),
+                approval.id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise KeyError(f"approval not found: {approval.id}")
 
     def _insert_event_row(self, connection: sqlite3.Connection, event: SessionEvent) -> None:
         connection.execute(

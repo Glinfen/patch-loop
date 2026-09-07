@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from patchloop.domain import Task, TaskBudget, ToolCall, ToolResult
+from patchloop.execution.models import Effect
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
 from patchloop.persistence_contracts import LeaseGuard
 from patchloop.providers import FakeProvider, ModelResponse
@@ -138,21 +139,33 @@ class FaultingSQLiteStore(SQLiteStore):
         self.result_submitted = False
         super().__init__(path)
 
-    def record_tool_call(
+    def commit_effect(
         self,
-        task_id: str,
-        call: ToolCall,
-        result: ToolResult,
+        effect: Effect,
         *,
-        lease_guard: LeaseGuard | None = None,
-    ) -> None:
-        super().record_tool_call(task_id, call, result, lease_guard=lease_guard)
+        expected_version: int,
+        result_ref: str | None,
+        observation_ref: str | None,
+        lease_guard: LeaseGuard,
+        call: ToolCall | None = None,
+        result: ToolResult | None = None,
+    ) -> Effect:
+        committed = super().commit_effect(
+            effect,
+            expected_version=expected_version,
+            result_ref=result_ref,
+            observation_ref=observation_ref,
+            lease_guard=lease_guard,
+            call=call,
+            result=result,
+        )
         self.result_submitted = True
         self.barrier.hit(
             FaultPoint.RESULT_SUBMITTED,
-            task_id=task_id,
-            call_id=call.id,
+            task_id=effect.task_id,
+            call_id=effect.provider_call_id,
         )
+        return committed
 
     def save_checkpoint(
         self, checkpoint: RuntimeCheckpoint, *, lease_guard: LeaseGuard | None = None

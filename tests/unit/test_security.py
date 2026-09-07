@@ -8,6 +8,7 @@ from patchloop.events import Event, EventLogger
 from patchloop.persistence import SQLiteStore
 from patchloop.security import (
     CredentialBinding,
+    PolicyDecision,
     RiskLevel,
     SecretRedactor,
     UnresolvedToolArgument,
@@ -160,6 +161,14 @@ def test_medium_risk_write_requires_and_records_approval(tmp_path: Path) -> None
     assert decision.data["assessment"]["risk"] == "medium"
     assert decision.data["assessment"]["approval_required"] is True
     assert decision.data["assessment"]["allowed"] is False
+    assert decision.data["assessment"]["decision"] == PolicyDecision.REQUIRE_APPROVAL.value
+
+    approved = gateway.execute_claimed("task-1", call, approval_consumed=True)
+
+    assert approved.success is True
+    assert target.read_text(encoding="utf-8") == "new"
+    approved_decision = [event for event in logger.read() if event.type == "security.decision"][-1]
+    assert approved_decision.data["approval_consumed"] is True
 
 
 def test_network_capable_command_is_denied_before_execution(tmp_path: Path) -> None:
@@ -179,6 +188,41 @@ def test_network_capable_command_is_denied_before_execution(tmp_path: Path) -> N
 
     assert result.error_kind is ErrorKind.PERMISSION_DENIED
     assert "network-capable" in result.output
+
+
+def test_path_denial_cannot_be_overridden_by_approval_callback(tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    callbacks: list[str] = []
+    gateway = ToolGateway(
+        ToolContext(tmp_path),
+        [ReplaceTextTool()],
+        policy=ToolPolicy(
+            frozenset({PermissionLevel.WRITE}),
+            require_plan_for_mutations=False,
+            approval_threshold=RiskLevel.MEDIUM,
+            approval_handler=lambda request: callbacks.append(request.call_id) or True,
+        ),
+    )
+    call = ToolCall(
+        id="escape-1",
+        name="replace_text",
+        arguments={
+            "path": f"../{outside.name}",
+            "old_text": "outside",
+            "new_text": "changed",
+        },
+    )
+
+    preparation = gateway.prepare_call("task-1", call)
+    result = gateway.execute("task-1", call)
+    forged_approval = gateway.execute_claimed("task-1", call, approval_consumed=True)
+
+    assert preparation.policy_result.decision is PolicyDecision.DENY
+    assert result.error_kind is ErrorKind.PATH_DENIED
+    assert forged_approval.error_kind is ErrorKind.PATH_DENIED
+    assert callbacks == []
+    assert outside.read_text(encoding="utf-8") == "outside"
 
 
 def test_security_decision_arguments_are_valid_json(tmp_path: Path) -> None:

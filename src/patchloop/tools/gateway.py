@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from time import perf_counter
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from patchloop.domain import ErrorKind, ToolCall, ToolResult
 from patchloop.events import Event, EventLogger
@@ -13,6 +15,7 @@ from patchloop.providers.base import ToolSpec
 from patchloop.security import (
     RISK_ORDER,
     ApprovalRequest,
+    PolicyDecision,
     RiskAssessment,
     RiskLevel,
     UnresolvedToolArgument,
@@ -47,7 +50,41 @@ class ToolPolicy:
     def allows(self, tool: Tool) -> bool:
         return tool.permission in self.allowed_permissions
 
+    @property
+    def version(self) -> str:
+        payload = {
+            "allowed_permissions": sorted(item.value for item in self.allowed_permissions),
+            "approval_threshold": (
+                None if self.approval_threshold is None else self.approval_threshold.value
+            ),
+            "require_plan_for_mutations": self.require_plan_for_mutations,
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return f"tool-policy-v1:{digest}"
+
     def assess(
+        self,
+        task_id: str,
+        call: ToolCall,
+        tool: Tool,
+        context: ToolContext,
+    ) -> RiskAssessment:
+        return self._assess(task_id, call, tool, context)
+
+    def assess_for_preparation(
+        self,
+        task_id: str,
+        call: ToolCall,
+        tool: Tool,
+        context: ToolContext,
+    ) -> RiskAssessment:
+        """Evaluate policy without consuming or requesting an approval."""
+
+        return self._assess(task_id, call, tool, context)
+
+    def _assess(
         self,
         task_id: str,
         call: ToolCall,
@@ -64,6 +101,7 @@ class ToolPolicy:
             return RiskAssessment(
                 risk=RiskLevel.CRITICAL,
                 allowed=False,
+                decision=PolicyDecision.DENY,
                 reason="dangerous or network-capable command syntax is denied",
             )
         for name, value in call.arguments.items():
@@ -74,6 +112,7 @@ class ToolPolicy:
                     return RiskAssessment(
                         risk=RiskLevel.CRITICAL,
                         allowed=False,
+                        decision=PolicyDecision.DENY,
                         reason=f"path escapes repository: {value}",
                     )
         approval_required = (
@@ -84,22 +123,15 @@ class ToolPolicy:
             return RiskAssessment(
                 risk=risk,
                 allowed=True,
+                decision=PolicyDecision.ALLOW,
                 reason=f"{tool.permission} action is within the authorized scope",
             )
-        request = ApprovalRequest(
-            task_id=task_id,
-            call_id=call.id,
-            tool_name=tool.name,
-            risk=risk,
-            reason=f"{risk} action requires operator approval",
-            arguments=call.arguments,
-        )
-        approved = self.approval_handler(request) if self.approval_handler is not None else False
         return RiskAssessment(
             risk=risk,
-            allowed=approved,
+            allowed=False,
             approval_required=True,
-            reason="operator approved action" if approved else "operator approval was not granted",
+            decision=PolicyDecision.REQUIRE_APPROVAL,
+            reason=f"{risk} action requires operator approval",
         )
 
     @staticmethod
@@ -126,6 +158,18 @@ class ToolPolicy:
         )
 
 
+class ToolPreparation(BaseModel):
+    """Side-effect-free validation result captured with an Effect."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tool_name: str
+    action_kind: str
+    normalized_arguments: dict[str, object] = Field(default_factory=dict)
+    policy_result: RiskAssessment
+    error: str | None = None
+
+
 class ToolGateway:
     def __init__(
         self,
@@ -143,9 +187,80 @@ class ToolGateway:
         self.policy = policy or ToolPolicy()
         self.ownership_assertion = ownership_assertion
         self.history: list[ToolResult] = []
+        self._consumed_approval_calls: set[tuple[str, str]] = set()
 
     def specifications(self) -> list[ToolSpec]:
         return [tool.specification() for tool in self._tools.values()]
+
+    def prepare_call(self, task_id: str, call: ToolCall) -> ToolPreparation:
+        """Validate and normalize a call without invoking a tool or approval callback."""
+
+        tool = self._tools.get(call.name)
+        if tool is None:
+            return ToolPreparation(
+                tool_name=call.name,
+                action_kind="unknown",
+                normalized_arguments=call.arguments,
+                policy_result=RiskAssessment(
+                    risk=RiskLevel.CRITICAL,
+                    allowed=False,
+                    decision=PolicyDecision.DENY,
+                    reason=f"unknown tool: {call.name}",
+                ),
+                error=f"unknown tool: {call.name}",
+            )
+        assessment = self.policy.assess_for_preparation(task_id, call, tool, self.context)
+        error: str | None = None
+        normalized: dict[str, object] = dict(call.arguments)
+        if not self.policy.allows(tool):
+            error = f"permission denied for {tool.permission} tool: {call.name}"
+            assessment = assessment.model_copy(
+                update={
+                    "allowed": False,
+                    "reason": error,
+                    "approval_required": False,
+                    "decision": PolicyDecision.DENY,
+                }
+            )
+        elif call.arguments_error is not None:
+            error = call.arguments_error
+        else:
+            try:
+                assert_executable_tool_arguments(call.arguments)
+                parsed = tool.input_model.model_validate(call.arguments)
+                normalized = parsed.model_dump(mode="json")
+            except (UnresolvedToolArgument, ValidationError) as exc:
+                error = str(exc)
+        if (
+            error is None
+            and self.policy.require_plan_for_mutations
+            and tool.permission in {PermissionLevel.WRITE, PermissionLevel.EXECUTE}
+            and self.context.plan is None
+        ):
+            error = f"an execution plan is required before using {call.name}"
+        if (
+            error is None
+            and self.policy.require_plan_for_mutations
+            and tool.permission in {PermissionLevel.WRITE, PermissionLevel.EXECUTE}
+            and self.context.requires_replan
+        ):
+            error = f"update_plan is required after the previous failure before {call.name}"
+        if error is not None:
+            assessment = assessment.model_copy(
+                update={
+                    "allowed": False,
+                    "approval_required": False,
+                    "decision": PolicyDecision.DENY,
+                    "reason": error,
+                }
+            )
+        return ToolPreparation(
+            tool_name=call.name,
+            action_kind=tool.permission.value,
+            normalized_arguments=normalized,
+            policy_result=assessment,
+            error=error,
+        )
 
     def execute(self, task_id: str, call: ToolCall) -> ToolResult:
         started = perf_counter()
@@ -215,8 +330,16 @@ class ToolGateway:
             )
             return self._finish(task_id, call, result, started)
         assessment = self.policy.assess(task_id, call, tool, self.context)
-        self._emit_security(task_id, call, assessment)
-        if not assessment.allowed:
+        approval_consumed = (task_id, call.id) in self._consumed_approval_calls
+        self._emit_security(
+            task_id,
+            call,
+            assessment,
+            approval_consumed=approval_consumed,
+        )
+        if assessment.decision is not PolicyDecision.ALLOW and not (
+            approval_consumed and assessment.decision is PolicyDecision.REQUIRE_APPROVAL
+        ):
             result = ToolResult(
                 call_id=call.id,
                 tool_name=call.name,
@@ -281,11 +404,126 @@ class ToolGateway:
             self.context.requires_replan = True
         return self._finish(task_id, call, result, started)
 
+    def execute_claimed(
+        self,
+        task_id: str,
+        call: ToolCall,
+        *,
+        approval_consumed: bool,
+    ) -> ToolResult:
+        """Execute a store-claimed Effect, honoring only its consumed exact approval."""
+
+        key = (task_id, call.id)
+        if approval_consumed:
+            self._consumed_approval_calls.add(key)
+        try:
+            return self.execute(task_id, call)
+        finally:
+            self._consumed_approval_calls.discard(key)
+
+    def reject_prepared(
+        self,
+        task_id: str,
+        call: ToolCall,
+        reason: str,
+        *,
+        error_kind: ErrorKind | None = None,
+    ) -> ToolResult:
+        """Record a preparation-time rejection without invoking the tool backend."""
+
+        started = perf_counter()
+        preparation = self.prepare_call(task_id, call)
+        kind = error_kind
+        if kind is None:
+            if call.name not in self._tools:
+                kind = ErrorKind.UNKNOWN_TOOL
+            elif preparation.policy_result.reason.startswith("path escapes"):
+                kind = ErrorKind.PATH_DENIED
+            elif (
+                not self.policy.allows(self._tools[call.name])
+                or preparation.policy_result.decision is PolicyDecision.DENY
+            ):
+                kind = ErrorKind.PERMISSION_DENIED
+            elif call.arguments_error is not None:
+                kind = ErrorKind.INVALID_ARGUMENTS
+            else:
+                kind = ErrorKind.EXECUTION_ERROR
+        self._emit_security(task_id, call, preparation.policy_result)
+        result = self._unexecuted_result(
+            call,
+            reason,
+            effect_status="denied",
+            next_action="choose_alternative",
+            error_kind=kind,
+        )
+        if preparation.action_kind in {
+            PermissionLevel.WRITE.value,
+            PermissionLevel.EXECUTE.value,
+        }:
+            self.context.requires_replan = True
+        return self._finish(task_id, call, result, started)
+
+    def observe_unexecuted(
+        self,
+        task_id: str,
+        call: ToolCall,
+        reason: str,
+        *,
+        effect_status: str,
+        next_action: str,
+        error_kind: ErrorKind = ErrorKind.PERMISSION_DENIED,
+    ) -> ToolResult:
+        """Create the Provider observation for an action whose backend was not called."""
+
+        started = perf_counter()
+        result = self._unexecuted_result(
+            call,
+            reason,
+            effect_status=effect_status,
+            next_action=next_action,
+            error_kind=error_kind,
+        )
+        tool = self._tools.get(call.name)
+        if tool is not None and tool.permission in {
+            PermissionLevel.WRITE,
+            PermissionLevel.EXECUTE,
+        }:
+            self.context.requires_replan = True
+        return self._finish(task_id, call, result, started)
+
+    @staticmethod
+    def _unexecuted_result(
+        call: ToolCall,
+        reason: str,
+        *,
+        effect_status: str,
+        next_action: str,
+        error_kind: ErrorKind,
+    ) -> ToolResult:
+        return ToolResult(
+            call_id=call.id,
+            tool_name=call.name,
+            success=False,
+            error_kind=error_kind,
+            output=json.dumps(
+                {
+                    "backend_invoked": False,
+                    "effect_status": effect_status,
+                    "next_action": next_action,
+                    "reason": reason,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+
     def _emit_security(
         self,
         task_id: str,
         call: ToolCall,
         assessment: RiskAssessment,
+        *,
+        approval_consumed: bool = False,
     ) -> None:
         if self.event_logger is not None:
             self.event_logger.emit(
@@ -297,6 +535,7 @@ class ToolGateway:
                         "tool_name": call.name,
                         "arguments": call.arguments,
                         "assessment": assessment.model_dump(mode="json"),
+                        "approval_consumed": approval_consumed,
                     },
                 )
             )

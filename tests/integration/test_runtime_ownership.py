@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -12,7 +13,7 @@ import pytest
 from pydantic import BaseModel
 
 from patchloop.domain import AgentStep, StepStatus, Task, TaskStatus, ToolCall, ToolResult
-from patchloop.execution.models import Effect, ExecutionStatus
+from patchloop.execution.models import Effect, EffectStatus, ExecutionStatus
 from patchloop.execution.ownership import ExecutionOwnershipManager, LeasePolicy
 from patchloop.memory.models import MemorySource, MemorySourceKind
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
@@ -295,4 +296,10 @@ def test_cancel_is_persisted_before_runtime_settles_and_stops_actions(tmp_path: 
     assert results[0].status is TaskStatus.CANCELLED
     assert store.get_task("task-1").status is TaskStatus.CANCELLED
     assert store.get_pending_control("task-1") is None
-    assert store.get_tool_result("task-1", "late-call") is None
+    observation = store.get_tool_result("task-1", "late-call")
+    assert observation is not None
+    assert json.loads(observation.output)["backend_invoked"] is False
+    effect = next(
+        effect for effect in store.list_effects("task-1") if effect.provider_call_id == "late-call"
+    )
+    assert effect.status is EffectStatus.CANCELLED

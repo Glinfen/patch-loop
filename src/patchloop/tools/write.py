@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from patchloop.tools.base import PermissionLevel, Tool, ToolContext, ToolInputModel
+
+_UNSET_FILE_CONTENT = object()
+
+
+def supports_file_mutation_preview(tool_name: str) -> bool:
+    """Return whether a WRITE tool has a deterministic repository-file preview."""
+
+    return tool_name in {
+        CreateFileTool.name,
+        WriteFileTool.name,
+        ReplaceTextTool.name,
+        ApplyPatchTool.name,
+    }
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -17,6 +32,104 @@ def _atomic_write(path: Path, content: str) -> None:
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class FileMutationPreview:
+    path: Path
+    relative_path: str
+    original_content: str | None
+    target_content: str
+
+
+def preview_file_mutation(
+    tool_name: str,
+    arguments: BaseModel | dict[str, object],
+    context: ToolContext,
+    *,
+    current_content: str | object | None = _UNSET_FILE_CONTENT,
+) -> FileMutationPreview:
+    """Validate a file mutation and calculate its result without writing it."""
+
+    if tool_name == CreateFileTool.name:
+        create_request = CreateFileInput.model_validate(arguments)
+        path = context.resolve_path(create_request.path, must_exist=False)
+        exists = (
+            path.exists() if current_content is _UNSET_FILE_CONTENT else current_content is not None
+        )
+        if exists:
+            raise ValueError(f"file already exists: {create_request.path}")
+        if not path.parent.is_dir():
+            raise ValueError(f"parent directory does not exist: {create_request.path}")
+        original = None
+        target = create_request.content
+    elif tool_name == WriteFileTool.name:
+        write_request = WriteFileInput.model_validate(arguments)
+        path = context.resolve_path(
+            write_request.path, must_exist=current_content is _UNSET_FILE_CONTENT
+        )
+        if current_content is _UNSET_FILE_CONTENT:
+            if not path.is_file():
+                raise ValueError(f"not a file: {write_request.path}")
+            original = path.read_text(encoding="utf-8")
+        elif current_content is None:
+            raise ValueError(f"not a file: {write_request.path}")
+        else:
+            original = cast(str, current_content)
+        target = write_request.content
+    elif tool_name == ReplaceTextTool.name:
+        replace_request = ReplaceTextInput.model_validate(arguments)
+        path = context.resolve_path(
+            replace_request.path, must_exist=current_content is _UNSET_FILE_CONTENT
+        )
+        if current_content is _UNSET_FILE_CONTENT:
+            if not path.is_file():
+                raise ValueError(f"not a file: {replace_request.path}")
+            original = path.read_text(encoding="utf-8")
+        elif current_content is None:
+            raise ValueError(f"not a file: {replace_request.path}")
+        else:
+            original = cast(str, current_content)
+        occurrences = original.count(replace_request.old_text)
+        if occurrences != replace_request.expected_occurrences:
+            raise ValueError(
+                f"expected {replace_request.expected_occurrences} occurrences, found {occurrences}"
+            )
+        target = original.replace(
+            replace_request.old_text,
+            replace_request.new_text,
+            replace_request.expected_occurrences,
+        )
+    elif tool_name == ApplyPatchTool.name:
+        patch_request = ApplyPatchInput.model_validate(arguments)
+        path = context.resolve_path(
+            patch_request.path, must_exist=current_content is _UNSET_FILE_CONTENT
+        )
+        if current_content is _UNSET_FILE_CONTENT:
+            if not path.is_file():
+                raise ValueError(f"not a file: {patch_request.path}")
+            original = path.read_text(encoding="utf-8")
+        elif current_content is None:
+            raise ValueError(f"not a file: {patch_request.path}")
+        else:
+            original = cast(str, current_content)
+        target = original
+        for index, edit in enumerate(patch_request.edits):
+            occurrences = target.count(edit.old_text)
+            if occurrences != edit.expected_occurrences:
+                raise ValueError(
+                    f"edit {index}: expected {edit.expected_occurrences} occurrences, "
+                    f"found {occurrences}"
+                )
+            target = target.replace(edit.old_text, edit.new_text, edit.expected_occurrences)
+    else:
+        raise ValueError(f"not a file mutation tool: {tool_name}")
+    return FileMutationPreview(
+        path=path,
+        relative_path=path.relative_to(context.repository).as_posix(),
+        original_content=original,
+        target_content=target,
+    )
 
 
 class CreateFileInput(ToolInputModel):
@@ -32,13 +145,9 @@ class CreateFileTool(Tool):
 
     def run(self, arguments: BaseModel, context: ToolContext) -> str:
         request = CreateFileInput.model_validate(arguments)
-        path = context.resolve_path(request.path, must_exist=False)
-        if path.exists():
-            raise ValueError(f"file already exists: {request.path}")
-        if not path.parent.is_dir():
-            raise ValueError(f"parent directory does not exist: {request.path}")
-        context.changes.capture(path)
-        _atomic_write(path, request.content)
+        preview = preview_file_mutation(self.name, request, context)
+        context.changes.capture_original(preview.path, preview.original_content)
+        _atomic_write(preview.path, preview.target_content)
         return f"created {request.path} ({len(request.content)} characters)"
 
 
@@ -58,11 +167,9 @@ class WriteFileTool(Tool):
 
     def run(self, arguments: BaseModel, context: ToolContext) -> str:
         request = WriteFileInput.model_validate(arguments)
-        path = context.resolve_path(request.path)
-        if not path.is_file():
-            raise ValueError(f"not a file: {request.path}")
-        context.changes.capture(path)
-        _atomic_write(path, request.content)
+        preview = preview_file_mutation(self.name, request, context)
+        context.changes.capture_original(preview.path, preview.original_content)
+        _atomic_write(preview.path, preview.target_content)
         return f"wrote {request.path} ({len(request.content)} characters)"
 
 
@@ -81,22 +188,12 @@ class ReplaceTextTool(Tool):
 
     def run(self, arguments: BaseModel, context: ToolContext) -> str:
         request = ReplaceTextInput.model_validate(arguments)
-        path = context.resolve_path(request.path)
-        if not path.is_file():
-            raise ValueError(f"not a file: {request.path}")
-        content = path.read_text(encoding="utf-8")
-        occurrences = content.count(request.old_text)
-        if occurrences != request.expected_occurrences:
-            raise ValueError(
-                f"expected {request.expected_occurrences} occurrences, found {occurrences}"
-            )
-        updated = content.replace(
-            request.old_text,
-            request.new_text,
-            request.expected_occurrences,
-        )
-        context.changes.capture(path)
-        _atomic_write(path, updated)
+        preview = preview_file_mutation(self.name, request, context)
+        if preview.original_content is None:
+            raise ValueError(f"file does not exist: {request.path}")
+        occurrences = preview.original_content.count(request.old_text)
+        context.changes.capture_original(preview.path, preview.original_content)
+        _atomic_write(preview.path, preview.target_content)
         return f"updated {request.path} ({occurrences} replacement(s))"
 
 
@@ -122,26 +219,10 @@ class ApplyPatchTool(Tool):
 
     def run(self, arguments: BaseModel, context: ToolContext) -> str:
         request = ApplyPatchInput.model_validate(arguments)
-        path = context.resolve_path(request.path)
-        if not path.is_file():
-            raise ValueError(f"not a file: {request.path}")
-        updated = path.read_text(encoding="utf-8")
-        replacement_count = 0
-        for index, edit in enumerate(request.edits):
-            occurrences = updated.count(edit.old_text)
-            if occurrences != edit.expected_occurrences:
-                raise ValueError(
-                    f"edit {index}: expected {edit.expected_occurrences} occurrences, "
-                    f"found {occurrences}"
-                )
-            updated = updated.replace(
-                edit.old_text,
-                edit.new_text,
-                edit.expected_occurrences,
-            )
-            replacement_count += occurrences
-        context.changes.capture(path)
-        _atomic_write(path, updated)
+        preview = preview_file_mutation(self.name, request, context)
+        replacement_count = sum(edit.expected_occurrences for edit in request.edits)
+        context.changes.capture_original(preview.path, preview.original_content)
+        _atomic_write(preview.path, preview.target_content)
         return (
             f"patched {request.path} ({len(request.edits)} edit(s), "
             f"{replacement_count} replacement(s))"

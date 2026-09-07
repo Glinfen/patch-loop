@@ -165,24 +165,31 @@ def test_fake_store_recovery_requires_recovery_condition_and_disposition() -> No
         execution.generation,
         execution.owner_id,
     )
-    recovering = task.model_copy(
-        update={
-            "runtime_condition": TaskRuntimeCondition.RECOVERY_REQUIRED,
-            "version": task.version,
-        }
-    )
-    store.update_task(
-        recovering,
+    prepared = store.prepare_effects(
+        [_effect()],
         expected_version=store.get_task(task.id).version,
         lease_guard=guard,
     )
-    current = store.get_task(task.id)
+    claimed = store.claim_effect(
+        prepared[0].id,
+        expected_version=prepared[0].version,
+        lease_guard=guard,
+    )
+    _, current = store.mark_effect_unknown(
+        claimed.id,
+        expected_version=claimed.version,
+        evidence={"source": "result_missing"},
+        lease_guard=guard,
+    )
     disposition = RecoveryDisposition(
         unknown_effect_id="effect-1",
         kind=RecoveryDispositionKind.ABANDON,
+        evidence={"reason": "operator abandoned recovery"},
         decision_source="operator",
     )
     resolved = store.resolve_recovery(
         disposition, task_id=task.id, expected_version=current.version
     )
     assert resolved.runtime_condition is TaskRuntimeCondition.ENDED
+    assert resolved.status.value == "cancelled"
+    assert store.get_effect("effect-1").status is EffectStatus.UNKNOWN

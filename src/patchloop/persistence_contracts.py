@@ -149,6 +149,34 @@ class SubmissionConflict(ContractError):
         self.client_submission_id = client_submission_id
 
 
+class InputRevisionConflict(ContractError):
+    code = "input_revision_conflict"
+
+    def __init__(self, session_id: str, expected: int, actual: int) -> None:
+        super().__init__(
+            f"input revision changed for {session_id}: expected {expected}, actual {actual}",
+            session_id=session_id,
+            expected=expected,
+            actual=actual,
+        )
+        self.session_id = session_id
+        self.expected = expected
+        self.actual = actual
+
+
+class ControlRequested(ContractError):
+    code = "control_requested"
+
+    def __init__(self, task_id: str, request_id: str) -> None:
+        super().__init__(
+            f"control request {request_id} is pending for task {task_id}",
+            task_id=task_id,
+            request_id=request_id,
+        )
+        self.task_id = task_id
+        self.request_id = request_id
+
+
 @dataclass(frozen=True)
 class LeaseGuard:
     """Opaque execution fencing data required by execution-owned writes."""
@@ -336,6 +364,7 @@ class RuntimeStore(Protocol):
         policy_version: str | None = None,
         config_version: str | None = None,
         policy_decision: str | None = None,
+        expected_input_sequence: int | None = None,
     ) -> Effect: ...
 
     def commit_effect(
@@ -384,6 +413,8 @@ class RuntimeStore(Protocol):
     ) -> ControlRequest: ...
 
     def get_pending_control(self, task_id: str) -> ControlRequest | None: ...
+
+    def get_control_request(self, request_id: str) -> ControlRequest: ...
 
     def resolve_recovery(
         self,
@@ -1390,6 +1421,7 @@ class FakeStore:
         policy_version: str | None = None,
         config_version: str | None = None,
         policy_decision: str | None = None,
+        expected_input_sequence: int | None = None,
     ) -> Effect:
         self._assert_guard(lease_guard)
         current = self._copy(self.effects[effect_id])
@@ -1397,6 +1429,18 @@ class FakeStore:
         if current.status is not EffectStatus.PREPARED:
             raise LeaseConflict(effect_id)
         task = self.get_task(current.task_id)
+        pending_control = self.get_pending_control(task.id)
+        if pending_control is not None:
+            raise ControlRequested(task.id, pending_control.id)
+        if expected_input_sequence is not None and task.session_id is not None:
+            turns = self.turns.get(task.session_id, [])
+            actual_input_sequence = max((turn.sequence for turn in turns), default=0)
+            if actual_input_sequence != expected_input_sequence:
+                raise InputRevisionConflict(
+                    task.session_id,
+                    expected_input_sequence,
+                    actual_input_sequence,
+                )
         actual_workspace = task.repository
         actual_config: str = (
             config_version
@@ -1516,7 +1560,14 @@ class FakeStore:
         checkpoint = self.checkpoints.get(task.id)
         if checkpoint is not None:
             self.checkpoints[task.id] = checkpoint.model_copy(
-                update={"event_sequence": event.sequence}
+                update={
+                    "event_sequence": event.sequence,
+                    "pending_effect_ids": [
+                        effect_id
+                        for effect_id in checkpoint.pending_effect_ids
+                        if effect_id != committed.id
+                    ],
+                }
             )
         return self._copy(committed)
 
@@ -1586,7 +1637,14 @@ class FakeStore:
             checkpoint = self.checkpoints.get(task.id)
             if checkpoint is not None:
                 self.checkpoints[task.id] = checkpoint.model_copy(
-                    update={"event_sequence": session.event_sequence}
+                    update={
+                        "event_sequence": session.event_sequence,
+                        "pending_effect_ids": [
+                            effect_id
+                            for effect_id in checkpoint.pending_effect_ids
+                            if effect_id != settled.id
+                        ],
+                    }
                 )
         return self._copy(settled)
 
@@ -1626,7 +1684,7 @@ class FakeStore:
             )
             self.tasks[task.id] = self._copy(recovery_task)
         if task.session_id is not None:
-            self._journal(
+            session = self._journal(
                 self.get_session(task.session_id),
                 event_id=journal_event_id("effect.recovery_required", unknown.id, unknown.version),
                 event_type="effect.recovery_required",
@@ -1634,6 +1692,18 @@ class FakeStore:
                 trace_id=unknown.provider_call_id,
                 data={"effect_id": unknown.id, "evidence": self._copy(evidence)},
             )
+            checkpoint = self.checkpoints.get(task.id)
+            if checkpoint is not None:
+                self.checkpoints[task.id] = checkpoint.model_copy(
+                    update={
+                        "event_sequence": session.event_sequence,
+                        "pending_effect_ids": [
+                            pending_id
+                            for pending_id in checkpoint.pending_effect_ids
+                            if pending_id != unknown.id
+                        ],
+                    }
+                )
         return self._copy(unknown), self._copy(recovery_task)
 
     def commit_tool_result(
@@ -1735,6 +1805,12 @@ class FakeStore:
         if not pending:
             return None
         return self._copy(sorted(pending, key=lambda item: item.requested_at)[0])
+
+    def get_control_request(self, request_id: str) -> ControlRequest:
+        try:
+            return self._copy(self.controls[request_id])
+        except KeyError as exc:
+            raise KeyError(f"control request not found: {request_id}") from exc
 
     def resolve_recovery(
         self,
@@ -1981,9 +2057,11 @@ __all__ = [
     "AdvanceStatus",
     "ApprovalConflict",
     "ContractError",
+    "ControlRequested",
     "EffectIdentityConflict",
     "EffectPort",
     "FakeStore",
+    "InputRevisionConflict",
     "LeaseConflict",
     "LeaseGuard",
     "LeaseLost",

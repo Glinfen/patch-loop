@@ -149,4 +149,4 @@ def test_runtime_retrieves_only_active_cross_layer_facts_with_reasons(
     assert replay.memory_decisions[-1].selections[0]["reason"]
     assert any(event.type == "memory.superseded" for event in trace.read())
     checkpoint = store.get_checkpoint(task.id)
-    assert checkpoint.memory_retrievals == 3
+    assert checkpoint.memory_retrievals == 4

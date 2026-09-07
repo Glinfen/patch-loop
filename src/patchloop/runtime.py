@@ -26,6 +26,7 @@ from patchloop.domain import (
 )
 from patchloop.events import Event, EventLogger
 from patchloop.execution.approvals import ApprovalPending, build_approval
+from patchloop.execution.driver import RuntimeAdvance, RuntimeDriver, advance_status_for_task
 from patchloop.execution.effects import (
     ReconcileOutcome,
     assert_file_preconditions,
@@ -66,7 +67,13 @@ from patchloop.memory.working import (
     WorkingMemoryManager,
 )
 from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
-from patchloop.persistence_contracts import LeaseGuard, LeaseLost
+from patchloop.persistence_contracts import (
+    AdvanceStatus,
+    ControlRequested,
+    InputRevisionConflict,
+    LeaseGuard,
+    LeaseLost,
+)
 from patchloop.prompt_cache import (
     CacheEpochBoundary,
     PromptCacheCoordinator,
@@ -86,6 +93,7 @@ from patchloop.sandbox import (
     SandboxCleanupError,
 )
 from patchloop.security import PolicyDecision
+from patchloop.session.models import Turn, TurnRole
 from patchloop.tools.base import PermissionLevel
 from patchloop.tools.gateway import ToolGateway
 
@@ -127,10 +135,13 @@ class AgentRuntime:
         self.owner_id = owner_id or f"process-{os.getpid()}-{uuid4().hex}"
         self._ownership: ExecutionOwnership | None = None
         self._heartbeat: LeaseHeartbeat | None = None
+        self._task_scope_id: str | None = None
         self._prompt_cache: PromptCacheCoordinator | None = None
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
+        self._accounted_model_response_steps: list[int] = []
+        self._unknown_model_usage_steps: list[int] = []
         self._context_windows = 0
         self._context_compactions = 0
         self._max_context_tokens_used = 0
@@ -156,10 +167,12 @@ class AgentRuntime:
 
     def _run_owned(self, task: Task) -> Task:
         task.transition(TaskStatus.RUNNING)
-        self.gateway.context.plan = task.plan
+        self._reset_task_runtime_state(task)
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
+        self._accounted_model_response_steps = []
+        self._unknown_model_usage_steps = []
         self._context_windows = 0
         self._context_compactions = 0
         self._max_context_tokens_used = 0
@@ -198,11 +211,15 @@ class AgentRuntime:
             layout=task.execution.prompt_cache_layout,
             project_instructions=task.execution.project_instructions,
         )
+        prefix_message_count = len(messages)
+        session_history, consumed_input_sequence = self._session_history(task)
+        messages.extend(session_history)
         self._prompt_cache = PromptCacheCoordinator.bootstrap(
             messages,
             self.gateway.specifications(),
             layout=task.execution.prompt_cache_layout,
             epoch_id=task.execution.cache_epoch,
+            prefix_message_count=prefix_message_count,
         )
         frozen_tools = self._prompt_cache.frozen_tools
         self._persist_task(task)
@@ -217,6 +234,9 @@ class AgentRuntime:
         memory_snapshot = self._memory_manager.snapshot()
         state = RuntimeCheckpoint(
             task_id=task.id,
+            session_id=task.session_id,
+            consumed_input_sequence=consumed_input_sequence,
+            event_sequence=self._current_event_sequence(task),
             next_step_index=0,
             messages=messages,
             tool_specifications=frozen_tools,
@@ -259,9 +279,15 @@ class AgentRuntime:
         task = self._reconcile_effects(task)
         if task.runtime_condition is TaskRuntimeCondition.RECOVERY_REQUIRED:
             return task
+        controlled = self._apply_pending_control(task)
+        if controlled is not None:
+            return controlled
+        checkpoint = self._reconcile_pending_model_request(task, checkpoint)
         self._input_tokens = checkpoint.input_tokens
         self._output_tokens = checkpoint.output_tokens
         self._cost_usd = checkpoint.cost_usd
+        self._accounted_model_response_steps = list(checkpoint.accounted_model_response_steps)
+        self._unknown_model_usage_steps = list(checkpoint.unknown_model_usage_steps)
         self._prompt_cache = PromptCacheCoordinator.from_legacy_state(
             layout=task.execution.prompt_cache_layout,
             cache_epoch_id=(
@@ -337,6 +363,24 @@ class AgentRuntime:
         return self._execute(task, checkpoint)
 
     def _execute(self, task: Task, state: RuntimeCheckpoint) -> Task:
+        current_state = state
+
+        def boundary() -> RuntimeAdvance:
+            nonlocal current_state
+            outcome = self._advance_once(task, current_state)
+            if isinstance(outcome, RuntimeAdvance):
+                current_state = outcome.checkpoint
+                return outcome
+            return RuntimeAdvance(
+                status=advance_status_for_task(outcome),
+                task=outcome,
+                checkpoint=current_state,
+                detail=outcome.error or outcome.result or "",
+            )
+
+        return RuntimeDriver(boundary).run()
+
+    def _advance_once(self, task: Task, state: RuntimeCheckpoint) -> Task | RuntimeAdvance:
         messages = list(state.messages)
         previous_fingerprint = state.previous_fingerprint
         repeated_actions = state.repeated_actions
@@ -378,7 +422,10 @@ class AgentRuntime:
         stable_layout = prompt_cache.layout is PromptCacheLayout.STABLE
         started = monotonic()
         try:
-            for step_index in range(state.next_step_index, task.budget.max_steps):
+            for step_index in range(
+                state.next_step_index,
+                min(state.next_step_index + 1, task.budget.max_steps),
+            ):
                 elapsed = elapsed_before + (monotonic() - started)
                 if elapsed > task.budget.max_seconds:
                     return self._fail(
@@ -396,10 +443,13 @@ class AgentRuntime:
                         task,
                         step_index,
                     )
+                if persisted_step is None:
+                    state, messages = self._consume_pending_inputs(task, state, messages)
                 step = persisted_step or AgentStep(
                     task_id=task.id,
                     index=step_index,
                     status=StepStatus.RUNNING,
+                    consumed_input_sequence=state.consumed_input_sequence,
                     started_at=utc_now(),
                 )
                 if persisted_step is None:
@@ -551,12 +601,27 @@ class AgentRuntime:
                 )
                 response = response_from_step(step)
                 if response is None:
+                    state = self._checkpoint(
+                        task,
+                        step_index,
+                        messages,
+                        previous_fingerprint,
+                        repeated_actions,
+                        repeated_errors,
+                        tool_failures,
+                        elapsed_before + (monotonic() - started),
+                        tool_specifications=specifications,
+                        consumed_input_sequence=state.consumed_input_sequence,
+                        pending_effect_ids=state.pending_effect_ids,
+                        pending_model_request_step=step_index,
+                    )
+                    self._persist_checkpoint(state)
                     self._assert_ownership()
                     response = self.provider.complete(
                         prepared_request.messages, prepared_request.tools
                     )
                     self._assert_ownership()
-                    step, effects = persist_model_response_batch(task, step, response, self.gateway)
+                    step, effects = self._prepare_model_response(task, step, response)
                     if self.state_store is not None:
                         effects = self.state_store.prepare_effect_batch(
                             step,
@@ -564,6 +629,16 @@ class AgentRuntime:
                             expected_version=task.version,
                             lease_guard=self._lease_guard(),
                         )
+                    state = state.model_copy(
+                        update={
+                            "event_sequence": self._current_event_sequence(task),
+                            "pending_effect_ids": [effect.id for effect in effects],
+                            "pending_model_request_step": None,
+                            "elapsed_seconds": elapsed_before + (monotonic() - started),
+                            "updated_at": utc_now(),
+                        }
+                    )
+                    self._persist_checkpoint(state)
                 else:
                     effects = self._effects_for_step(step)
                     restore_file_preconditions(
@@ -573,7 +648,22 @@ class AgentRuntime:
                 controlled = self._apply_pending_control(task)
                 if controlled is not None:
                     return controlled
-                self._record_model_usage(response.usage)
+                if step_index not in self._accounted_model_response_steps:
+                    self._record_model_usage(response.usage)
+                    self._accounted_model_response_steps.append(step_index)
+                    state = state.model_copy(
+                        update={
+                            "input_tokens": self._input_tokens,
+                            "output_tokens": self._output_tokens,
+                            "cost_usd": self._cost_usd,
+                            "accounted_model_response_steps": list(
+                                self._accounted_model_response_steps
+                            ),
+                            "elapsed_seconds": elapsed_before + (monotonic() - started),
+                            "updated_at": utc_now(),
+                        }
+                    )
+                    self._persist_checkpoint(state)
                 cache_observation = prompt_cache.observe_response(prepared_request, response.usage)
                 self._emit(
                     "cache.layout",
@@ -603,6 +693,27 @@ class AgentRuntime:
                         tool_calls=response.tool_calls,
                     )
                 )
+                pending_inputs = self._pending_input_turns(
+                    task,
+                    step.consumed_input_sequence,
+                )
+                if pending_inputs:
+                    return self._supersede_response_for_inputs(
+                        task,
+                        state,
+                        step,
+                        step_index,
+                        response.tool_calls,
+                        effects,
+                        messages,
+                        pending_inputs,
+                        previous_fingerprint,
+                        repeated_actions,
+                        repeated_errors,
+                        tool_failures,
+                        elapsed_before + (monotonic() - started),
+                        specifications,
+                    )
                 if not response.tool_calls:
                     if not response.content.strip():
                         return self._fail(
@@ -638,8 +749,63 @@ class AgentRuntime:
                     )
 
                 for position, call in enumerate(response.tool_calls):
+                    controlled = self._apply_pending_control(task)
+                    if controlled is not None:
+                        return controlled
+                    pending_inputs = self._pending_input_turns(
+                        task,
+                        step.consumed_input_sequence,
+                    )
+                    if pending_inputs:
+                        return self._supersede_response_for_inputs(
+                            task,
+                            state,
+                            step,
+                            step_index,
+                            response.tool_calls,
+                            effects,
+                            messages,
+                            pending_inputs,
+                            previous_fingerprint,
+                            repeated_actions,
+                            repeated_errors,
+                            tool_failures,
+                            elapsed_before + (monotonic() - started),
+                            specifications,
+                        )
                     effect = effects[position] if position < len(effects) else None
-                    result = self._execute_or_replay(task, call, effect=effect)
+                    try:
+                        result = self._execute_or_replay(
+                            task,
+                            call,
+                            effect=effect,
+                            expected_input_sequence=step.consumed_input_sequence,
+                        )
+                    except InputRevisionConflict:
+                        return self._supersede_response_for_inputs(
+                            task,
+                            state,
+                            step,
+                            step_index,
+                            response.tool_calls,
+                            effects,
+                            messages,
+                            self._pending_input_turns(
+                                task,
+                                step.consumed_input_sequence,
+                            ),
+                            previous_fingerprint,
+                            repeated_actions,
+                            repeated_errors,
+                            tool_failures,
+                            elapsed_before + (monotonic() - started),
+                            specifications,
+                        )
+                    except ControlRequested:
+                        controlled = self._apply_pending_control(task)
+                        if controlled is None:
+                            raise
+                        return controlled
                     step.tool_results.append(result)
                     observation, truncated = context_engine.compact_tool_result(result)
                     self._truncated_tool_outputs += int(truncated)
@@ -727,9 +893,16 @@ class AgentRuntime:
                     tool_failures,
                     elapsed_before + (monotonic() - started),
                     tool_specifications=specifications,
+                    consumed_input_sequence=state.consumed_input_sequence,
                 )
                 self._persist_checkpoint(state)
                 self._persist_task(task)
+                return RuntimeAdvance(
+                    status=AdvanceStatus.PROGRESSED,
+                    task=task,
+                    checkpoint=state,
+                    detail=f"completed step {step_index}",
+                )
         except ApprovalPending:
             return task
         except MemoryStoreError as exc:
@@ -761,6 +934,7 @@ class AgentRuntime:
         step.status = StepStatus.COMPLETED
         step.finished_at = utc_now()
         self._record_step(step)
+        self._append_session_assistant_turn(task, summary)
         self._persist_task(task)
         self._emit(
             "step.completed",
@@ -814,8 +988,146 @@ class AgentRuntime:
         paths = ", ".join(changed_paths)
         return f"Completed the plan and verified passing tests for: {paths}."
 
+    def _pending_input_turns(self, task: Task, after_sequence: int) -> list[Turn]:
+        if self.state_store is None or task.session_id is None:
+            return []
+        return self.state_store.list_turns(task.session_id, after_sequence=after_sequence)
+
+    def _consume_pending_inputs(
+        self,
+        task: Task,
+        state: RuntimeCheckpoint,
+        messages: list[ModelMessage],
+    ) -> tuple[RuntimeCheckpoint, list[ModelMessage]]:
+        turns = self._pending_input_turns(task, state.consumed_input_sequence)
+        if not turns:
+            return state, messages
+        updated_messages = list(messages)
+        updated_messages.extend(
+            ModelMessage(role="user", content=turn.content)
+            for turn in turns
+            if turn.role is TurnRole.USER and turn.task_id in {None, task.id}
+        )
+        updated = state.model_copy(
+            update={
+                "messages": updated_messages,
+                "consumed_input_sequence": turns[-1].sequence,
+            }
+        )
+        self._persist_checkpoint(updated)
+        self._emit(
+            "input.consumed",
+            task,
+            {
+                "from_sequence": state.consumed_input_sequence,
+                "through_sequence": turns[-1].sequence,
+                "turn_ids": [turn.id for turn in turns],
+            },
+        )
+        return updated, updated_messages
+
+    def _supersede_response_for_inputs(
+        self,
+        task: Task,
+        state: RuntimeCheckpoint,
+        step: AgentStep,
+        step_index: int,
+        calls: list[ToolCall],
+        effects: list[Effect],
+        messages: list[ModelMessage],
+        turns: list[Turn],
+        previous_fingerprint: str | None,
+        repeated_actions: int,
+        repeated_errors: dict[str, int],
+        tool_failures: int,
+        elapsed_seconds: float,
+        specifications: list[ToolSpec],
+    ) -> RuntimeAdvance:
+        if not turns:
+            raise RuntimeError("input revision changed but no committed Turn was found")
+        for position, call in enumerate(calls):
+            effect = effects[position] if position < len(effects) else None
+            if effect is None or self.state_store is None:
+                continue
+            current = self.state_store.get_effect(effect.id)
+            if current.status not in {
+                EffectStatus.PREPARED,
+                EffectStatus.WAITING_FOR_APPROVAL,
+            }:
+                continue
+            result = self.gateway.observe_unexecuted(
+                task.id,
+                call,
+                "Effect cancelled because newer Session input was committed before claim",
+                effect_status=EffectStatus.CANCELLED.value,
+                next_action="replan_with_latest_requirements",
+            )
+            self._settle_unexecuted_effect(
+                current,
+                call,
+                result,
+                status=EffectStatus.CANCELLED,
+            )
+            step.tool_results.append(result)
+            messages.append(
+                ModelMessage(
+                    role="tool",
+                    content=result.output,
+                    tool_call_id=call.id,
+                )
+            )
+        self.gateway.context.requires_replan = True
+        messages.extend(
+            ModelMessage(role="user", content=turn.content)
+            for turn in turns
+            if turn.role is TurnRole.USER and turn.task_id in {None, task.id}
+        )
+        step.status = StepStatus.COMPLETED
+        step.finished_at = utc_now()
+        self._record_step(step)
+        checkpoint = self._checkpoint(
+            task,
+            step_index + 1,
+            messages,
+            previous_fingerprint,
+            repeated_actions,
+            repeated_errors,
+            tool_failures,
+            elapsed_seconds,
+            tool_specifications=specifications,
+            consumed_input_sequence=turns[-1].sequence,
+            pending_effect_ids=[],
+        )
+        self._persist_checkpoint(checkpoint)
+        self._persist_task(task)
+        self._emit(
+            "input.superseded_response",
+            task,
+            {
+                "step": step_index,
+                "through_sequence": turns[-1].sequence,
+                "cancelled_effect_ids": [
+                    effect.id
+                    for effect in effects
+                    if self.state_store is not None
+                    and self.state_store.get_effect(effect.id).status is EffectStatus.CANCELLED
+                ],
+            },
+        )
+        return RuntimeAdvance(
+            status=AdvanceStatus.PROGRESSED,
+            task=task,
+            checkpoint=checkpoint,
+            detail="model response superseded by newer Session input",
+        )
+
     def _execute_or_replay(
-        self, task: Task, call: ToolCall, *, effect: Effect | None = None
+        self,
+        task: Task,
+        call: ToolCall,
+        *,
+        effect: Effect | None = None,
+        expected_input_sequence: int | None = None,
     ) -> ToolResult:
         self._assert_ownership()
         claimed_effect: Effect | None = None
@@ -930,6 +1242,7 @@ class AgentRuntime:
                 policy_version=self.gateway.policy.version,
                 config_version=config_version,
                 policy_decision=current_decision.value,
+                expected_input_sequence=expected_input_sequence,
             )
             approval_consumed = claimed_effect.approval_consumed
             self._assert_ownership()
@@ -1264,24 +1577,31 @@ class AgentRuntime:
         return task
 
     def _cancel(self, task: Task, control: ControlRequest | None = None) -> Task:
+        acknowledged = None
         if control is not None:
-            self._settle_control(control)
+            acknowledged = self._acknowledge_control(control)
+        self._cleanup_managed_execution(ControlKind.CANCEL.value)
         self._cancel_pending_effects(task, "task cancelled before backend execution")
         task.plan = self.gateway.context.plan
         task.report = self._build_report("task cancelled")
         task.transition(TaskStatus.CANCELLED)
         self._persist_task(task)
+        if acknowledged is not None:
+            self._settle_control(acknowledged)
         self._emit("task.cancelled", task, {"report": task.report.model_dump(mode="json")})
         return task
 
     def _pause(self, task: Task, control: ControlRequest) -> Task:
-        self._settle_control(control)
+        acknowledged = self._acknowledge_control(control)
         task.plan = self.gateway.context.plan
         task.report = self._build_report("task paused")
         if task.runtime_condition is TaskRuntimeCondition.RUNNING:
             task.transition_runtime(TaskRuntimeCondition.PAUSING)
+            self._persist_task(task)
+        self._cleanup_managed_execution(ControlKind.PAUSE.value)
         task.transition_runtime(TaskRuntimeCondition.PAUSED)
         self._persist_task(task)
+        self._settle_control(acknowledged)
         self._emit("task.paused", task, {"report": task.report.model_dump(mode="json")})
         return task
 
@@ -1295,21 +1615,33 @@ class AgentRuntime:
             return self._cancel(task, control)
         return self._pause(task, control)
 
+    def _acknowledge_control(self, control: ControlRequest) -> ControlRequest:
+        if self.state_store is None:
+            return control
+        if control.status is ControlStatus.REQUESTED:
+            return self.state_store.settle_control(
+                control.id,
+                status=ControlStatus.ACKNOWLEDGED,
+                expected_version=control.version,
+            )
+        return control
+
     def _settle_control(self, control: ControlRequest) -> None:
         if self.state_store is None:
             return
         current = control
         if current.status is ControlStatus.REQUESTED:
-            current = self.state_store.settle_control(
-                current.id,
-                status=ControlStatus.ACKNOWLEDGED,
-                expected_version=current.version,
-            )
+            current = self._acknowledge_control(current)
         self.state_store.settle_control(
             current.id,
             status=ControlStatus.SETTLED,
             expected_version=current.version,
         )
+
+    def _cleanup_managed_execution(self, reason: str) -> None:
+        sandbox = self.gateway.context.sandbox
+        if isinstance(sandbox, ManagedCommandSandbox):
+            sandbox.terminate_all(reason)
 
     def _build_report(self, summary: str) -> TaskReport:
         validations: list[ValidationRecord] = []
@@ -1363,6 +1695,8 @@ class AgentRuntime:
             input_tokens=self._input_tokens,
             output_tokens=self._output_tokens,
             cost_usd=self._cost_usd,
+            unknown_model_usage_calls=len(self._unknown_model_usage_steps),
+            model_usage_exact=not self._unknown_model_usage_steps,
             cache_hit_tokens=cache_usage["cache_hit_tokens"],
             cache_miss_tokens=cache_usage["cache_miss_tokens"],
             cache_write_tokens=cache_usage["cache_write_tokens"],
@@ -1566,11 +1900,21 @@ class AgentRuntime:
         elapsed_seconds: float,
         *,
         tool_specifications: list[ToolSpec] | None = None,
+        consumed_input_sequence: int = 0,
+        pending_effect_ids: list[str] | None = None,
+        pending_model_request_step: int | None = None,
     ) -> RuntimeCheckpoint:
         if self._prompt_cache is None:
             raise RuntimeError("prompt-cache coordinator was not initialized")
         return RuntimeCheckpoint(
             task_id=task.id,
+            session_id=task.session_id,
+            consumed_input_sequence=consumed_input_sequence,
+            event_sequence=self._current_event_sequence(task),
+            pending_effect_ids=list(pending_effect_ids or ()),
+            pending_model_request_step=pending_model_request_step,
+            accounted_model_response_steps=list(self._accounted_model_response_steps),
+            unknown_model_usage_steps=list(self._unknown_model_usage_steps),
             next_step_index=next_step_index,
             messages=messages,
             tool_specifications=(
@@ -1615,6 +1959,84 @@ class AgentRuntime:
                 self._memory_manager.snapshot() if self._memory_manager is not None else None
             ),
         )
+
+    def _current_event_sequence(self, task: Task) -> int:
+        if self.state_store is None or task.session_id is None:
+            return 0
+        return self.state_store.get_session(task.session_id).event_sequence
+
+    def _reset_task_runtime_state(self, task: Task) -> None:
+        switching_tasks = self._task_scope_id not in {None, task.id}
+        self.gateway.context.plan = task.plan
+        if switching_tasks:
+            self.gateway.context.requires_replan = False
+            self.gateway.context.replan_count = 0
+            self.gateway.context.changes.restore({})
+            self.gateway.context.recent_paths = []
+            self.gateway.history = []
+        self._task_scope_id = task.id
+
+    def _session_history(self, task: Task) -> tuple[list[ModelMessage], int]:
+        if self.state_store is None or task.session_id is None:
+            return [], 0
+        turns = self.state_store.list_turns(task.session_id)
+        messages = [
+            ModelMessage(role=turn.role.value, content=turn.content)
+            for turn in turns
+            if turn.role in {TurnRole.USER, TurnRole.ASSISTANT}
+        ]
+        return messages, (turns[-1].sequence if turns else 0)
+
+    def _append_session_assistant_turn(self, task: Task, content: str) -> None:
+        if self.state_store is None or task.session_id is None or not content.strip():
+            return
+        self.state_store.append_turn(
+            Turn(
+                session_id=task.session_id,
+                task_id=task.id,
+                role=TurnRole.ASSISTANT,
+                content=content,
+                client_submission_id=f"task-completion:{task.id}",
+            )
+        )
+
+    def _prepare_model_response(
+        self,
+        task: Task,
+        step: AgentStep,
+        response: ModelResponse,
+    ) -> tuple[AgentStep, list[Effect]]:
+        return persist_model_response_batch(task, step, response, self.gateway)
+
+    def _reconcile_pending_model_request(
+        self,
+        task: Task,
+        checkpoint: RuntimeCheckpoint,
+    ) -> RuntimeCheckpoint:
+        step_index = checkpoint.pending_model_request_step
+        if step_index is None:
+            return checkpoint
+        unknown_steps = list(checkpoint.unknown_model_usage_steps)
+        if self._persisted_response_step(task.id, step_index) is None:
+            if step_index not in unknown_steps:
+                unknown_steps.append(step_index)
+            self._emit(
+                "model.usage_unknown",
+                task,
+                {
+                    "step": step_index,
+                    "reason": "request was in flight without a persisted response",
+                },
+            )
+        updated = checkpoint.model_copy(
+            update={
+                "pending_model_request_step": None,
+                "unknown_model_usage_steps": unknown_steps,
+                "updated_at": utc_now(),
+            }
+        )
+        self._persist_checkpoint(updated)
+        return updated
 
     @staticmethod
     def _working_memory_budget(task: Task) -> int:
@@ -2052,6 +2474,9 @@ class AgentRuntime:
             task_id=task.id,
             index=step_index,
             status=StepStatus.RUNNING,
+            consumed_input_sequence=(
+                self.state_store.get_checkpoint(task.id).consumed_input_sequence
+            ),
             model_response=response.model_dump(mode="json"),
             effect_ids=[retry.id],
             started_at=utc_now(),
@@ -2179,7 +2604,10 @@ class AgentRuntime:
         if self.state_store is None or self._ownership is None:
             return None
         control = self.state_store.get_pending_control(self._ownership.execution.task_id)
-        return None if control is None else control.kind.value
+        if control is None:
+            return None
+        self._acknowledge_control(control)
+        return control.kind.value
 
     def _record_cleanup_failure(self, cleanup_info: str) -> None:
         if self.state_store is None or self._ownership is None:

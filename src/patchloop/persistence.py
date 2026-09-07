@@ -49,7 +49,9 @@ from patchloop.memory.store import SQLiteMemoryStore, initialize_memory_schema
 from patchloop.memory.working import WorkingMemorySnapshot
 from patchloop.persistence_contracts import (
     ApprovalConflict,
+    ControlRequested,
     EffectIdentityConflict,
+    InputRevisionConflict,
     LeaseConflict,
     LeaseGuard,
     LeaseLost,
@@ -675,6 +677,9 @@ class RuntimeCheckpoint(BaseModel):
     consumed_input_sequence: int = Field(default=0, ge=0)
     event_sequence: int = Field(default=0, ge=0)
     pending_effect_ids: list[str] = Field(default_factory=list)
+    pending_model_request_step: int | None = Field(default=None, ge=0)
+    accounted_model_response_steps: list[int] = Field(default_factory=list)
+    unknown_model_usage_steps: list[int] = Field(default_factory=list)
     next_step_index: int = Field(ge=0)
     messages: list[ModelMessage]
     tool_specifications: list[ToolSpec] | None = None
@@ -2298,6 +2303,7 @@ class SQLiteStore:
         policy_version: str | None = None,
         config_version: str | None = None,
         policy_decision: str | None = None,
+        expected_input_sequence: int | None = None,
     ) -> Effect:
         with connect_write(self.path) as connection:
             self._assert_guard(connection, lease_guard)
@@ -2306,6 +2312,33 @@ class SQLiteStore:
             if current.status is not EffectStatus.PREPARED:
                 raise LeaseConflict(effect_id)
             task = self._require_task(connection, current.task_id)
+            pending_control_row = connection.execute(
+                """
+                SELECT id FROM control_requests
+                WHERE task_id = ? AND status IN (?, ?)
+                ORDER BY requested_at, id LIMIT 1
+                """,
+                (
+                    task.id,
+                    ControlStatus.REQUESTED.value,
+                    ControlStatus.ACKNOWLEDGED.value,
+                ),
+            ).fetchone()
+            if pending_control_row is not None:
+                raise ControlRequested(task.id, str(pending_control_row["id"]))
+            if expected_input_sequence is not None and task.session_id is not None:
+                actual_input_sequence = int(
+                    connection.execute(
+                        "SELECT COALESCE(MAX(sequence), 0) FROM turns WHERE session_id = ?",
+                        (task.session_id,),
+                    ).fetchone()[0]
+                )
+                if actual_input_sequence != expected_input_sequence:
+                    raise InputRevisionConflict(
+                        task.session_id,
+                        expected_input_sequence,
+                        actual_input_sequence,
+                    )
             actual_workspace = task.repository
             actual_config = (
                 config_version
@@ -2465,7 +2498,12 @@ class SQLiteStore:
                 update={"event_sequence": sequence, "updated_at": datetime.now(UTC)}
             )
             self._write_session_row(connection, advanced_session)
-            self._advance_checkpoint_event_cursor(connection, task.id, sequence)
+            self._advance_checkpoint_event_cursor(
+                connection,
+                task.id,
+                sequence,
+                completed_effect_id=committed.id,
+            )
             return committed
 
     def mark_effect_unknown(
@@ -2510,7 +2548,7 @@ class SQLiteStore:
                 )
                 self._write_task_row(connection, recovery_task)
             if task.session_id is not None:
-                self._journal(
+                event, _ = self._journal(
                     connection,
                     self._require_session(connection, task.session_id),
                     event_id=journal_event_id(
@@ -2520,6 +2558,12 @@ class SQLiteStore:
                     task_id=task.id,
                     trace_id=unknown.provider_call_id,
                     data={"effect_id": unknown.id, "evidence": evidence},
+                )
+                self._advance_checkpoint_event_cursor(
+                    connection,
+                    task.id,
+                    event.sequence,
+                    completed_effect_id=unknown.id,
                 )
             return unknown, recovery_task
 
@@ -2626,7 +2670,12 @@ class SQLiteStore:
                     trace_id=settled.provider_call_id,
                     data={"effect_id": settled.id, "status": settled.status.value},
                 )
-                self._advance_checkpoint_event_cursor(connection, task.id, event.sequence)
+                self._advance_checkpoint_event_cursor(
+                    connection,
+                    task.id,
+                    event.sequence,
+                    completed_effect_id=settled.id,
+                )
             return settled
 
     def append_event(
@@ -2766,6 +2815,16 @@ class SQLiteStore:
                 (task_id, ControlStatus.REQUESTED.value, ControlStatus.ACKNOWLEDGED.value),
             ).fetchone()
         return None if row is None else ControlRequest.model_validate_json(row["payload_json"])
+
+    def get_control_request(self, request_id: str) -> ControlRequest:
+        with connect(self.path) as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM control_requests WHERE id = ?",
+                (request_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"control request not found: {request_id}")
+        return ControlRequest.model_validate_json(row["payload_json"])
 
     def resolve_recovery(
         self,
@@ -3678,7 +3737,12 @@ class SQLiteStore:
         )
 
     def _advance_checkpoint_event_cursor(
-        self, connection: sqlite3.Connection, task_id: str, sequence: int
+        self,
+        connection: sqlite3.Connection,
+        task_id: str,
+        sequence: int,
+        *,
+        completed_effect_id: str | None = None,
     ) -> None:
         row = connection.execute(
             "SELECT payload_json FROM checkpoints WHERE task_id = ?", (task_id,)
@@ -3687,6 +3751,12 @@ class SQLiteStore:
             return
         payload = json.loads(row["payload_json"])
         payload["event_sequence"] = sequence
+        if completed_effect_id is not None:
+            payload["pending_effect_ids"] = [
+                effect_id
+                for effect_id in payload.get("pending_effect_ids", [])
+                if effect_id != completed_effect_id
+            ]
         payload["updated_at"] = datetime.now(UTC).isoformat()
         connection.execute(
             """

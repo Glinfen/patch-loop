@@ -121,6 +121,8 @@ class TaskReport(BaseModel):
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0)
+    unknown_model_usage_calls: int = Field(default=0, ge=0)
+    model_usage_exact: bool = True
     cache_hit_tokens: int | None = Field(default=None, ge=0)
     cache_miss_tokens: int | None = Field(default=None, ge=0)
     cache_write_tokens: int | None = Field(default=None, ge=0)
@@ -388,6 +390,7 @@ class AgentStep(BaseModel):
     decision: str | None = None
     model_response: dict[str, Any] | None = None
     effect_ids: list[str] = Field(default_factory=list)
+    consumed_input_sequence: int = Field(default=0, ge=0)
     tool_results: list[ToolResult] = Field(default_factory=list)
     error: str | None = None
     started_at: datetime | None = None

@@ -151,8 +151,10 @@ def test_runtime_control_terminates_command_before_settling(
         ).fetchone()
     control = ControlRequest.model_validate_json(row["payload_json"])
     assert control.status is ControlStatus.SETTLED
+    assert control.acknowledged_at is not None
     assert control.settled_at is not None
-    assert command.updated_at <= control.settled_at
+    assert control.acknowledged_at <= command.updated_at <= control.settled_at
+    assert store.get_task("task-1").updated_at <= control.settled_at
     assert result
     if control_kind is ControlKind.CANCEL:
         assert result[0].status is TaskStatus.CANCELLED

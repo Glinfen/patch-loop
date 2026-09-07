@@ -13,6 +13,7 @@ from patchloop.execution.models import (
 from patchloop.persistence_contracts import (
     EffectIdentityConflict,
     FakeStore,
+    InputRevisionConflict,
     LeaseConflict,
     LeaseGuard,
     LeaseLost,
@@ -147,6 +148,41 @@ def test_fake_store_effect_identity_and_lease_guard() -> None:
         lease_guard=guard,
     )
     assert saved.result_ref == "result-1"
+
+
+def test_fake_store_effect_claim_checks_consumed_input_revision() -> None:
+    store = FakeStore()
+    session = store.create_session(Session(id="session-1", workspace_ref="workspace"))
+    task = store.start_task(
+        session.id,
+        Task(id="task-1", goal="Inspect", repository="workspace"),
+        expected_version=session.version,
+    )
+    execution = store.claim_execution(_execution(), expected_version=task.version)
+    guard = LeaseGuard(
+        execution.id,
+        task.id,
+        execution.lease_token,
+        execution.generation,
+        execution.owner_id,
+    )
+    prepared = store.prepare_effects(
+        [_effect()],
+        expected_version=store.get_task(task.id).version,
+        lease_guard=guard,
+    )[0]
+    store.append_turn(Turn(session_id=session.id, role=TurnRole.USER, content="new constraint"))
+
+    with pytest.raises(InputRevisionConflict) as raised:
+        store.claim_effect(
+            prepared.id,
+            expected_version=prepared.version,
+            lease_guard=guard,
+            expected_input_sequence=0,
+        )
+
+    assert raised.value.actual == 1
+    assert store.get_effect(prepared.id).status is EffectStatus.PREPARED
 
 
 def test_fake_store_recovery_requires_recovery_condition_and_disposition() -> None:

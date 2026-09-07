@@ -120,6 +120,11 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
     assert checkpoint.cache_write_tokens == 3
     assert checkpoint.cache_usage_reported_calls == 2
     assert checkpoint.cache_write_reported_calls == 1
+    assert checkpoint.accounted_model_response_steps == [0, 1]
+    assert checkpoint.plan is not None
+    assert [item.description for item in checkpoint.plan.items] == ["Fix divide", "Test"]
+    assert [result.call_id for result in checkpoint.tool_history] == ["plan-call", "write-call"]
+    assert checkpoint.change_snapshot["calculator.py"] is not None
     assert persisted.status is TaskStatus.RUNNING
     assert checkpoint.next_step_index == 2
     assert "return dividend / divisor" in (repository / "calculator.py").read_text(encoding="utf-8")
@@ -181,6 +186,8 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
     assert result.report.cache_write_tokens == 3
     assert result.report.cache_hit_rate == 0.81
     assert result.report.cache_usage_reported_calls == 4
+    assert not result.report.model_usage_exact
+    assert result.report.unknown_model_usage_calls == 1
     assert store.get_task(task.id).status is TaskStatus.COMPLETED
     assert len(store.list_steps(task.id)) == 4
     assert len(store.list_tool_results(task.id)) == 3

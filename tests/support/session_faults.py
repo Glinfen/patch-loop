@@ -11,7 +11,7 @@ import os
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
@@ -37,6 +37,14 @@ class FaultInjected(RuntimeError):
     """Raised when a barrier is used without terminating its worker."""
 
 
+class BarrierSignal(Protocol):
+    """Small common surface shared by threading and multiprocessing events."""
+
+    def set(self) -> None: ...
+
+    def wait(self, timeout: float | None = None) -> bool: ...
+
+
 class FaultBarrier:
     """Append an audit record, then optionally terminate at one exact point."""
 
@@ -46,10 +54,14 @@ class FaultBarrier:
         *,
         stop_at: FaultPoint | None = None,
         terminate_process: bool = False,
+        reached_signal: BarrierSignal | None = None,
+        parent_release: BarrierSignal | None = None,
     ) -> None:
         self.audit_path = audit_path
         self.stop_at = stop_at
         self.terminate_process = terminate_process
+        self.reached_signal = reached_signal
+        self.parent_release = parent_release
 
     @classmethod
     def from_environment(cls) -> FaultBarrier:
@@ -67,6 +79,12 @@ class FaultBarrier:
         self.record("barrier", point=point.value, **data)
         if point != self.stop_at:
             return
+        if self.reached_signal is not None:
+            self.reached_signal.set()
+            if self.parent_release is None:
+                raise RuntimeError("a parent-controlled barrier requires a release signal")
+            self.parent_release.wait()
+            raise FaultInjected(f"parent released fault barrier: {point.value}")
         if self.terminate_process:
             os._exit(97)
         raise FaultInjected(point.value)
@@ -184,6 +202,8 @@ def run_runtime_fault_worker(
     target_path: str,
     audit_path: str,
     stop_at: str,
+    reached_signal: BarrierSignal | None = None,
+    parent_release: BarrierSignal | None = None,
 ) -> None:
     """Run the pre-SRF ordering through AgentRuntime and ToolGateway."""
 
@@ -193,7 +213,9 @@ def run_runtime_fault_worker(
     barrier = FaultBarrier(
         Path(audit_path),
         stop_at=FaultPoint(stop_at),
-        terminate_process=True,
+        terminate_process=reached_signal is None,
+        reached_signal=reached_signal,
+        parent_release=parent_release,
     )
     store = FaultingSQLiteStore(Path(database_path), barrier)
     call = ToolCall(

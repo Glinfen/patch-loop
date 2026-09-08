@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "matrix_schema_version": 1,
+  "passed": true,
+  "failed_checks_by_metric": {
+    "confirmed_effect_reexecutions": 0,
+    "unknown_automatic_retries": 0,
+    "unauthorized_actions": 0,
+    "stale_owner_successful_commits": 0,
+    "approval_decision_failures": 0,
+    "event_integrity_failures": 0,
+    "cross_source_mismatches": 0,
+    "credential_leaks": 0,
+    "lease_token_leaks": 0
+  },
+  "results": [
+    {
+      "case_id": "independent-cross-source-recovery",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 2440.7359000033466,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.90s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "unknown-effect-does-not-auto-retry",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 2084.439199999906,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.54s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "noninteractive-write-requires-approval",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 3304.192099996726,
+      "stdout": ".                                                                        [100%]\n1 passed in 1.60s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "stale-owner-cannot-commit",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 2025.812700012466,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.40s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "approval-decision-is-persisted-once",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 2909.0811999922153,
+      "stdout": ".                                                                        [100%]\n1 passed in 1.19s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "effect-event-transaction-rolls-back",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 1914.8302000103286,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.34s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "credential-redaction-across-database-and-trace",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 2309.4536999997217,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.71s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "lease-events-hide-raw-tokens",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 1782.247000010102,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.31s\n",
+      "stderr": "",
+      "error": null
+    }
+  ],
+  "generated_at": "2026-09-07T15:39:34.476627+00:00"
+}

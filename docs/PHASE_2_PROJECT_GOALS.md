@@ -8,6 +8,12 @@ PatchLoop 第一阶段建立了单 Agent 执行闭环、工具协议、持久化
 
 阶段完成后，PatchLoop 应从“研究型 Agent Runtime 原型”进入“具备日常试用价值的本地单 Agent”。
 
+当前进展（2026-09-08）：持久化 Session、Effect 恢复、执行所有权、持久化审批和 Session CLI
+已完成实现，SRF-07 的故障矩阵、8 进程竞争、安全审计及本机质量门禁通过。真实 Docker 后端
+和真实 Provider 三次独立试用因当前环境不具备条件而保持 `unverified`，因此 Session Runtime
+Foundation 和第二阶段均未宣告整体完成。SRF-07 证据与未完成项记录在
+[Session Runtime Foundation 计划](SESSION_RUNTIME_FOUNDATION_PLAN.md)第 13 节。
+
 ## 2. 目标用户与核心场景
 
 目标用户：
@@ -126,6 +132,10 @@ CLI/TUI 应围绕 Session 工作流组织，而不是要求用户手工拼接任
 - 独立判定代码正确性、变更范围、测试、Agent 状态和用户审批行为。
 - 汇总成功率、首次通过率、恢复成功率、工具成功率、Token、费用、时延、无效动作和安全拒绝。
 - 失败按照定位、规划、工具、Provider、权限、Sandbox、上下文和验证分类，并驱动后续优化。
+
+SRF-07 已提供一个锁定真实 Python 仓库、revision、依赖、Issue、公开测试和独立断言的三次试用
+入口，但当前没有真实 Provider 凭据，三个样本均为 `unverified`。该入口只是第二阶段完整
+“30 个任务、5 个仓库”评测的基础设施和首个清单，不计为已完成的真实试用样本。
 
 ## 4. 阶段量化目标
 

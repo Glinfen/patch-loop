@@ -1,0 +1,2744 @@
+{
+  "schema_version": 1,
+  "contenders": 8,
+  "rounds_per_scope": 100,
+  "passed": true,
+  "scopes": [
+    {
+      "scope": "session",
+      "contenders": 8,
+      "rounds_expected": 100,
+      "passed": true,
+      "reacquired_after_release": true,
+      "rounds": [
+        {
+          "round": 1,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 2,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 3,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 4,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 5,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 6,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 7,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 8,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 9,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 10,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 11,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 12,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 13,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 14,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 15,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 16,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 17,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 18,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 19,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 20,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 21,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 22,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 23,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 24,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 25,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 26,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 27,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 28,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 29,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 30,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 31,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 32,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 33,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 34,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 35,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 36,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 37,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 38,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 39,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 40,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 41,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 42,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 43,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 44,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 45,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 46,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 47,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 48,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 49,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 50,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 51,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 52,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 53,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 54,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 55,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 56,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 57,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 58,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 59,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 60,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 61,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 62,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 63,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 64,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 65,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 66,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 67,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 68,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 69,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 70,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 71,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 72,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 73,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 74,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 75,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 76,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 77,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 78,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 79,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 80,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 81,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 82,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 83,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 84,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 85,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 86,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 87,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 88,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 89,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 90,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 91,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 92,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 93,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 94,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 95,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 96,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 97,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 98,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 99,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 100,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        }
+      ]
+    },
+    {
+      "scope": "task",
+      "contenders": 8,
+      "rounds_expected": 100,
+      "passed": true,
+      "reacquired_after_release": true,
+      "rounds": [
+        {
+          "round": 1,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 2,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 3,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 4,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 5,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 6,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 7,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 8,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 9,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 10,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 11,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 12,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 13,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 14,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 15,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 16,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 17,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 18,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 19,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 20,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 21,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 22,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 23,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 24,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 25,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 26,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 27,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 28,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 29,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 30,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 31,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 32,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 33,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 34,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 35,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 36,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 37,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 38,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 39,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 40,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 41,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 42,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 43,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 44,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 45,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 46,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 47,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 48,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 49,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 50,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 51,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 52,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 53,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 54,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 55,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 56,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 57,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 58,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 59,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 60,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 61,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 62,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 63,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 64,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 65,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 66,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 67,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 68,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 69,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 70,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 71,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 72,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 73,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 74,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 75,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 76,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 77,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 78,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 79,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 80,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 81,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 82,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 83,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 84,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 85,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 86,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 87,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 88,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 89,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 90,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 91,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 92,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 93,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 94,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 95,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 96,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 97,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 98,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 99,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 100,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        }
+      ]
+    },
+    {
+      "scope": "workspace",
+      "contenders": 8,
+      "rounds_expected": 100,
+      "passed": true,
+      "reacquired_after_release": true,
+      "rounds": [
+        {
+          "round": 1,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 2,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 3,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 4,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 5,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 6,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 7,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 8,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 9,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 10,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 11,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 12,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 13,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 14,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 15,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 16,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 17,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 18,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 19,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 20,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 21,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 22,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 23,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 24,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 25,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 26,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 27,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 28,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 29,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 30,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 31,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 32,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 33,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 34,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 35,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 36,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 37,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 38,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 39,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 40,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 41,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 42,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 43,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 44,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 45,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 46,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 47,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 48,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 49,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 50,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 51,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 52,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 53,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 54,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 55,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 56,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 57,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 58,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 59,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 60,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 61,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 62,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 63,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 64,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 65,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 66,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 67,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 68,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-4",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 69,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 70,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 71,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 72,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 73,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 74,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 75,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 76,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 77,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 78,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 79,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 80,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 81,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 82,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 83,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 84,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 85,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 86,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-6",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 87,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 88,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 89,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 90,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 91,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 92,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 93,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-0",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 94,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 95,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-2",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 96,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 97,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-1",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 98,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-3",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 99,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-5",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        },
+        {
+          "round": 100,
+          "acquired_count": 1,
+          "conflict_count": 7,
+          "error_count": 0,
+          "winner_owner_id": "worker-7",
+          "all_contenders_returned_before_release": true,
+          "errors": []
+        }
+      ]
+    }
+  ],
+  "different_workspaces": {
+    "contenders": 8,
+    "acquired_count": 8,
+    "conflict_count": 0,
+    "error_count": 0,
+    "passed": true,
+    "errors": []
+  },
+  "generated_at": "2026-09-07T15:03:20.065278+00:00"
+}

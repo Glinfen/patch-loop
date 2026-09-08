@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python_version": "3.12.13",
+  "results": [
+    {
+      "name": "ruff_check",
+      "argv": [
+        "D:\\codes\\git\\coding agent\\.venv\\Scripts\\python.exe",
+        "-m",
+        "ruff",
+        "check",
+        "src",
+        "tests"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "duration_ms": 141.46110002184287,
+      "stdout": "All checks passed!\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "name": "ruff_format",
+      "argv": [
+        "D:\\codes\\git\\coding agent\\.venv\\Scripts\\python.exe",
+        "-m",
+        "ruff",
+        "format",
+        "--check",
+        "src",
+        "tests"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "duration_ms": 140.81109999096952,
+      "stdout": "169 files already formatted\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "name": "mypy",
+      "argv": [
+        "D:\\codes\\git\\coding agent\\.venv\\Scripts\\python.exe",
+        "-m",
+        "mypy",
+        "src"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "duration_ms": 424.8261000029743,
+      "stdout": "Success: no issues found in 81 source files\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "name": "pytest",
+      "argv": [
+        "D:\\codes\\git\\coding agent\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "-q"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "duration_ms": 120478.28440001467,
+      "stdout": "........................................................................ [ 13%]\n........................................................................ [ 27%]\n........................................................................ [ 41%]\n........................................................................ [ 55%]\n........................................................................ [ 68%]\n........................................................................ [ 82%]\n........................................................................ [ 96%]\n.......s...........                                                      [100%]\n=========================== short test summary info ===========================\nSKIPPED [1] tests\\unit\\test_tools.py:382: symbolic links are unavailable on this Windows host\n522 passed, 1 skipped in 119.79s (0:01:59)\n",
+      "stderr": "",
+      "error": null
+    }
+  ],
+  "generated_at": "2026-09-08T00:15:06.057656+00:00"
+}

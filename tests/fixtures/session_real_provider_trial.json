@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "provider": {
+    "name": "deepseek",
+    "model": "deepseek-v4-flash",
+    "credential_environment": ["DEEPSEEK_API_KEY", "LLM_API_KEY"]
+  },
+  "repository": {
+    "url": "https://github.com/Glinfen/patch-loop.git",
+    "revision": "0c2c2e9f8685d8f980f4b759a04ce7d18606553a",
+    "python": "3.12",
+    "dependencies": [
+      "annotated-types==0.7.0",
+      "click==8.1.7",
+      "colorama==0.4.6",
+      "iniconfig==2.0.0",
+      "markdown-it-py==3.0.0",
+      "mdurl==0.1.2",
+      "packaging==24.2",
+      "pluggy==1.5.0",
+      "pydantic==2.10.6",
+      "pydantic-core==2.27.2",
+      "pygments==2.19.1",
+      "pytest==8.3.5",
+      "rich==13.9.4",
+      "shellingham==1.5.4",
+      "typer==0.9.0",
+      "typing-extensions==4.12.2"
+    ]
+  },
+  "issue": {
+    "id": "typer-09-optional-parameter-compatibility",
+    "title": "Restore the declared Typer 0.9 CLI compatibility",
+    "source": "https://github.com/Glinfen/patch-loop/tree/0c2c2e9f8685d8f980f4b759a04ce7d18606553a",
+    "goal": "Fix the PatchLoop CLI at this locked revision so the session and approval commands work with the declared minimum Typer 0.9.0. Typer 0.9 raises RuntimeError when it inspects PEP 604 optional annotations on exposed command parameters. Add focused regression coverage and run the relevant tests. Do not weaken approval or recovery authorization.",
+    "additional_constraint": "Keep the JSON schema and exit-code contract stable. An approval decision must remain explicit, and omitting both --approve and --deny must fail without executing an action. Limit changes to src/patchloop/cli.py and relevant CLI tests."
+  },
+  "trial_count": 3,
+  "max_resume_attempts": 12,
+  "public_validation": [
+    {
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/integration/test_cli.py::test_legacy_run_requires_persisted_approval_before_non_interactive_write",
+        "tests/integration/test_session_cli.py::test_session_cli_sends_messages_and_requests_controls",
+        "tests/integration/test_session_cli.py::test_session_recover_requires_separate_duplicate_risk_acknowledgement"
+      ],
+      "location": "workspace",
+      "timeout_seconds": 300
+    }
+  ],
+  "independent_validation": [
+    {
+      "argv": [
+        "{runner_python}",
+        "tests/acceptance/srf07_real_provider_assertions.py",
+        "{workspace}",
+        "{python}"
+      ],
+      "location": "runner",
+      "timeout_seconds": 120
+    }
+  ]
+}

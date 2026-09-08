@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "docker_image": "patchloop-sandbox:py313",
+  "cases": [
+    {
+      "id": "windows-process-tree-parent-crash",
+      "backend": "windows",
+      "capabilities": ["process_tree_cleanup"],
+      "test_nodeid": "tests/integration/test_managed_command_runtime.py::test_windows_job_kills_command_when_runtime_parent_crashes"
+    },
+    {
+      "id": "windows-old-worker-lease-takeover",
+      "backend": "windows",
+      "capabilities": ["old_worker_recovery", "lease_takeover"],
+      "test_nodeid": "tests/integration/test_execution_takeover_recovery.py::test_takeover_terminates_verified_live_command_before_new_writer"
+    },
+    {
+      "id": "windows-user-modified-file",
+      "backend": "windows",
+      "capabilities": ["user_modified_file"],
+      "test_nodeid": "tests/e2e/test_effect_recovery.py::test_resume_requires_recovery_when_file_state_cannot_be_proven"
+    },
+    {
+      "id": "docker-process-tree-timeout",
+      "backend": "docker",
+      "capabilities": ["process_tree_cleanup"],
+      "test_nodeid": "tests/acceptance/srf07_docker_backend.py::test_docker_timeout_terminates_process_tree"
+    },
+    {
+      "id": "docker-old-worker-lease-takeover",
+      "backend": "docker",
+      "capabilities": ["old_worker_recovery", "lease_takeover"],
+      "test_nodeid": "tests/acceptance/srf07_docker_backend.py::test_docker_old_worker_is_stopped_before_lease_takeover"
+    },
+    {
+      "id": "docker-user-modified-file",
+      "backend": "docker",
+      "capabilities": ["user_modified_file"],
+      "test_nodeid": "tests/e2e/test_effect_recovery.py::test_resume_requires_recovery_when_file_state_cannot_be_proven"
+    }
+  ]
+}

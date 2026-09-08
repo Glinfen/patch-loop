@@ -116,16 +116,30 @@ def _run_fault_case(root: Path, point: FaultPoint) -> tuple[list[dict[str, objec
     target = root / "workspace" / "state.txt"
     audit = root / "audit.jsonl"
     context = multiprocessing.get_context("spawn")
+    reached = context.Event()
+    parent_release = context.Event()
     worker = context.Process(
         target=run_runtime_fault_worker,
-        args=(str(database), str(target), str(audit), point.value),
+        args=(
+            str(database),
+            str(target),
+            str(audit),
+            point.value,
+            reached,
+            parent_release,
+        ),
     )
 
     worker.start()
-    worker.join(timeout=30)
+    try:
+        assert reached.wait(timeout=30), f"worker did not reach {point.value}"
+    finally:
+        if worker.is_alive():
+            worker.terminate()
+        worker.join(timeout=10)
 
     assert not worker.is_alive()
-    assert worker.exitcode == 97
+    assert worker.exitcode is not None
     audit_records = [
         json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines() if line.strip()
     ]

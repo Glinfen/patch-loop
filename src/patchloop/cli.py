@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from enum import IntEnum
 from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Never, cast
+from typing import Annotated, Never, Optional, cast
 
 import typer
 
@@ -770,7 +770,7 @@ def send_session_message(
     context: typer.Context,
     session_id: Annotated[str, typer.Argument()],
     message: Annotated[str, typer.Argument()],
-    client_submission_id: Annotated[str | None, typer.Option()] = None,
+    client_submission_id: Optional[str] = typer.Option(None),  # noqa: UP045
 ) -> None:
     """Persist a message for the active Task."""
 
@@ -881,7 +881,7 @@ def close_session(context: typer.Context, session_id: Annotated[str, typer.Argum
 def show_session_recovery(
     context: typer.Context,
     session_id: Annotated[str, typer.Argument()],
-    effect_id: Annotated[str | None, typer.Option()] = None,
+    effect_id: Optional[str] = typer.Option(None),  # noqa: UP045
     abandon: Annotated[bool, typer.Option()] = False,
     retry: Annotated[bool, typer.Option()] = False,
     acknowledge_duplicate_risk: Annotated[
@@ -1122,13 +1122,15 @@ def list_approvals(
 def decide_approval(
     context: typer.Context,
     approval_id: Annotated[str, typer.Argument()],
-    approved: Annotated[bool, typer.Option("--approve/--deny")],
+    approved: Optional[bool] = typer.Option(None, "--approve/--deny"),  # noqa: UP045
     source: Annotated[str, typer.Option()] = "cli",
 ) -> None:
     """Approve once or deny an exact persisted Effect request."""
 
     services = _services_from_context(context)
     try:
+        if approved is None:
+            raise ValueError("choose exactly one of --approve or --deny")
         approval, effect, task = services.approval.decide_current(
             approval_id,
             approved=approved,

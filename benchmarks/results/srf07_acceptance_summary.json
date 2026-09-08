@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "status": "unverified",
+  "recovery_classifications": [
+    {
+      "case_id": "turn-event-rollback",
+      "outcome": "automatically_recovered",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": false
+    },
+    {
+      "case_id": "message-consumption-before-effect-claim",
+      "outcome": "automatically_recovered",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": false
+    },
+    {
+      "case_id": "model-response-unpersisted",
+      "outcome": "automatically_recovered",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": true
+    },
+    {
+      "case_id": "effect-prepared-before-dispatch",
+      "outcome": "safely_stopped_for_operator",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": false
+    },
+    {
+      "case_id": "legacy-tool-dispatched",
+      "outcome": "safely_stopped_for_operator",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": false
+    },
+    {
+      "case_id": "legacy-before-external-action",
+      "outcome": "safely_stopped_for_operator",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": false
+    },
+    {
+      "case_id": "external-action-before-result",
+      "outcome": "safely_stopped_for_operator",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": false
+    },
+    {
+      "case_id": "result-before-checkpoint",
+      "outcome": "automatically_recovered",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": false
+    },
+    {
+      "case_id": "checkpoint-after-result",
+      "outcome": "automatically_recovered",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": false
+    },
+    {
+      "case_id": "checkpoint-memory-replay",
+      "outcome": "automatically_recovered",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": false
+    },
+    {
+      "case_id": "trace-incomplete-tail",
+      "outcome": "automatically_recovered",
+      "attempts": 3,
+      "failed_attempts": 0,
+      "unknown_remote_usage": false
+    }
+  ],
+  "recovery_counts": {
+    "automatically_recovered": 7,
+    "safely_stopped_for_operator": 4,
+    "recovery_failed": 0
+  },
+  "unknown_remote_usage_fault_cases": 1,
+  "real_provider_unknown_usage_calls": 0,
+  "components": [
+    {
+      "name": "fault_matrix",
+      "status": "passed",
+      "report": "benchmarks/results/srf07_fault_matrix_step2.json",
+      "detail": "11/11 cases; 33 retained attempts"
+    },
+    {
+      "name": "ownership_contention",
+      "status": "passed",
+      "report": "benchmarks/results/srf07_ownership_contention_step3.json",
+      "detail": "8 processes x 100 rounds for three scopes"
+    },
+    {
+      "name": "backend_acceptance",
+      "status": "unverified",
+      "report": "benchmarks/results/srf07_backend_acceptance_step4.json",
+      "detail": "Windows passed; unavailable real backends remain unverified"
+    },
+    {
+      "name": "safety_audit",
+      "status": "passed",
+      "report": "benchmarks/results/srf07_safety_audit_step5.json",
+      "detail": "all recovery safety and disclosure counters must remain zero"
+    },
+    {
+      "name": "real_provider_trials",
+      "status": "unverified",
+      "report": "benchmarks/results/srf07_real_provider_trials_step6.json",
+      "detail": "3 retained trials; credential_configured=False"
+    },
+    {
+      "name": "quality_gates",
+      "status": "passed",
+      "report": "benchmarks/results/srf07_quality_gates_step8.json",
+      "detail": "4/4 gates passed"
+    }
+  ],
+  "generated_at": "2026-09-08T00:15:19.016712+00:00"
+}

@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "matrix_schema_version": 1,
+  "status": "unverified",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python_version": "3.13.5",
+  "probes": [
+    {
+      "backend": "windows",
+      "available": true,
+      "detail": "running on the target Windows host"
+    },
+    {
+      "backend": "docker",
+      "available": false,
+      "detail": "Docker CLI is not installed or not on PATH; real backend unverified"
+    }
+  ],
+  "results": [
+    {
+      "case_id": "windows-process-tree-parent-crash",
+      "backend": "windows",
+      "status": "passed",
+      "duration_ms": 4618.715200005681,
+      "exit_code": 0,
+      "stdout": ".                                                                        [100%]\n1 passed in 2.52s\n",
+      "stderr": "",
+      "detail": "real backend acceptance passed"
+    },
+    {
+      "case_id": "windows-old-worker-lease-takeover",
+      "backend": "windows",
+      "status": "passed",
+      "duration_ms": 2493.698999998742,
+      "exit_code": 0,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.52s\n",
+      "stderr": "",
+      "detail": "real backend acceptance passed"
+    },
+    {
+      "case_id": "windows-user-modified-file",
+      "backend": "windows",
+      "status": "passed",
+      "duration_ms": 3145.2648999984376,
+      "exit_code": 0,
+      "stdout": ".                                                                        [100%]\n1 passed in 1.02s\n",
+      "stderr": "",
+      "detail": "real backend acceptance passed"
+    },
+    {
+      "case_id": "docker-process-tree-timeout",
+      "backend": "docker",
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "Docker CLI is not installed or not on PATH; real backend unverified"
+    },
+    {
+      "case_id": "docker-old-worker-lease-takeover",
+      "backend": "docker",
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "Docker CLI is not installed or not on PATH; real backend unverified"
+    },
+    {
+      "case_id": "docker-user-modified-file",
+      "backend": "docker",
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "Docker CLI is not installed or not on PATH; real backend unverified"
+    }
+  ],
+  "generated_at": "2026-09-07T15:13:09.794378+00:00"
+}

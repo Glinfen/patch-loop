@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "manifest_schema_version": 1,
+  "status": "unverified",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "repository_url": "https://github.com/Glinfen/patch-loop.git",
+  "revision": "0c2c2e9f8685d8f980f4b759a04ce7d18606553a",
+  "issue_id": "typer-09-optional-parameter-compatibility",
+  "dependency_lock": [
+    "annotated-types==0.7.0",
+    "click==8.1.7",
+    "colorama==0.4.6",
+    "iniconfig==2.0.0",
+    "markdown-it-py==3.0.0",
+    "mdurl==0.1.2",
+    "packaging==24.2",
+    "pluggy==1.5.0",
+    "pydantic==2.10.6",
+    "pydantic-core==2.27.2",
+    "pygments==2.19.1",
+    "pytest==8.3.5",
+    "rich==13.9.4",
+    "shellingham==1.5.4",
+    "typer==0.9.0",
+    "typing-extensions==4.12.2"
+  ],
+  "credential_environment": [
+    "DEEPSEEK_API_KEY",
+    "LLM_API_KEY"
+  ],
+  "credential_configured": false,
+  "results": [
+    {
+      "trial": 1,
+      "status": "unverified",
+      "stage": "preflight",
+      "workspace": "D:\\codes\\git\\coding agent\\.patchloop\\srf07-real-provider-trials\\trial-01",
+      "expected_revision": "0c2c2e9f8685d8f980f4b759a04ce7d18606553a",
+      "actual_revision": null,
+      "session_id": null,
+      "task_id": null,
+      "constraint_turn_id": null,
+      "approval_ids": [],
+      "restart_count": 0,
+      "diff": "",
+      "diff_sha256": null,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": 0.0,
+        "unknown_remote_usage_calls": 0,
+        "exact": false
+      },
+      "duration_ms": 0.0,
+      "commands": [],
+      "failures": [
+        "real Provider credential is not configured; trial was not executed"
+      ]
+    },
+    {
+      "trial": 2,
+      "status": "unverified",
+      "stage": "preflight",
+      "workspace": "D:\\codes\\git\\coding agent\\.patchloop\\srf07-real-provider-trials\\trial-02",
+      "expected_revision": "0c2c2e9f8685d8f980f4b759a04ce7d18606553a",
+      "actual_revision": null,
+      "session_id": null,
+      "task_id": null,
+      "constraint_turn_id": null,
+      "approval_ids": [],
+      "restart_count": 0,
+      "diff": "",
+      "diff_sha256": null,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": 0.0,
+        "unknown_remote_usage_calls": 0,
+        "exact": false
+      },
+      "duration_ms": 0.0,
+      "commands": [],
+      "failures": [
+        "real Provider credential is not configured; trial was not executed"
+      ]
+    },
+    {
+      "trial": 3,
+      "status": "unverified",
+      "stage": "preflight",
+      "workspace": "D:\\codes\\git\\coding agent\\.patchloop\\srf07-real-provider-trials\\trial-03",
+      "expected_revision": "0c2c2e9f8685d8f980f4b759a04ce7d18606553a",
+      "actual_revision": null,
+      "session_id": null,
+      "task_id": null,
+      "constraint_turn_id": null,
+      "approval_ids": [],
+      "restart_count": 0,
+      "diff": "",
+      "diff_sha256": null,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": 0.0,
+        "unknown_remote_usage_calls": 0,
+        "exact": false
+      },
+      "duration_ms": 0.0,
+      "commands": [],
+      "failures": [
+        "real Provider credential is not configured; trial was not executed"
+      ]
+    }
+  ],
+  "generated_at": "2026-09-07T16:19:56.335645+00:00"
+}

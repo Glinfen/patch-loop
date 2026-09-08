@@ -2,9 +2,14 @@
 
 ## 1. 目标与范围
 
-状态：SRF-01 已完成，当前起点为 **SRF-02**。SRF-00 固定了执行契约、旧数据输入和
-旧行为故障基线；SRF-01 已完成领域模型、服务端口和 Fake Store，后续新增接口和命令仍
-按编号任务实施。
+状态：SRF-00～SRF-06 已完成；SRF-07 的实现和本机质量门禁已完成，但整体验收仍为
+**未验收**：当前主机没有可用 Docker 后端，也没有配置真实 Provider 凭据。SRF-00 固定了执行契约、旧数据
+输入和旧行为故障基线；SRF-01 完成领域模型、服务端口和 Fake Store；SRF-02 完成 Session
+存储、事件与旧数据迁移；SRF-03 已将执行租约、Workspace 独占、guard、heartbeat 和受管
+进程清理接入现有 `run/resume`；SRF-04 完成 Effect 的稳定身份、持久化审批、原子执行提交、
+副作用核对和显式恢复处置；SRF-05 完成 SessionService、可推进 Runtime、多轮输入、控制、
+checkpoint 恢复和跨 Task 上下文继承；SRF-06 完成 Session CLI、持久化审批与恢复操作、
+旧入口迁移、稳定机器输出及快速开始文档。后续故障矩阵与真实试用按 SRF-07 实施。
 
 本轮交付：创建 Session → 提交任务 → 运行中追加要求 → 暂停或等待审批 → 进程重启后恢复 → 完成修改、测试与报告。已确认的副作用不得因恢复再次执行，无法确认结果的动作必须停止自动重试。
 
@@ -126,6 +131,8 @@ PCR 已有 [验收记录](milestones/PCR_05_ACCEPTANCE.md)。本轮复用现有 
 
 **依赖：** SRF-03。
 
+**状态：** 已完成，提交 `60a5e95`。
+
 **主要位置：** 新增 `src/patchloop/execution/effects.py`、`approvals.py`；修改 `runtime.py::_execute_or_replay`、`tools/gateway.py`、`tools/write.py`、`security.py`、`changes.py`；新增 `tests/e2e/test_effect_recovery.py`、`test_approval_recovery.py`。
 
 **开发步骤：**
@@ -162,7 +169,9 @@ PCR 已有 [验收记录](milestones/PCR_05_ACCEPTANCE.md)。本轮复用现有 
 
 **依赖：** SRF-04。
 
-**主要位置：** 新增 `src/patchloop/session/service.py`、`execution/driver.py`；修改 `runtime.py`、`persistence.py::RuntimeCheckpoint`，复用现有 MemoryManager/PromptCacheCoordinator；新增 `tests/integration/test_session_runtime.py`、`tests/e2e/test_session_recovery.py`。
+**状态：** 已完成，提交 `4de3f69`。
+
+**主要位置：** 新增 `src/patchloop/session/service.py`、`execution/driver.py`；修改 `runtime.py`、`persistence.py::RuntimeCheckpoint`，复用现有 MemoryManager/PromptCacheCoordinator；新增 `tests/integration/test_session_runtime.py`，扩展现有 checkpoint、Memory 和受管命令恢复测试。
 
 **开发步骤：**
 
@@ -188,6 +197,8 @@ PCR 已有 [验收记录](milestones/PCR_05_ACCEPTANCE.md)。本轮复用现有 
 ### SRF-06：实现 Session CLI、审批与恢复操作
 
 **依赖：** SRF-05。
+
+**状态：** 已完成，提交 `0c2c2e9`。
 
 **主要位置：** `src/patchloop/cli.py`；扩展 `tests/integration/test_cli.py`，新增 `tests/integration/test_session_cli.py` 和双终端进程测试；更新现有 README 的快速开始部分。
 
@@ -226,6 +237,8 @@ PCR 已有 [验收记录](milestones/PCR_05_ACCEPTANCE.md)。本轮复用现有 
 
 **依赖：** SRF-06；复用 SRF-00～06 的 fixture 和测试，不另建一套重复框架。
 
+**状态：** 开发完成，本机可执行门禁通过；真实 Docker 后端和真实 Provider 三次试用未验收。
+
 **主要位置：** Session/Effect/Approval/Workspace 的集成和端到端测试；现有 `benchmarks/`、评测报告入口；在本文记录最终任务状态与证据位置。
 
 **开发步骤：**
@@ -260,7 +273,9 @@ mypy src
 pytest -q
 ```
 
-上述是待执行门禁，不是本次文档修改的测试结果。第二阶段完整的 30 任务/5 仓库评测、跨 Provider、Skills 与 Git 工作流仍按 [项目目标](PHASE_2_PROJECT_GOALS.md) 验收。
+上述命令仍是 SRF-07 的最终门禁要求；SRF-06 的实际结果记录在第 12 节。第二阶段完整的
+30 任务/5 仓库评测、跨 Provider、Skills 与 Git 工作流仍按
+[项目目标](PHASE_2_PROJECT_GOALS.md) 验收。
 
 ## 4. 提交顺序与工作量
 
@@ -381,3 +396,378 @@ Provider，实现未接管现有生产执行入口。
 定向测试 23 项通过。全量 `pytest -q` 在加入 SRF-01 后为 279 passed、1 skipped（跳过项
 仍是 Windows 不支持 symbolic links），固定检索报告同步更新为当前源码候选路径；Week 05
 检索快照由 `tests/unit/test_intelligence.py` 验证可复现。
+
+## 8. SRF-02 实际交付记录
+
+### 8.1 Session Schema 与迁移
+
+提交 `26b542b` 完成 Runtime schema 的统一初始化和版本迁移，新增 sessions、turns、
+executions、effects、approvals、control_requests、recovery_dispositions、session_events、
+workspace_leases 等表及必要索引、唯一约束和外键。Runtime 与 Memory schema 通过同一 SQLite
+连接入口初始化，保留 WAL、foreign keys 和 busy timeout 配置；未来版本、不完整 schema 和
+迁移中断均拒绝继续写入。
+
+旧 `runtime-v0.sqlite` 迁移会先建立一致性备份，再将历史 Task、工具结果、checkpoint、
+Memory、Cache 和 Trace 映射到 Session 模型。缺少执行意图的历史 running Task 保持
+`recovery_required`，不会据此推断外部动作未发生。备份恢复、重复升级和迁移故障回滚均由
+真实 SQLite 测试覆盖。
+
+### 8.2 事务存储与事件
+
+SQLiteStore 和 FakeStore 已实现 Session、Turn、Task、Effect、Approval、ControlRequest、
+RecoveryDisposition 和 SessionCheckpoint 的领域化操作。Turn sequence、客户端提交 ID、
+Effect 身份及审批决定具备幂等或冲突语义；`commit_effect` 在同一事务提交结果、观察、恢复
+游标和 journal 事件。
+
+数据库 journal 是 Session 状态事件的权威来源。JSONL exporter 支持中断续导、不完整尾行
+修复、重复或乱序投影重写。持久化内容统一经过脱敏，凭据以引用形式保存，不把脱敏占位符
+还原为工具参数。
+
+### 8.3 验收证据
+
+主要测试位于 `tests/unit/test_session_store.py`、
+`tests/unit/test_session_store_transactions.py`、`tests/integration/test_session_migration.py`、
+`tests/integration/test_session_events.py` 和 `tests/integration/test_session_backup.py`。SRF-02 的
+全部实现已由后续 SRF-03 全量回归继续覆盖。
+
+## 9. SRF-03 实际交付记录
+
+### 9.1 执行所有权与写入 Fencing
+
+提交 `adfc2b1` 新增 `src/patchloop/execution/ownership.py`，按 Session → Task → Workspace
+顺序获取执行所有权，并在失败时逆序释放。Task lease 和 Workspace writer 使用不可复用 token
+与递增 generation；acquire、renew、release、assert 均校验 owner、token 和 generation。
+Workspace ID 由规范化真实路径生成，同一路径别名不能获得第二个 writer，不同 Workspace
+之间不建立全局串行锁。
+
+Task、Step、工具结果、checkpoint、artifact 元数据、Memory 批次和 WRITE/EXECUTE 工具入口
+已经接入 lease guard；guard 校验与数据库写入处于同一事务。写工具还必须持有 Workspace
+writer。旧 owner 在租约失效或接管后不能提交正常状态、结果和 checkpoint，也不能释放新
+owner 的所有权。
+
+### 9.2 Runtime、Heartbeat 与受管命令
+
+现有 `run/resume` 已统一进入 Execution 生命周期，在 Provider 等待和工具运行期间由 heartbeat
+续约。获取所有权失败时不会调用 Provider 或工具；续约失败后阻止新动作，并清理受管命令。
+
+LocalProcessSandbox 和 DockerSandbox 会在命令启动后持久化可核验身份。Windows 使用 PID 与
+进程创建时间并通过 Job Object 约束进程树；POSIX 使用独立进程组和启动标记；Docker 使用唯一
+容器名及 `patchloop.command_id`、`patchloop.execution_id` labels。timeout、pause、cancel、
+lease lost 和 Runtime 退出都会先终止并确认进程树或容器，再结算控制请求和释放租约。
+
+恢复接管不会仅依赖数据库 lease 过期。新 owner 会先查询旧 Execution 或 Workspace 的活动
+命令，核验并清理原进程身份；PID 已复用、容器 label 不匹配、Docker daemon 不可达或退出
+无法确认时均失败关闭。清理失败会把命令标记为 `cleanup_failed`，将旧 Execution 和 Task
+置为 `recovery_required`，并回滚刚获取的新 Execution，禁止新 writer 与旧 writer 重叠。
+
+### 9.3 租约事件与安全诊断
+
+Session journal 已增加 `lease.acquired`、`lease.contended`、`lease.renew_failed`、
+`lease.lost`、`lease.released` 和 `lease.takeover`。事件包含作用域、资源、generation 和恢复
+建议；owner 只输出 SHA-256 摘要，不记录原始 owner 或 lease token。
+
+### 9.4 验收证据
+
+所有权和恢复测试位于 `tests/integration/test_execution_ownership.py`、
+`tests/integration/test_runtime_ownership.py`、
+`tests/integration/test_execution_takeover_recovery.py`、
+`tests/integration/test_managed_command_runtime.py` 和 `tests/e2e/test_workspace_ownership.py`。
+覆盖双进程竞争、路径别名、heartbeat、stale guard、父进程终止、暂停/取消清理、跨 Task
+Workspace 接管以及清理失败进入人工恢复。
+
+2026-09-06 在 Windows 主机运行质量门禁：
+
+| 命令 | 结果 |
+| --- | --- |
+| `ruff check src tests` | 通过 |
+| `ruff format --check src tests` | 通过（140 files already formatted） |
+| `mypy src` | 通过（70 source files） |
+| `pytest -q` | 通过：414 passed, 1 skipped in 107.65s |
+
+唯一跳过项为该 Windows 主机不支持 symbolic links。Windows Job Object 的真实父进程崩溃
+测试已通过；当前主机没有 Docker daemon，因此 Docker 身份核验、清理和失败关闭由模拟测试
+覆盖，真实 Docker 后端仍按 SRF-07 的目标环境验收执行。
+
+## 10. SRF-04 实际交付记录
+
+### 10.1 Effect 身份、准备与原子执行
+
+提交 `60a5e95` 完成 SRF-04。Runtime 在调用任何工具后端前，先持久化完整模型响应、用量、
+工具批次顺序和由 Task、Step、批次位置生成的稳定 Effect ID。恢复时读取原始响应批次和 Effect，
+不重新询问 Provider，也不使用 Provider call ID 代替执行身份。
+
+`src/patchloop/execution/effects.py` 和写工具预览层实现无副作用的 `prepare`：校验工具、参数、
+路径、计划要求和 Policy，保存规范化参数摘要、动作类别、文件原始内容或不存在标记、原始摘要及
+目标摘要。连续文件修改按批次投影前一个目标内容，恢复后仍能重建修改前基线和最终 diff。
+
+`ToolPolicy` 使用 allow、deny、require_approval 三态。硬性权限和路径拒绝不能由 Approval
+绕过；待审批 Effect、Approval、Task 和 Execution 状态在同一事务提交。Approval 精确绑定
+Effect 内容摘要、参数摘要、workspace、policy version 和 config version，批准只能消费一次，
+执行条件变化会使旧批准失效。
+
+执行前 Runtime 再次检查输入、Policy、文件基线和所有权，然后由 Store 原子地将 Effect 认领为
+executing 并消费批准；事务完成后才调用后端。后端返回后，`commit_effect` 在一个事务保存
+Effect 终态、ToolResult、Provider 观察引用、checkpoint 事件水位和 journal 事件。提交中途故障
+不会留下半结果或孤立事件。
+
+### 10.2 Reconcile、拒绝与取消
+
+Runtime 恢复入口会先 reconcile 未完成 Effect。prepared Effect 重新校验后执行；
+waiting_for_approval 保持原请求且不调用后端；终态 Effect 回放持久结果。executing 且结果缺失时，
+文件动作只有在当前内容与目标摘要完全一致时才补认成功；部分写入、用户再次修改或无法读取时均
+转为 unknown，并使 Task 进入 recovery_required。测试和通用命令不按只读动作自动重跑，无法
+证明外部结果时同样进入 unknown。
+
+明确返回失败的后端结果保存为 failed，恢复时只回放，不与 unknown 混淆。准备阶段被 Policy
+拒绝、文件基线变化或 Task 取消时不调用后端，而是原子保存 denied/cancelled Effect 及结构化
+Provider 工具观察。观察明确包含后端未调用、Effect 状态和建议的后续动作，确保每个原模型工具
+调用都有配对结果，Agent 可以更新计划或选择安全替代方案。
+
+### 10.3 显式恢复处置
+
+`src/patchloop/execution/recovery.py` 提供 RecoveryService，离开 recovery_required 必须提交带
+操作人来源和证据的 RecoveryDisposition：
+
+- `confirm_result` 校验原工具身份和参数摘要，补写已核验的 ToolResult，并把原 unknown Effect
+  结算为 succeeded 或 failed；
+- `abandon` 将 Task 终止为 cancelled，释放 Session 活动 Task 槽，但保留原 unknown Effect 和
+  处置证据；
+- `create_retry` 保留原 unknown Effect，创建具有新 ID 和 `retry_of_effect_id` 的 Effect，同时
+  创建精确绑定的新 Approval 并进入 waiting_for_approval。
+
+显式重试不会把 unknown 改回 prepared，也不会继承或重复使用旧批准。新 Approval 被明确批准后，
+Runtime 将重试物化为新的持久化工具批次；恢复占位观察不计为新的工具失败，已批准的新 Effect
+绕过针对隐式重复动作的阻断，但仍执行最新 Policy、参数、资源基线和所有权检查。端到端测试确认
+旧 Effect 保持 unknown，后端只执行新的 retry call 一次。
+
+### 10.4 测试与验收证据
+
+SRF-04 定向矩阵覆盖 Effect prepare/claim/commit/reconcile、审批等待与重启、并发一次性消费、
+条件变化导致授权失效、文件目标摘要核验、部分写入和用户修改、命令结果未知、明确失败回放、
+结构化拒绝与取消，以及 RecoveryDisposition 的确认、放弃和显式重试。FakeStore 与 SQLiteStore
+运行同一组恢复处置契约；真实 SQLite 另外覆盖 Effect、结果、审批、Task 和事件的事务故障回滚。
+
+2026-09-07 在 Windows 主机运行 SRF-04 定向矩阵：
+
+| 命令 | 结果 |
+| --- | --- |
+| `pytest -q tests/unit/test_execution_models.py tests/unit/test_effect_preparation.py tests/unit/test_approval_service.py tests/unit/test_recovery_service.py tests/unit/test_security.py tests/unit/test_session_store_transactions.py tests/e2e/test_effect_recovery.py tests/e2e/test_approval_recovery.py tests/integration/test_runtime_ownership.py tests/e2e/test_session_runtime_baseline.py` | 通过：92 passed in 23.82s |
+
+同日运行完整质量门禁：
+
+| 命令 | 结果 |
+| --- | --- |
+| `ruff check src tests` | 通过 |
+| `ruff format --check src tests` | 通过（149 files already formatted） |
+| `mypy src` | 通过（73 source files） |
+| `pytest -q` | 455 passed, 1 skipped, 1 failed in 182.36s |
+
+唯一跳过项仍为 Windows 主机不支持 symbolic links。唯一失败项为
+`tests/unit/test_intelligence.py::test_committed_retrieval_report_is_reproducible`：工作区中原有且未纳入
+SRF-04 提交的 `benchmarks/results/week05_retrieval.json` 与当前检索候选不同。SRF-04 定向矩阵、
+静态检查、格式检查和类型检查均通过；该 benchmark 快照差异保留为独立工作区改动，不作为
+SRF-04 恢复能力通过的证据，也未被提交 `60a5e95` 修改。
+
+## 11. SRF-05 实际交付记录
+
+### 11.1 SessionService 与可推进 Runtime
+
+提交 `4de3f69` 新增 `src/patchloop/session/service.py` 和
+`src/patchloop/execution/driver.py`。SessionService 提供 create/list/get、append_message、
+start_task、request_pause/request_cancel、resume 和 close；用户消息先提交为具有 Session sequence
+和客户端提交 ID 的 Turn，再向调用方确认。Session 同一时间仍只允许一个活动 Task，关闭活动
+Session 或向已关闭 Session 写入均被拒绝。
+
+AgentRuntime 将原有同步执行循环拆成单次 `_advance_once` 边界，由 RuntimeDriver 为旧
+`run/resume` 入口继续驱动。每个边界最多推进一个模型步骤，到达 waiting_for_approval、paused、
+recovery_required 或业务终态时立即返回。模型调用前后、每个 Effect 认领前和恢复入口都会检查
+持久化输入与 ControlRequest；Effect claim 将已消费输入 sequence 纳入同一事务的条件校验，避免
+检查与认领之间的新约束越过边界。
+
+模型返回后发现新用户输入时，原响应和用量先持久化，尚未执行的 Effect 随后结算为 cancelled，
+并为每个原工具调用生成配对的结构化观察。pause/cancel 会先 acknowledged，清理并确认受管命令
+退出、结算未决 Effect 后才 settled；普通 resume 遇到 unknown Effect 直接返回
+recovery_required，不扩大授权或隐式重试。
+
+### 11.2 Checkpoint、恢复与预算
+
+RuntimeCheckpoint 已扩展 Session ID、输入水位、事件水位、待处理 Effect 批次、在途模型请求、
+已累计响应步骤和未知远端用量步骤。模型响应持久化后立即保存 Effect 批次；Effect 成功、取消或
+转为 unknown 时，在提交结果或恢复事件的同一事务中推进 checkpoint 事件水位并移除对应待处理
+Effect。恢复按稳定 Step/Effect 身份回放 checkpoint 之后已经提交的观察，不再次执行已确认动作。
+
+MemoryManager 继续以 `tool:<call-id>` 等事件 ID 幂等消费；恢复重放不会重复产生 Memory 事件。
+PromptCacheCoordinator 从 checkpoint 快照恢复，Session 新输入和历史对话只追加到冻结前缀之后，
+不改变稳定缓存前缀。
+
+计划、requires_replan、replan 次数、工具历史、文件修改前基线、失败计数、Token、费用、Context、
+Memory 和 Cache 指标均随 checkpoint 保存并恢复。`accounted_model_response_steps` 保证已落库响应的
+用量只累计一次；请求已发出但没有持久化响应时记录 unknown usage，不把远端费用伪造为精确值，
+TaskReport 通过 `model_usage_exact` 和 `unknown_model_usage_calls` 明确报告。活动耗时在持久边界累计，
+暂停后的墙钟等待时间不计入 `max_seconds` 预算。
+
+### 11.3 跨 Task 会话历史与授权隔离
+
+新 Task 从 Session Turns 构建持久对话尾部，并由既有 ContextEngine 在请求时按 Context 预算裁剪。
+完成结果以幂等 Assistant Turn 写回 Session，因此第二个 Task 可以看到前一轮用户约束和 Agent
+结论。会话历史位于 Prompt Cache 动态尾部，不被并入新 Task 的冻结前缀。
+
+同一个 AgentRuntime 切换 Task 时会清空前一 Task 的工具历史、变更跟踪、recent paths、重规划
+状态和内存预算累计，并使用新 Task 自己的计划与预算。Effect、Approval 和 checkpoint 继续以
+Task ID 隔离；前一 Task 已消费的一次性 Approval 不能授权第二个 Task，相同写操作也必须创建并
+批准新的 Effect/Approval。
+
+### 11.4 测试与验收证据
+
+主要新增覆盖位于 `tests/integration/test_session_runtime.py`，并扩展
+`tests/e2e/test_checkpoint_resume.py`、`tests/e2e/test_layered_memory_runtime.py`、
+`tests/integration/test_managed_command_runtime.py` 和 `tests/unit/test_persistence_contracts.py`。
+覆盖 Provider 阻塞期间追加输入、claim 竞争窗口、陈旧批次取消与观察配对、pause/cancel 清理、
+unknown 恢复障碍、多 Effect 提交后崩溃、Memory 幂等回放、Prompt Cache 前缀、用量精确累计、
+未知远端用量、暂停计时、第二 Task 历史继承和一次性授权隔离。
+
+2026-09-07 在 Windows 主机运行 SRF-05 定向矩阵：
+
+| 命令 | 结果 |
+| --- | --- |
+| `pytest -q tests/integration/test_session_runtime.py tests/integration/test_managed_command_runtime.py tests/e2e/test_checkpoint_resume.py tests/e2e/test_effect_recovery.py tests/e2e/test_approval_recovery.py tests/unit/test_persistence_contracts.py tests/unit/test_prompt_cache_coordinator.py tests/unit/test_memory_manager.py` | 通过：53 passed in 24.34s |
+
+同日运行质量门禁：
+
+| 命令 | 结果 |
+| --- | --- |
+| `ruff check src tests` | 通过 |
+| `ruff format --check src tests` | 通过（152 files already formatted） |
+| `mypy src` | 通过（75 source files） |
+| `pytest -q --deselect=tests/unit/test_intelligence.py::test_committed_retrieval_report_is_reproducible` | 通过：475 passed, 1 skipped, 1 deselected in 238.65s |
+
+唯一跳过项仍为 Windows 主机不支持 symbolic links。唯一 deselected 项仍是工作区中既有且未纳入
+SRF-05 提交的 `benchmarks/results/week05_retrieval.json` 快照差异；SRF-05 没有覆盖或提交该文件。
+因此 SRF-05 的代码、定向矩阵和除该已知快照项之外的全仓回归已通过，但该结果不替代 SRF-07
+要求的重复故障矩阵、真实 Docker 后端和真实 Provider 试用验收。
+
+## 12. SRF-06 实际交付记录
+
+### 12.1 Session、Approval 与 Recovery CLI
+
+提交 `0c2c2e9` 在 `src/patchloop/cli.py` 增加 `session` 和 `approval` 命令组，并统一从当前
+目录或 `--repo` 指定目录解析 workspace-local SQLite。`session create/list/show/start/send/`
+`pause/cancel/resume/close/enter/recover` 已接入 SessionService、ApprovalService 和
+RecoveryService；CLI 不直接拼接 SQLite 执行状态写入。
+
+`create` 和 `enter` 不获取 Execution；`start` 与 `resume` 才进入运行时所有权生命周期。
+`enter` 的 `/exit` 只退出界面，Ctrl+C 则提交 pause、等待并展示清理状态。真实第二 CLI 进程可在
+Provider 阻塞期间提交 Turn 或 pause；竞争 resume 返回结构化冲突，不会启动第二个执行者。
+
+### 12.2 状态投影与机器接口
+
+Session 查询会聚合活动目标、对话、计划及变化、模型/工具边界、测试结果、diff、审批、unknown
+Effect、Execution generation、租约到期时间和脱敏 owner 摘要，并给出可复制的下一步命令。输出
+不包含原始 owner 或 lease token。
+
+JSON 输出固定 `schema_version`、Session/Task/Execution ID、状态、最新 sequence、待审批项、恢复
+项、错误类别和下一步命令。退出码区分完成、执行失败、用法错误、等待审批、暂停、冲突、需要恢复
+和取消；JSON 模式不会混入交互提示。`send` 使用客户端提交 ID 保持重试幂等，重复或冲突决定沿用
+存储层的结构化结果。
+
+### 12.3 旧入口、安全审批与显式重试
+
+旧 `run/resume/cancel/status` 已转到共同 Session 服务或查询投影。删除了
+`_approval_handler(non_interactive)` 自动返回 True 的路径；`non_interactive` 只保留兼容字段，
+不再授予写入或执行权限。缺少精确 Approval 时，旧 `run` 同样返回请求 ID、
+`waiting_for_approval` 和退出码 10，工具后端执行次数为 0。CI 必须显式执行
+`approval list → approval decide → resume`，批准在执行前重新核对绑定并只消费一次。
+
+`session recover` 会先显示原 Effect 结果未知以及重试可能重复外部副作用。创建新重试必须使用
+`--acknowledge-duplicate-risk`，或在 human 模式完成交互确认；该确认还会写入
+RecoveryDisposition 并由存储事务再次校验。普通 resume 和普通审批不能替代重试授权。新重试
+具有新的 Effect ID、`retry_of_effect_id` 和独立的一次性 Approval，原 unknown Effect 及证据
+保持不变。
+
+### 12.4 文档与验收证据
+
+README 快速开始已改为 Session 主流程，覆盖独立仓库准备、创建与启动、第二终端追加约束、审批、
+进程重启、unknown 恢复、diff/报告查看，以及旧非交互行为变化和旧数据库升级/回退步骤。数据库
+升级使用事务和自动一致性备份；回退要求先停止所有 writer，再通过带 manifest 校验的恢复函数
+保留升级后数据库并恢复旧快照。
+
+SRF-06 主要自动化覆盖位于 `tests/integration/test_session_cli.py`，并扩展
+`tests/integration/test_cli.py`、`tests/unit/test_recovery_service.py`、
+`tests/e2e/test_effect_recovery.py` 和 Store 契约测试。2026-09-07 在 Windows 主机运行定向矩阵：
+
+| 命令 | 结果 |
+| --- | --- |
+| `pytest -q tests/unit/test_intelligence.py::test_committed_retrieval_report_is_reproducible tests/integration/test_cli.py tests/integration/test_session_cli.py tests/integration/test_session_runtime.py tests/unit/test_approval_service.py tests/unit/test_recovery_service.py tests/unit/test_persistence_contracts.py` | 通过：73 passed in 31.27s |
+
+同日运行完整质量门禁：
+
+| 命令 | 结果 |
+| --- | --- |
+| `ruff check src tests` | 通过 |
+| `ruff format --check src tests` | 通过（153 files already formatted） |
+| `mypy src` | 通过（75 source files） |
+| `pytest -q` | 通过：502 passed, 1 skipped in 195.22s |
+
+唯一跳过项为当前 Windows 主机不支持 symbolic links。固定检索报告已随当前源码候选更新，
+`test_committed_retrieval_report_is_reproducible` 已恢复通过。真实 Provider 三次独立试用、真实 Docker
+后端、固定崩溃重复矩阵和 8 进程 × 100 轮竞争仍属于 SRF-07，SRF-06 不以 Fake Provider 或模拟
+后端替代这些最终验收。
+
+## 13. SRF-07 实际交付记录
+
+### 13.1 故障矩阵与所有权竞争
+
+`tests/fixtures/session_fault_matrix.json` 固定 11 个故障场景，覆盖消息提交与消费、模型响应、
+工具批次、执行意图、外部动作、结果、checkpoint、Memory 和 Trace 导出。每个场景独立执行
+3 次并保留全部结果，共 33 次全部通过。父进程通过进程间 Event 等待精确屏障后终止 worker，
+不使用固定 sleep 猜测崩溃窗口。机器结果位于
+`benchmarks/results/srf07_fault_matrix_step2.json`。
+
+Session、Task 和 Workspace 三类所有权均完成 8 进程 × 100 轮竞争。每轮在全部竞争者返回前
+保持胜者租约，结果均为恰好一个成功、七个冲突、零错误；释放后可以重新获取，八个不同
+Workspace 可以并行获取。机器结果位于
+`benchmarks/results/srf07_ownership_contention_step3.json`。
+
+### 13.2 目标后端与安全审计
+
+Windows 目标主机上的进程树清理、旧 worker 接管、lease takeover 和用户修改文件场景均通过。
+当前主机没有 Docker CLI 或可用 daemon，因此三个真实 Docker 场景在
+`benchmarks/results/srf07_backend_acceptance_step4.json` 中明确记录为 `unverified`，不以 skip、
+模拟测试或 Windows 结果代替通过。
+
+独立安全审计交叉核对外部 JSONL、最终文件、SQLite journal 和 Trace。已确认 Effect 重复执行、
+unknown 自动重试、未授权动作、stale owner 成功提交、审批决定失败、事件缺失、跨来源不一致、
+凭据泄漏和原始 lease token 泄漏九项计数均为 0。机器结果位于
+`benchmarks/results/srf07_safety_audit_step5.json`。
+
+### 13.3 真实仓库试用与恢复分类
+
+真实试用清单锁定 `https://github.com/Glinfen/patch-loop.git` 的 revision
+`0c2c2e9f8685d8f980f4b759a04ce7d18606553a`、Python 3.12、精确依赖版本、Typer 0.9
+兼容性 Issue、公开测试和仓库外独立断言。执行器为三次样本分别创建不可覆盖的干净工作区，
+并编排 Session 启动、追加约束、精确审批、新进程恢复、diff、用量和时延采集；所有失败均保留。
+
+当前进程未配置 `DEEPSEEK_API_KEY` 或 `LLM_API_KEY`，因此执行器没有克隆工作区或调用网络，
+三个样本均在 `benchmarks/results/srf07_real_provider_trials_step6.json` 中记录为 `unverified`。
+Fake Provider 结果没有写入该报告。真实 Provider 三次试用仍是 SRF-07 的未完成验收项。
+
+总验收报告将 11 个故障场景分类为自动恢复 7 项、正确停止等待人工处置 4 项、真正恢复失败
+0 项。模型响应已返回但未持久化的 1 个场景单独记录远端用量未知；真实 Provider 因未执行而
+没有产生远端用量记录，不能把 0 次未知调用解释为真实用量已核准。分类及组件状态位于
+`benchmarks/results/srf07_acceptance_summary.json`。
+
+### 13.4 最终质量门禁与结论
+
+2026-09-08 在 Windows 11、Python 3.12.13 环境运行完整质量门禁：
+
+| 命令 | 结果 |
+| --- | --- |
+| `ruff check src tests` | 通过 |
+| `ruff format --check src tests` | 通过（169 files already formatted） |
+| `mypy src` | 通过（81 source files） |
+| `pytest -q` | 通过：522 passed, 1 skipped in 119.79s |
+
+唯一跳过项为该 Windows 主机不支持 symbolic links。完整命令、退出码、耗时和输出保存在
+`benchmarks/results/srf07_quality_gates_step8.json`。故障矩阵、竞争、安全审计和本机回归均通过；
+由于真实 Docker 后端和真实 Provider 三次试用仍未验收，SRF-07 总状态保持 `unverified`，不得
+标记为整体完成。待具备对应环境后应复用现有清单和执行器补跑，而不是修改报告状态。

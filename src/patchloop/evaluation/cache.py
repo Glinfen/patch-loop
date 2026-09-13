@@ -13,10 +13,20 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from enum import StrEnum
 from itertools import pairwise
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from patchloop.domain import (
+    PromptCacheLayout,
+    Task,
+    TaskBudget,
+    TaskExecutionConfig,
+    TaskStatus,
+    ToolCall,
+)
 from patchloop.evaluation.cache_simulator import DeterministicPrefixCacheSimulator
 from patchloop.events import Event
 from patchloop.prompt_cache import (
@@ -35,6 +45,7 @@ class CacheEvaluationVariant(StrEnum):
     PROVIDER_PROJECTION = "provider_projection"
     EPOCH_COMPRESSION = "epoch_compression"
     FULL_OPTIMIZATION = "full_optimization"
+    APPEND_ONLY = "append_only"
 
 
 class CacheEvaluationScenario(StrEnum):
@@ -47,7 +58,11 @@ class CacheEvaluationScenario(StrEnum):
     MODEL_SWITCH = "model_switch"
 
 
-ALL_CACHE_VARIANTS: tuple[CacheEvaluationVariant, ...] = tuple(CacheEvaluationVariant)
+ALL_CACHE_VARIANTS: tuple[CacheEvaluationVariant, ...] = tuple(
+    variant
+    for variant in CacheEvaluationVariant
+    if variant is not CacheEvaluationVariant.APPEND_ONLY
+)
 ALL_CACHE_SCENARIOS: tuple[CacheEvaluationScenario, ...] = tuple(CacheEvaluationScenario)
 
 
@@ -274,6 +289,115 @@ class CacheBenchmarkRunner:
             compression_prefix_reusable=_compression_prefix_reusable(),
             runs=runs,
             summaries=summaries,
+        )
+
+    def run_runtime_fixture(
+        self,
+        repository: str | Path,
+        *,
+        layout: PromptCacheLayout = PromptCacheLayout.LEGACY,
+        repeat: int = 1,
+    ) -> CacheRunReport:
+        """Run six real Runtime tool rounds and report the recorded provider requests.
+
+        Cache token values come from the deterministic simulator attached to the
+        FakeProvider. The messages and tool definitions themselves are supplied
+        by AgentRuntime, MemoryManager, and ToolGateway.
+        """
+
+        if layout not in {PromptCacheLayout.LEGACY, PromptCacheLayout.STABLE}:
+            raise ValueError(f"unsupported runtime fixture layout: {layout}")
+        if repeat < 1:
+            raise ValueError("runtime fixture repeat must be positive")
+
+        from patchloop.events import EventLogger
+        from patchloop.providers import FakeProvider, ModelResponse
+        from patchloop.runtime import AgentRuntime
+        from patchloop.tools.base import Tool, ToolContext, ToolInputModel
+        from patchloop.tools.gateway import ToolGateway
+
+        class FixtureInput(ToolInputModel):
+            index: int = Field(ge=0, le=5)
+
+        class FixtureTool(Tool):
+            name = "cache_fixture_observe"
+            description = "Return a deterministic repository observation for cache evaluation."
+            input_model = FixtureInput
+
+            def run(self, arguments: BaseModel, context: ToolContext) -> str:
+                del context
+                index = FixtureInput.model_validate(arguments).index
+                body = f"observation-{index}: "
+                if index == 2:
+                    body += "long-tool-output;" * 1_200
+                else:
+                    body += f"stable repository observation {index}"
+                return body
+
+        variant = (
+            CacheEvaluationVariant.CURRENT_LAYOUT
+            if layout is PromptCacheLayout.LEGACY
+            else CacheEvaluationVariant.STABLE_PREFIX
+        )
+        with TemporaryDirectory(prefix="patchloop-cache-runtime-") as temporary:
+            trace = EventLogger(Path(temporary) / "runtime.jsonl")
+            responses = [
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id=f"fixture-{repeat}-{index}",
+                            name="cache_fixture_observe",
+                            arguments={"index": index},
+                        )
+                    ]
+                )
+                for index in range(6)
+            ]
+            responses.append(ModelResponse(content="Completed six fixture observations."))
+            provider = FakeProvider(
+                responses,
+                cache_simulator=DeterministicPrefixCacheSimulator(
+                    miss_threshold_tokens=self.miss_threshold_tokens
+                ),
+            )
+            root = Path(repository).resolve(strict=True)
+            gateway = ToolGateway(ToolContext(root), [FixtureTool()], trace)
+            task = Task(
+                id=f"cache-runtime-{layout.value}-{repeat}",
+                goal="Inspect six deterministic repository observations.",
+                repository=str(root),
+                budget=TaskBudget(max_steps=8, max_context_tokens=32_000),
+                execution=TaskExecutionConfig(prompt_cache_layout=layout),
+            )
+            result = AgentRuntime(provider, gateway, trace).run(task)
+            if result.status is not TaskStatus.COMPLETED:
+                raise RuntimeError(f"Runtime cache fixture failed: {result.error}")
+            if result.report is None or result.report.tool_calls != 6:
+                raise RuntimeError("Runtime cache fixture did not execute six tool rounds")
+            if len(provider.requests) < 7:
+                raise RuntimeError("Runtime cache fixture did not complete six tool rounds")
+            traces = [
+                CacheLayoutTrace.model_validate(event.data)
+                for event in trace.read()
+                if event.type == "cache.layout"
+            ]
+            if len(traces) != len(provider.requests):
+                raise RuntimeError("Runtime cache fixture request trace is incomplete")
+            steps = [
+                _reported_step(
+                    trace_item,
+                    ModelUsage(
+                        input_tokens=(trace_item.cache_hit_tokens or 0)
+                        + (trace_item.cache_miss_tokens or 0)
+                    ),
+                )
+                for trace_item in traces
+            ]
+        return _run_report(
+            variant,
+            repeat,
+            steps,
+            source="deterministic",
         )
 
     def _run_variant(self, variant: CacheEvaluationVariant, repeat: int) -> CacheRunReport:

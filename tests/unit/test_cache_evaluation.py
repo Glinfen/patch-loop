@@ -3,6 +3,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from patchloop.cli import app
+from patchloop.domain import PromptCacheLayout
 from patchloop.evaluation import (
     ALL_CACHE_SCENARIOS,
     ALL_CACHE_VARIANTS,
@@ -73,6 +74,24 @@ def test_cache_benchmark_has_fixed_matrix_and_stable_result_fingerprint() -> Non
     assert all(len(run.steps) == len(ALL_CACHE_SCENARIOS) for run in first.runs)
     assert all(summary.run_count == 3 for summary in first.summaries)
     assert "PCO-06 cache matrix" in first.human_summary()
+
+
+def test_runtime_fixture_benchmark_records_real_six_round_runtime_requests(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+
+    report = CacheBenchmarkRunner().run_runtime_fixture(
+        repository,
+        layout=PromptCacheLayout.STABLE,
+    )
+
+    assert report.source == "deterministic"
+    assert len(report.steps) == 7
+    assert report.variant.value == "stable_prefix"
+    assert report.steps[0].scenario.value == "cold_start"
+    assert report.steps[-1].input_tokens is not None
 
 
 def test_provider_collector_preserves_reported_fields_without_estimating_them() -> None:

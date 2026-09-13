@@ -3,7 +3,8 @@
 ## 1. 目标与范围
 
 状态：SRF-00～SRF-06 已完成；SRF-07 的实现和本机质量门禁已完成，但整体验收仍为
-**未验收**：当前主机没有可用 Docker 后端，也没有配置真实 Provider 凭据。SRF-00 固定了执行契约、旧数据
+**未验收**：当前主机没有可用 Docker 后端；真实 Provider 凭据和 `deepseek-flash` API 已验证可用，
+模型兼容适配后完成了三次 Session 试用，但均在固定 20 步预算内未收敛。SRF-00 固定了执行契约、旧数据
 输入和旧行为故障基线；SRF-01 完成领域模型、服务端口和 Fake Store；SRF-02 完成 Session
 存储、事件与旧数据迁移；SRF-03 已将执行租约、Workspace 独占、guard、heartbeat 和受管
 进程清理接入现有 `run/resume`；SRF-04 完成 Effect 的稳定身份、持久化审批、原子执行提交、
@@ -747,9 +748,27 @@ unknown 自动重试、未授权动作、stale owner 成功提交、审批决定
 兼容性 Issue、公开测试和仓库外独立断言。执行器为三次样本分别创建不可覆盖的干净工作区，
 并编排 Session 启动、追加约束、精确审批、新进程恢复、diff、用量和时延采集；所有失败均保留。
 
-当前进程未配置 `DEEPSEEK_API_KEY` 或 `LLM_API_KEY`，因此执行器没有克隆工作区或调用网络，
-三个样本均在 `benchmarks/results/srf07_real_provider_trials_step6.json` 中记录为 `unverified`。
-Fake Provider 结果没有写入该报告。真实 Provider 三次试用仍是 SRF-07 的未完成验收项。
+2026-09-13 使用加密传输到 AutoDL 的显式凭据重新预检。DeepSeek 官方 `/models` 实时目录返回
+`deepseek-flash`，使用该模型的 Chat Completions 基础请求和工具调用请求均返回 HTTP 200；工具响应
+包含可解析的 `tool_calls`、函数名和 JSON 参数。旧 Provider 白名单最初拒绝该 ID，脱敏证据保存在
+`.patchloop/srf07_real_provider_trials_deepseek_flash_failed.json`。适配后使用来源和目标 commit 均已
+核验的本地裸镜像绕过 AutoDL 到 GitHub 的 HTTP/2/443 超时，在三个独立干净工作区重新执行。
+
+三轮均创建 Task 并实际调用模型；Trial 1、2 到达审批边界并在批准后由新进程恢复，Trial 3 在初始
+执行阶段结束。三轮分别执行 20 个模型步骤、34/40/35 次工具调用，最终都因 `step budget exceeded
+(20)` 失败且没有代码变更。脱敏报告保存在
+`.patchloop/srf07_real_provider_trials_deepseek_flash_v4_failed.json`。Fake Provider 结果没有写入这些
+报告；本次结果证明配置、工具调用和恢复链路可达，但不能计为真实试用通过。
+
+为区分固定预算与 Agent 实现因素，2026-09-13 在同一服务器、同一锁定 revision、同一 Typer 0.9
+任务和同一 DeepSeek Flash 后端上运行 Claude Code 2.1.270 对照。按 DeepSeek 官方 Claude Code
+映射使用 `sonnet` 客户端模型后，20 turn、无权限拒绝的样本同样以 `error_max_turns` 结束且没有
+diff；把诊断预算提高到 60 turn 后，Claude Code 报告 66 turn、65 次工具调用并完成修改。公开
+验收测试 3 项和仓库外独立断言均通过；全量测试为 499 passed、5 failed、1 skipped，其中 5 个
+失败在未修改的锁定版本上逐项复现，因此不属于该补丁回归。原始 JSONL、stderr、计时、diff 和
+脱敏汇总保存在 `.patchloop/claude_code_eval/`。该结果说明 20 步/turn 对这个模型和任务确实过紧，
+也说明模型在扩大预算后具备完成能力；但 Claude turn 与 PatchLoop step 并非等价单位，不能据此
+单独判定两个 Agent 的执行效率相同。
 
 总验收报告将 11 个故障场景分类为自动恢复 7 项、正确停止等待人工处置 4 项、真正恢复失败
 0 项。模型响应已返回但未持久化的 1 个场景单独记录远端用量未知；真实 Provider 因未执行而

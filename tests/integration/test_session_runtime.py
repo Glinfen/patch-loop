@@ -1057,6 +1057,79 @@ def test_second_task_requires_a_new_one_time_approval(tmp_path: Path) -> None:
     assert not (repository / "second.txt").exists()
 
 
+def test_new_input_pairs_completed_calls_before_cancelling_pending_approval(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    store = SQLiteStore(tmp_path / "state.db")
+    policy = ToolPolicy(
+        frozenset({PermissionLevel.READ, PermissionLevel.WRITE}),
+        approval_threshold=RiskLevel.MEDIUM,
+        require_plan_for_mutations=False,
+    )
+    provider = FakeProvider(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(id="completed-read", name="list_files"),
+                    ToolCall(
+                        id="pending-write",
+                        name="create_file",
+                        arguments={"path": "stale.txt", "content": "stale\n"},
+                    ),
+                ]
+            ),
+            ModelResponse(content="Accepted the newer constraint."),
+        ]
+    )
+    service = SessionService(
+        store,
+        AgentRuntime(
+            provider,
+            ToolGateway(
+                ToolContext(repository),
+                [ListFilesTool(), CreateFileTool()],
+                policy=policy,
+            ),
+            state_store=store,
+        ),
+    )
+    session = service.create(str(repository), session_id="session-1")
+    task = service.start_task(session.id, "Inspect and write", task_id="task-1")
+
+    waiting = service.resume(session.id)
+    approval = store.list_approvals(task.id)[0]
+    turn = service.append_message(
+        session.id,
+        "Do not write the file.",
+        client_submission_id="constraint-1",
+    )
+    ApprovalService(store).decide(
+        approval.id,
+        approved=True,
+        source="operator",
+        expected_version=approval.version,
+        workspace_ref=str(repository),
+        policy_version=policy.version,
+        config_version="1",
+    )
+    completed = service.resume(session.id)
+
+    assert waiting.runtime_condition is TaskRuntimeCondition.WAITING_FOR_APPROVAL
+    assert completed.status is TaskStatus.COMPLETED
+    assert not (repository / "stale.txt").exists()
+    request = provider.requests[1][0]
+    assistant_index = next(index for index, message in enumerate(request) if message.tool_calls)
+    assert [
+        message.tool_call_id for message in request[assistant_index + 1 : assistant_index + 3]
+    ] == [
+        "completed-read",
+        "pending-write",
+    ]
+    assert request[assistant_index + 3].content == turn.content
+
+
 def test_append_only_resume_without_state_fails_as_checkpoint_schema_error(
     tmp_path: Path,
 ) -> None:

@@ -189,7 +189,7 @@ def test_legacy_checkpoint_and_task_associations_survive_session_mapping(tmp_pat
     assert checkpoint.memory_manager is not None
     assert checkpoint.memory_manager.cursor.last_event_id == "tool:legacy-write-call"
     assert store.list_artifacts("legacy-running-task") == [
-        Path("tests\\fixtures\\session_legacy\\workspace\\calculator.py")
+        Path("tests/fixtures/session_legacy/workspace/calculator.py")
     ]
     assert [source.id for source in store.memory.list_sources("legacy-running-task")] == [
         "legacy-memory-source"

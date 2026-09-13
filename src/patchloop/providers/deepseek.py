@@ -1,4 +1,4 @@
-"""DeepSeek V4 Flash provider using the OpenAI-compatible Chat API."""
+"""DeepSeek Flash provider using the OpenAI-compatible Chat API."""
 
 from __future__ import annotations
 
@@ -21,12 +21,15 @@ from patchloop.providers.base import (
     ToolSpec,
 )
 
+DEFAULT_DEEPSEEK_MODEL = "deepseek-flash"
+SUPPORTED_DEEPSEEK_MODELS = frozenset({DEFAULT_DEEPSEEK_MODEL, "deepseek-v4-flash"})
+
 
 class DeepSeekConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     api_key: SecretStr
-    model: str = "deepseek-v4-flash"
+    model: str = DEFAULT_DEEPSEEK_MODEL
     base_url: str = "https://api.deepseek.com"
     thinking_enabled: bool = True
     reasoning_effort: str = "high"
@@ -61,7 +64,7 @@ class DeepSeekConfig(BaseModel):
         return cls(
             api_key=SecretStr(api_key),
             base_url=base_url or "https://api.deepseek.com",
-            model=model or "deepseek-v4-flash",
+            model=model or DEFAULT_DEEPSEEK_MODEL,
         )
 
 
@@ -157,8 +160,9 @@ class DeepSeekProvider:
         transport: JsonTransport | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
-        if config.model != "deepseek-v4-flash":
-            raise ValueError("PatchLoop currently supports only deepseek-v4-flash")
+        if config.model not in SUPPORTED_DEEPSEEK_MODELS:
+            supported = ", ".join(sorted(SUPPORTED_DEEPSEEK_MODELS))
+            raise ValueError(f"unsupported DeepSeek model {config.model!r}; supported: {supported}")
         self.config = config
         self.transport = transport or UrllibJsonTransport()
         self.sleeper = sleeper

@@ -988,7 +988,7 @@ class SQLiteStore:
                 "SELECT path FROM artifacts WHERE task_id = ? ORDER BY name",
                 (task_id,),
             ).fetchall()
-        return [Path(row["path"]) for row in rows]
+        return [Path(row["path"].replace("\\", "/")) for row in rows]
 
     def cancel_task(self, task_id: str) -> Task:
         with connect_write(self.path) as connection:

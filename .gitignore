@@ -13,3 +13,5 @@ build/
 dist/
 .patchloop/
 docs/PROJECT_GOALS.md
+Agents.md
+docs/PLANNING_GUIDE.md

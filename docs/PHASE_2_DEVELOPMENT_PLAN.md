@@ -6,7 +6,7 @@
 
 第一阶段的 [提示缓存架构重构计划](PROMPT_CACHE_ARCHITECTURE_REFACTOR_PLAN.md) 是本计划的入口工作。PCR-00 至 PCR-05 已有交付与 [验收记录](milestones/PCR_05_ACCEPTANCE.md)；真实 DeepSeek stable smoke 的未验证项按该记录保留。缓存和记忆进入维护状态，研发重心转向真实用户工作流。
 
-截至 2026-09-05，下一项最高优先级工作是 [持久化 Session 与恢复闭环](SESSION_RUNTIME_FOUNDATION_PLAN.md)，从 **SRF-00：契约与失败基线** 开始。该专项计划以 Runtime Core 和 Session Service 为主线，同时实现必需的持久化/写入所有权、副作用恢复、最小审批及 CLI，不等待所有模块完整实现后才联调。
+截至 2026-09-08，[持久化 Session 与恢复闭环](SESSION_RUNTIME_FOUNDATION_PLAN.md) 的 SRF-00～06 已完成，SRF-07 的实现和本机质量门禁已通过；真实 Docker 与真实 Provider 试用仍未验收，完整 SRF 出口保持未通过。下一开发模块是 [Provider Gateway](PROVIDER_GATEWAY_DEVELOPMENT_PLAN.md)，从 **PGW-01：请求、能力与兼容模型** 开始，完成 Chat Completions、DeepSeek、OpenAI Responses 及本地兼容路径的统一接入。SRF 的未验收项继续使用原清单收尾，不阻塞 Provider 离线开发，也不由协议测试替代。
 
 ## 2. 开发原则
 
@@ -217,7 +217,7 @@ Workspace / Git ── Repository Intelligence / Context
 
 优先级判断以“是否阻塞真实 Session 闭环”为准。缓存命中率、记忆算法、多 Agent 和 Web UI 不得抢占关键路径，除非真实评测证明它们是当前最高频失败原因。
 
-当前首个交付切片按 SRF-00～07 推进：领域与失败契约 → 版本化存储/事件 → 执行所有权 → 副作用与审批恢复 → 多轮 Session → CLI 与真实试用。Observability 和故障评测贯穿每一步；上图表示模块依赖，不表示将它们全部推迟到 CLI 之后。存储并发计划中的单 writer 与 fencing 是这个单 Agent 闭环的必要前置，不因尚未开展多 Agent 而延期。
+首个交付切片 SRF 已实现领域契约、版本化存储、执行所有权、副作用/审批恢复、多轮 Session 和 CLI，真实环境验收继续收尾。下一切片按 PGW-01～11 推进：Provider 契约/配置 → 可取消传输 → Gateway → 两协议 Adapter → 请求/续接持久化 → Runtime/用量 → CLI → 跨协议与真实试用验收。Observability 和故障评测贯穿每一步；上图表示模块依赖，不表示将它们全部推迟到 CLI 之后。后续模块必须复用 SRF 的 single writer、fencing 和审批路径。
 
 ## 6. 阶段出口
 

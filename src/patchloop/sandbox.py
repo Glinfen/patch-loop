@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from time import monotonic, sleep
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -108,6 +108,12 @@ def _minimal_environment() -> dict[str, str]:
     return environment
 
 
+def _windows_kernel32() -> Any:
+    import ctypes
+
+    return ctypes.__dict__["windll"].kernel32
+
+
 def _process_start_marker(process: subprocess.Popen[str]) -> str:
     """Return an OS-issued creation marker so cleanup never trusts a PID alone."""
 
@@ -119,7 +125,7 @@ def _process_start_marker(process: subprocess.Popen[str]) -> str:
         exit_time = wintypes.FILETIME()
         kernel = wintypes.FILETIME()
         user = wintypes.FILETIME()
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = _windows_kernel32()
         if not kernel32.GetProcessTimes(
             wintypes.HANDLE(int(process._handle)),  # type: ignore[attr-defined]
             ctypes.byref(creation),
@@ -142,7 +148,7 @@ def _windows_process_start_marker(pid: int) -> str | None:
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _windows_kernel32()
     kernel32.OpenProcess.restype = ctypes.c_void_p
     handle = kernel32.OpenProcess(0x00100000 | 0x1000, False, pid)
     if not handle:
@@ -214,7 +220,7 @@ def _windows_descendant_pids(root_pid: int) -> list[int]:
             ("szExeFile", wintypes.WCHAR * 260),
         ]
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _windows_kernel32()
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
     if snapshot == ctypes.c_void_p(-1).value:
@@ -241,7 +247,7 @@ def _windows_descendant_pids(root_pid: int) -> list[int]:
 def _terminate_windows_pid(pid: int) -> None:
     import ctypes
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _windows_kernel32()
     kernel32.OpenProcess.restype = ctypes.c_void_p
     handle = kernel32.OpenProcess(0x0001 | 0x00100000, False, pid)
     if not handle:
@@ -320,7 +326,7 @@ def _create_windows_kill_job(process: subprocess.Popen[str]) -> int:
             ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _windows_kernel32()
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     job = kernel32.CreateJobObjectW(None, None)
     if not job:
@@ -573,7 +579,7 @@ class LocalProcessSandbox(_ManagedSandboxBase):
         timeout_seconds: float,
         max_output_chars: int,
     ) -> SandboxResult:
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
         process = subprocess.Popen(
             command,
             cwd=repository,
@@ -612,9 +618,7 @@ class LocalProcessSandbox(_ManagedSandboxBase):
         if os.name == "nt":
             job = self._windows_jobs.pop(process.pid, None)
             if job is not None:
-                import ctypes
-
-                ctypes.windll.kernel32.CloseHandle(job)
+                _windows_kernel32().CloseHandle(job)
             else:
                 descendants = _windows_descendant_pids(process.pid)
                 for child_pid in reversed(descendants):
@@ -639,9 +643,7 @@ class LocalProcessSandbox(_ManagedSandboxBase):
         if os.name == "nt":
             job = self._windows_jobs.pop(process.pid, None)
             if job is not None:
-                import ctypes
-
-                ctypes.windll.kernel32.CloseHandle(job)
+                _windows_kernel32().CloseHandle(job)
 
 
 class DockerSandboxConfig(BaseModel):

@@ -9,6 +9,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from patchloop.providers.contracts import ProviderBinding
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -198,6 +200,7 @@ class TaskExecutionConfig(BaseModel):
     prompt_cache_layout: PromptCacheLayout = PromptCacheLayout.LEGACY
     project_instructions: str = ""
     cache_epoch: str = Field(default="initial", min_length=1, max_length=128)
+    provider: ProviderBinding | None = None
 
 
 class Task(BaseModel):

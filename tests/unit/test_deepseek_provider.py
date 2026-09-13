@@ -89,7 +89,7 @@ def test_provider_maps_messages_tools_and_usage() -> None:
     url, headers, payload, _ = transport.requests[0]
     assert url == "https://api.deepseek.com/chat/completions"
     assert headers["Authorization"] == "Bearer test-secret"
-    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["model"] == "deepseek-flash"
     assert payload["thinking"] == {"type": "enabled"}
     assert payload["reasoning_effort"] == "high"
     assert payload["tools"][0]["function"]["description"].startswith("[read]")
@@ -162,7 +162,7 @@ def test_config_loads_generic_llm_names_from_explicit_env_file(
     env_file.write_text(
         "LLM_API_KEY='file-secret'\n"
         "LLM_BASE_URL=https://example.test/v1\n"
-        "LLM_MODEL_ID=deepseek-v4-flash\n",
+        "LLM_MODEL_ID=deepseek-flash\n",
         encoding="utf-8",
     )
 
@@ -170,7 +170,7 @@ def test_config_loads_generic_llm_names_from_explicit_env_file(
 
     assert config.api_key.get_secret_value() == "file-secret"
     assert config.base_url == "https://example.test/v1"
-    assert config.model == "deepseek-v4-flash"
+    assert config.model == "deepseek-flash"
 
 
 def test_provider_preserves_tool_call_context() -> None:
@@ -222,10 +222,18 @@ def test_provider_retries_transient_failure_without_leaking_key() -> None:
     assert "test-secret" not in repr(config)
 
 
-def test_provider_rejects_non_flash_model() -> None:
+def test_provider_accepts_legacy_flash_model() -> None:
+    config = DeepSeekConfig(api_key=SecretStr("test-secret"), model="deepseek-v4-flash")
+
+    provider = DeepSeekProvider(config)
+
+    assert provider.name == "deepseek-v4-flash"
+
+
+def test_provider_rejects_unsupported_model() -> None:
     config = DeepSeekConfig(api_key=SecretStr("test-secret"), model="deepseek-v4-pro")
 
-    with pytest.raises(ValueError, match="deepseek-v4-flash"):
+    with pytest.raises(ValueError, match="deepseek-flash"):
         DeepSeekProvider(config)
 
 

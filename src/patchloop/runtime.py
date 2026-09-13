@@ -408,31 +408,7 @@ class AgentRuntime:
             recent_steps=task.budget.context_recent_steps,
         )
         if self._prompt_cache is None:
-            self._prompt_cache = PromptCacheCoordinator.from_legacy_state(
-                layout=task.execution.prompt_cache_layout,
-                cache_epoch_id=(
-                    state.cache_epoch_state.epoch_id
-                    if state.cache_epoch_state is not None
-                    else task.execution.cache_epoch
-                ),
-                prefix_message_count=state.prompt_prefix_message_count,
-                frozen_tools=(
-                    state.tool_specifications
-                    if state.tool_specifications is not None
-                    else self.gateway.specifications()
-                ),
-                messages=state.messages,
-                cache_epoch_state=state.cache_epoch_state,
-                memory_publication_state=state.memory_publication_state,
-                cache_diagnostics=state.cache_diagnostics,
-                cache_hit_tokens=state.cache_hit_tokens,
-                cache_miss_tokens=state.cache_miss_tokens,
-                cache_write_tokens=state.cache_write_tokens,
-                cache_usage_reported_calls=state.cache_usage_reported_calls,
-                cache_usage_unreported_calls=state.cache_usage_unreported_calls,
-                cache_usage_inconsistent_calls=state.cache_usage_inconsistent_calls,
-                cache_write_reported_calls=state.cache_write_reported_calls,
-            )
+            self._prompt_cache = self._restore_prompt_cache(task, state)
         prompt_cache = self._prompt_cache
         stable_layout = prompt_cache.layout is PromptCacheLayout.STABLE
         started = monotonic()
@@ -1060,9 +1036,29 @@ class AgentRuntime:
     ) -> RuntimeAdvance:
         if not turns:
             raise RuntimeError("input revision changed but no committed Turn was found")
+        paired_call_ids = {
+            message.tool_call_id
+            for message in messages
+            if message.role == "tool" and message.tool_call_id is not None
+        }
         for position, call in enumerate(calls):
             effect = effects[position] if position < len(effects) else None
             if effect is None or self.state_store is None:
+                continue
+            if call.id in paired_call_ids:
+                continue
+            persisted = self.state_store.get_tool_result(task.id, call.id)
+            if persisted is not None:
+                if all(result.call_id != persisted.call_id for result in step.tool_results):
+                    step.tool_results.append(persisted)
+                messages.append(
+                    ModelMessage(
+                        role="tool",
+                        content=persisted.output,
+                        tool_call_id=call.id,
+                    )
+                )
+                paired_call_ids.add(call.id)
                 continue
             current = self.state_store.get_effect(effect.id)
             if current.status not in {
@@ -1091,6 +1087,7 @@ class AgentRuntime:
                     tool_call_id=call.id,
                 )
             )
+            paired_call_ids.add(call.id)
         self.gateway.context.requires_replan = True
         messages.extend(
             ModelMessage(role="user", content=turn.content)

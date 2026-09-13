@@ -81,7 +81,7 @@ $env:DEEPSEEK_API_KEY = Read-Host "DeepSeek API key" -MaskInput
 | --- | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | `LLM_API_KEY` | API 凭据 | 无 |
 | `DEEPSEEK_BASE_URL` | `LLM_BASE_URL` | OpenAI-compatible API 地址 | `https://api.deepseek.com` |
-| `DEEPSEEK_MODEL` | `LLM_MODEL_ID` | 模型名称 | `deepseek-v4-flash` |
+| `DEEPSEEK_MODEL` | `LLM_MODEL_ID` | 模型名称 | `deepseek-flash` |
 
 `run`、`resume` 和 Session 的 `start/resume` 只读取当前进程环境变量，不会自动信任目标仓库中的
 `.env`。Provider 上下文、SQLite、轨迹和任务产物会对常见 API Key、Bearer Token、密码及敏感

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "provider": {
     "name": "deepseek",
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-flash",
     "credential_environment": ["DEEPSEEK_API_KEY", "LLM_API_KEY"]
   },
   "repository": {

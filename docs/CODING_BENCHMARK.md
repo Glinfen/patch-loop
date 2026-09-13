@@ -52,7 +52,7 @@ patchloop benchmark-code `
 ```dotenv
 LLM_API_KEY=your-key
 LLM_BASE_URL=https://api.deepseek.com
-LLM_MODEL_ID=deepseek-v4-flash
+LLM_MODEL_ID=deepseek-flash
 ```
 
 显式进程环境变量的优先级高于 `.env`。同时兼容 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL` 和 `DEEPSEEK_MODEL`；密钥不会写入评测报告或轨迹。`benchmark-code` 与 `benchmark-memory --mode model` 会从显式评测根目录读取该文件；确定性记忆评测以及针对任意目标仓库的 `run` 和 `resume` 不会自动信任仓库内配置。

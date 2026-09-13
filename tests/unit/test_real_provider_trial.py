@@ -71,14 +71,15 @@ def test_command_evidence_redacts_configured_credentials(tmp_path: Path) -> None
     assert "[REDACTED]" in serialized
 
 
-def test_published_report_keeps_real_provider_trials_unverified_without_credentials() -> None:
+def test_published_report_keeps_historical_model_evidence_unmodified() -> None:
     manifest = load_real_provider_trial_manifest(MANIFEST_PATH)
     report = RealProviderTrialReport.model_validate_json(REPORT_PATH.read_text(encoding="utf-8"))
 
     assert report.manifest_schema_version == manifest.schema_version
     assert report.status is TrialStatus.UNVERIFIED
     assert report.provider == manifest.provider.name
-    assert report.model == manifest.provider.model
+    assert report.model == "deepseek-v4-flash"
+    assert manifest.provider.model == "deepseek-flash"
     assert report.revision == manifest.repository.revision
     assert not report.credential_configured
     assert [result.trial for result in report.results] == [1, 2, 3]

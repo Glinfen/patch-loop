@@ -1,6 +1,6 @@
 # Prompt 前缀稳定性修改方案
 
-调研日期：2026-09-13。状态：方案完成；PPS-01、PPS-02 已完成，后续任务尚未实施。任务前缀：PPS。
+调研日期：2026-09-13。状态：PPS-01、PPS-02、PPS-03 已完成；后续任务尚未实施。任务前缀：PPS。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，基于当前工作区实际代码（含尚未提交的 Provider 契约改动）。不把其他计划中的接口当作已经完成的实现。
 
@@ -455,6 +455,14 @@ tests/unit/test_memory_publication.py
 
 每个已提交变更准确发布一次；当前状态与 transcript 的 publication 链一致。
 
+**Implementation Record**
+
+- 保留 `publish()` 的 V1 行为；新增 `MemoryDeltaPublisher.preview()` 与 `MemoryPublicationUpdate`，append_only 的 V2 snapshot/delta 使用 user 消息、固定 envelope、连续 sequence 及 base/result fingerprint。V1 和 V2 使用独立的 fingerprint 算法；V2 checkpoint 校验消息摘要、链连续性及完整重放结果。
+- V2 按当前 payload 和失效集合去重，支持 A→B→A→B；`provider_projection=None` 保留当前检索视图，成功的空 projection 清空视图。失效值作为有序数据追加，不改写历史消息。
+- 增量按固定 category/key 顺序分块，逐块检查预算；快照或单项超限抛出 `MemoryDeltaTooLarge`。预览失败不改变原 publisher，多块候选只有完整构造后才返回。
+- `PromptLayout` 为 append_only root 添加固定记忆处理协议；Coordinator bootstrap 初始化冻结 epoch 和 root 状态。Runtime 将 preview 候选与请求历史原子提交的调用路径按计划留给 PPS-06；stable/legacy 的根提示及 V1 发布保持原行为。
+- 新增 10 个用例覆盖状态循环、排名变化、失效值、检索失败与清空、V1 状态升级、重试原子性、分块预算、append_only root 及 Coordinator bootstrap。
+
 ### PPS-04：完整窗口与前缀校验
 
 **Goal**
@@ -704,6 +712,12 @@ PPS-03 与 PPS-07 的 diagnostics 部分可以在 PPS-02 后并行；PPS-04 与 
 - 全量 pytest：571 passed、1 skipped（Windows 符号链接不可用）、0 failed；PPS-01 记录的 takeover 失败在本轮环境未复现。
 - `ruff check src tests` 与 `mypy src/patchloop` 均通过。
 - 本机默认 pytest 临时目录报 WinError 5；全量运行需要仓库外 basetemp（例如 `--basetemp=D:/codes/git/.pl_pytest_tmp`），仓库内 basetemp 会让 `test_committed_retrieval_report_is_reproducible` 检索到临时文件而失败。
+
+### PPS-03 实施验证（2026-09-13）
+
+- Prompt prefix stability、layout、coordinator、publication、context、epoch、cache、cache evaluation、gates、dependency/import 及 PCR baseline 测试共 75 项通过。
+- Storage、Session checkpoint 和 Runtime 迁移/恢复测试另有 51 项通过。
+- `ruff check src tests` 与 `mypy src/patchloop` 通过。
 
 ### 本次方案调研已执行
 

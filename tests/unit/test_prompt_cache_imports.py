@@ -1,4 +1,5 @@
 from patchloop import CacheDiagnostics as root_diagnostics
+from patchloop import MemoryPublicationUpdate as root_publication_update
 from patchloop.cache import (
     CacheDiagnostics as legacy_diagnostics,
 )
@@ -9,12 +10,18 @@ from patchloop.cache import (
     fingerprint_request as legacy_fingerprint_request,
 )
 from patchloop.cache_epoch import CacheEpoch as legacy_epoch
+from patchloop.memory_publication import (
+    MEMORY_SNAPSHOT_V2_PREFIX as legacy_snapshot_v2_prefix,
+)
 from patchloop.memory_publication import MemoryDeltaPublisher as legacy_publisher
+from patchloop.memory_publication import MemoryPublicationUpdate as legacy_publication_update
 from patchloop.prompt_cache import (
+    MEMORY_SNAPSHOT_V2_PREFIX,
     CacheDiagnostics,
     CacheEpoch,
     CacheLayoutTrace,
     MemoryDeltaPublisher,
+    MemoryPublicationUpdate,
     diagnostics,
     epoch,
     fingerprint_request,
@@ -32,6 +39,9 @@ def test_legacy_modules_are_identity_preserving_reexports() -> None:
     assert legacy_epoch is CacheEpoch
     assert legacy_layout is PromptLayout is layout.PromptLayout
     assert legacy_publisher is MemoryDeltaPublisher
+    assert legacy_publication_update is MemoryPublicationUpdate
+    assert root_publication_update is MemoryPublicationUpdate
+    assert legacy_snapshot_v2_prefix == MEMORY_SNAPSHOT_V2_PREFIX
 
 
 def test_prompt_cache_package_exports_only_stable_public_names() -> None:

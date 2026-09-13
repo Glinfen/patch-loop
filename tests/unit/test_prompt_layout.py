@@ -1,6 +1,6 @@
 from patchloop.domain import PromptCacheLayout, Task, TaskExecutionConfig, ToolCall
 from patchloop.events import EventLogger
-from patchloop.prompt_cache import PromptLayout
+from patchloop.prompt_cache import APPEND_ONLY_MEMORY_PROTOCOL, PromptLayout
 from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ToolSpec
 from patchloop.runtime import SYSTEM_PROMPT, AgentRuntime
 from patchloop.tools import ListFilesTool, ToolContext, ToolGateway
@@ -9,6 +9,7 @@ from patchloop.tools import ListFilesTool, ToolContext, ToolGateway
 def test_prompt_layout_has_explicit_rollback_and_stable_modes() -> None:
     legacy = PromptLayout(PromptCacheLayout.LEGACY)
     stable = PromptLayout(PromptCacheLayout.STABLE)
+    append_only = PromptLayout(PromptCacheLayout.APPEND_ONLY)
 
     assert legacy.prefix_message_count == 2
     assert stable.prefix_message_count == 3
@@ -18,6 +19,17 @@ def test_prompt_layout_has_explicit_rollback_and_stable_modes() -> None:
     assert stable_messages[0].content == "system"
     assert stable_messages[1].content.startswith("PATCHLOOP_PROJECT_INSTRUCTIONS_V1")
     assert stable_messages[2].content == "goal"
+    append_only_messages = append_only.initial_messages(
+        "system",
+        "goal",
+        project_instructions="Keep the change narrow.",
+    )
+    assert append_only.append_only
+    assert append_only.has_frozen_epoch
+    assert append_only_messages[0].content == f"system\n\n{APPEND_ONLY_MEMORY_PROTOCOL}"
+    assert append_only_messages[1].content.startswith("PATCHLOOP_PROJECT_INSTRUCTIONS_V1")
+    assert append_only_messages[2].content == "goal"
+    assert PromptLayout(PromptCacheLayout.LEGACY).has_frozen_epoch is False
     assert TaskExecutionConfig().prompt_cache_layout is PromptCacheLayout.LEGACY
 
 

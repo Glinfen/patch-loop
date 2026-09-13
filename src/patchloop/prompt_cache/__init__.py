@@ -36,20 +36,30 @@ from patchloop.prompt_cache.epoch import (
     CacheEpochBoundary,
     CacheEpochSnapshot,
 )
-from patchloop.prompt_cache.layout import PROJECT_INSTRUCTIONS_PREFIX, PromptLayout
+from patchloop.prompt_cache.layout import (
+    APPEND_ONLY_MEMORY_PROTOCOL,
+    PROJECT_INSTRUCTIONS_PREFIX,
+    PromptLayout,
+)
 from patchloop.prompt_cache.publication import (
     MEMORY_DELTA_PREFIX,
+    MEMORY_DELTA_V2_PREFIX,
     MEMORY_SNAPSHOT_PREFIX,
+    MEMORY_SNAPSHOT_V2_PREFIX,
     MemoryDeltaPublisher,
     MemoryDeltaTooLarge,
     MemoryPublicationSnapshot,
+    MemoryPublicationUpdate,
 )
 from patchloop.prompt_cache.usage import CacheUsageAccumulator, CacheUsageAccumulatorSnapshot
 
 __all__ = [
+    "APPEND_ONLY_MEMORY_PROTOCOL",
     "COMPRESSION_INSTRUCTION",
     "MEMORY_DELTA_PREFIX",
+    "MEMORY_DELTA_V2_PREFIX",
     "MEMORY_SNAPSHOT_PREFIX",
+    "MEMORY_SNAPSHOT_V2_PREFIX",
     "PROJECT_INSTRUCTIONS_PREFIX",
     "SUMMARY_PREFIX",
     "AppendOnlyPromptState",
@@ -68,6 +78,7 @@ __all__ = [
     "MemoryDeltaPublisher",
     "MemoryDeltaTooLarge",
     "MemoryPublicationSnapshot",
+    "MemoryPublicationUpdate",
     "PromptCacheCheckpointFields",
     "PromptCacheCompressionPreparation",
     "PromptCacheCoordinator",

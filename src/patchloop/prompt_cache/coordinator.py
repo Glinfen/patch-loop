@@ -121,10 +121,10 @@ class PromptCacheCoordinatorSnapshot(BaseModel):
 
     @model_validator(mode="after")
     def validate_layout_state(self) -> Self:
-        if self.layout is PromptCacheLayout.STABLE and self.cache_epoch_state is None:
-            raise ValueError("stable prompt-cache coordinator requires an epoch snapshot")
-        if self.layout is PromptCacheLayout.APPEND_ONLY and self.cache_epoch_state is None:
-            raise ValueError("append_only prompt-cache coordinator requires an epoch snapshot")
+        if PromptLayout(self.layout).has_frozen_epoch and self.cache_epoch_state is None:
+            raise ValueError(
+                f"{self.layout.value} prompt-cache coordinator requires an epoch snapshot"
+            )
         if self.layout is PromptCacheLayout.LEGACY and self.cache_epoch_state is not None:
             raise ValueError("legacy prompt-cache coordinator cannot carry an epoch snapshot")
         if self.layout is PromptCacheLayout.APPEND_ONLY and self.append_only_state is None:
@@ -201,10 +201,8 @@ class PromptCacheCoordinator:
             raise ValueError("prompt-cache coordinator requires at least a system and user prefix")
         if not cache_epoch_id:
             raise ValueError("prompt-cache coordinator epoch id cannot be empty")
-        if layout is PromptCacheLayout.STABLE and cache_epoch is None:
-            raise ValueError("stable prompt-cache coordinator requires an epoch")
-        if layout is PromptCacheLayout.APPEND_ONLY and cache_epoch is None:
-            raise ValueError("append_only prompt-cache coordinator requires an epoch")
+        if PromptLayout(layout).has_frozen_epoch and cache_epoch is None:
+            raise ValueError(f"{layout.value} prompt-cache coordinator requires an epoch")
         if layout is PromptCacheLayout.LEGACY and cache_epoch is not None:
             raise ValueError("legacy prompt-cache coordinator cannot carry an epoch")
         if layout is PromptCacheLayout.APPEND_ONLY and append_only_state is None:
@@ -245,6 +243,7 @@ class PromptCacheCoordinator:
         redactor: SecretRedactor | None = None,
         miss_threshold_tokens: int = 70_000,
         max_delta_tokens: int = 2_048,
+        append_only_state: AppendOnlyPromptState | None = None,
     ) -> PromptCacheCoordinator:
         prefix_count = len(messages) if prefix_message_count is None else prefix_message_count
         epoch = (
@@ -254,15 +253,18 @@ class PromptCacheCoordinator:
                 epoch_id=epoch_id,
                 redactor=redactor,
             )
-            if layout is PromptCacheLayout.STABLE
+            if PromptLayout(layout).has_frozen_epoch
             else None
         )
+        if layout is PromptCacheLayout.APPEND_ONLY and append_only_state is None:
+            append_only_state = AppendOnlyPromptState(root_prefix_message_count=prefix_count)
         return cls(
             layout=layout,
             cache_epoch_id=epoch_id,
             prefix_message_count=prefix_count,
             frozen_tools=PromptLayout.freeze_tools(tools),
             cache_epoch=epoch,
+            append_only_state=append_only_state,
             redactor=redactor,
             miss_threshold_tokens=miss_threshold_tokens,
             max_delta_tokens=max_delta_tokens,

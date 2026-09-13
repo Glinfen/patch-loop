@@ -27,6 +27,7 @@ from patchloop.prompt_cache import (
     MemoryDeltaPublisher,
     MemoryDeltaTooLarge,
     MemoryPublicationSnapshot,
+    MemoryPublicationUpdate,
 )
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "MemoryDeltaPublisher",
     "MemoryDeltaTooLarge",
     "MemoryPublicationSnapshot",
+    "MemoryPublicationUpdate",
     "Plan",
     "PlanItem",
     "PromptCacheLayout",

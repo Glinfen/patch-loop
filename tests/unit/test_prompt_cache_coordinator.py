@@ -75,6 +75,19 @@ def test_bootstrap_prepares_frozen_provider_request_and_records_response() -> No
     assert observation.cache_usage["cache_usage_reported_calls"] == 1
 
 
+def test_append_only_bootstrap_creates_its_frozen_epoch_and_root_state() -> None:
+    coordinator = PromptCacheCoordinator.bootstrap(
+        _messages(),
+        _tools(),
+        layout=PromptCacheLayout.APPEND_ONLY,
+        prefix_message_count=2,
+    )
+
+    assert coordinator.snapshot().cache_epoch_state is not None
+    assert coordinator.append_only_state is not None
+    assert coordinator.append_only_state.root_prefix_message_count == 2
+
+
 def test_stable_publication_and_snapshot_restore_keep_next_request_identity() -> None:
     messages = _messages()
     coordinator = PromptCacheCoordinator.bootstrap(

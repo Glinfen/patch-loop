@@ -66,7 +66,7 @@ from patchloop.memory.working import (
     WorkingMemoryBudgetError,
     WorkingMemoryManager,
 )
-from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
+from patchloop.persistence import CheckpointSchemaError, RuntimeCheckpoint, SQLiteStore
 from patchloop.persistence_contracts import (
     AdvanceStatus,
     ControlRequested,
@@ -288,31 +288,7 @@ class AgentRuntime:
         self._cost_usd = checkpoint.cost_usd
         self._accounted_model_response_steps = list(checkpoint.accounted_model_response_steps)
         self._unknown_model_usage_steps = list(checkpoint.unknown_model_usage_steps)
-        self._prompt_cache = PromptCacheCoordinator.from_legacy_state(
-            layout=task.execution.prompt_cache_layout,
-            cache_epoch_id=(
-                checkpoint.cache_epoch_state.epoch_id
-                if checkpoint.cache_epoch_state is not None
-                else task.execution.cache_epoch
-            ),
-            prefix_message_count=checkpoint.prompt_prefix_message_count,
-            frozen_tools=(
-                checkpoint.tool_specifications
-                if checkpoint.tool_specifications is not None
-                else self.gateway.specifications()
-            ),
-            messages=checkpoint.messages,
-            cache_epoch_state=checkpoint.cache_epoch_state,
-            memory_publication_state=checkpoint.memory_publication_state,
-            cache_diagnostics=checkpoint.cache_diagnostics,
-            cache_hit_tokens=checkpoint.cache_hit_tokens,
-            cache_miss_tokens=checkpoint.cache_miss_tokens,
-            cache_write_tokens=checkpoint.cache_write_tokens,
-            cache_usage_reported_calls=checkpoint.cache_usage_reported_calls,
-            cache_usage_unreported_calls=checkpoint.cache_usage_unreported_calls,
-            cache_usage_inconsistent_calls=checkpoint.cache_usage_inconsistent_calls,
-            cache_write_reported_calls=checkpoint.cache_write_reported_calls,
-        )
+        self._prompt_cache = self._restore_prompt_cache(task, checkpoint)
         self._context_windows = checkpoint.context_windows
         self._context_compactions = checkpoint.context_compactions
         self._max_context_tokens_used = checkpoint.max_context_tokens_used
@@ -361,6 +337,45 @@ class AgentRuntime:
             },
         )
         return self._execute(task, checkpoint)
+
+    def _restore_prompt_cache(
+        self, task: Task, checkpoint: RuntimeCheckpoint
+    ) -> PromptCacheCoordinator:
+        """Rebuild the coordinator from checkpoint fields without guessing layouts."""
+
+        try:
+            return PromptCacheCoordinator.from_legacy_state(
+                layout=task.execution.prompt_cache_layout,
+                cache_epoch_id=(
+                    checkpoint.cache_epoch_state.epoch_id
+                    if checkpoint.cache_epoch_state is not None
+                    else task.execution.cache_epoch
+                ),
+                prefix_message_count=checkpoint.prompt_prefix_message_count,
+                frozen_tools=(
+                    checkpoint.tool_specifications
+                    if checkpoint.tool_specifications is not None
+                    else self.gateway.specifications()
+                ),
+                messages=checkpoint.messages,
+                cache_epoch_state=checkpoint.cache_epoch_state,
+                memory_publication_state=checkpoint.memory_publication_state,
+                append_only_state=checkpoint.append_only_state,
+                cache_diagnostics=checkpoint.cache_diagnostics,
+                cache_hit_tokens=checkpoint.cache_hit_tokens,
+                cache_miss_tokens=checkpoint.cache_miss_tokens,
+                cache_write_tokens=checkpoint.cache_write_tokens,
+                cache_usage_reported_calls=checkpoint.cache_usage_reported_calls,
+                cache_usage_unreported_calls=checkpoint.cache_usage_unreported_calls,
+                cache_usage_inconsistent_calls=checkpoint.cache_usage_inconsistent_calls,
+                cache_write_reported_calls=checkpoint.cache_write_reported_calls,
+            )
+        except ValueError as exc:
+            if task.execution.prompt_cache_layout is PromptCacheLayout.APPEND_ONLY:
+                raise CheckpointSchemaError(
+                    "append_only prompt-cache checkpoint state cannot be safely restored"
+                ) from exc
+            raise
 
     def _execute(self, task: Task, state: RuntimeCheckpoint) -> Task:
         current_state = state

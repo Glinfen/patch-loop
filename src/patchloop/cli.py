@@ -1925,6 +1925,8 @@ def run_task(
         permissions.add(PermissionLevel.EXECUTE)
     try:
         cache_layout = PromptCacheLayout(prompt_cache_layout)
+        if cache_layout not in {PromptCacheLayout.LEGACY, PromptCacheLayout.STABLE}:
+            raise ValueError(prompt_cache_layout)
     except ValueError:
         typer.echo("prompt_cache_layout must be legacy or stable", err=True)
         raise typer.Exit(code=2) from None

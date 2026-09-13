@@ -1,12 +1,31 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from patchloop.domain import AgentStep, StepStatus, Task, TaskReport, ToolCall, ToolResult
-from patchloop.persistence import CheckpointSchemaError, RuntimeCheckpoint, SQLiteStore
-from patchloop.prompt_cache import CacheEpoch
+from patchloop.domain import (
+    AgentStep,
+    PromptCacheLayout,
+    StepStatus,
+    Task,
+    TaskExecutionConfig,
+    TaskReport,
+    ToolCall,
+    ToolResult,
+)
+from patchloop.execution.models import Execution
+from patchloop.persistence import (
+    CheckpointSchemaError,
+    RuntimeCheckpoint,
+    SQLiteStore,
+    _decode_task_payload,
+)
+from patchloop.persistence_contracts import LeaseGuard
+from patchloop.prompt_cache import AppendOnlyPromptState, CacheEpoch, PromptCacheCoordinator
 from patchloop.providers import ModelMessage
+from patchloop.session.models import Session, SessionCheckpoint
 from patchloop.sqlite_support import connect_write
 from patchloop.storage import ArtifactStore, JsonTaskStore, TaskNotFoundError
 
@@ -148,3 +167,274 @@ def test_checkpoint_adapter_rejects_unknown_schema(tmp_path: Path) -> None:
 
     with pytest.raises(CheckpointSchemaError, match="not supported"):
         store.get_checkpoint(task.id)
+
+
+def _append_only_state() -> AppendOnlyPromptState:
+    return AppendOnlyPromptState(
+        root_prefix_message_count=2,
+        last_submitted_message_count=2,
+        last_submitted_message_fingerprints=["a" * 64, "b" * 64],
+        last_submitted_request_id="request-1",
+        last_submitted_tool_fingerprint="c" * 64,
+        epoch_generation=1,
+    )
+
+
+def _append_only_coordinator() -> PromptCacheCoordinator:
+    messages = [
+        ModelMessage(role="system", content="static"),
+        ModelMessage(role="user", content="Append"),
+        ModelMessage(role="assistant", content="inspected"),
+    ]
+    epoch = CacheEpoch.bootstrap(
+        messages,
+        prefix_message_count=2,
+        epoch_id="initial",
+    ).snapshot
+    return PromptCacheCoordinator.from_legacy_state(
+        layout=PromptCacheLayout.APPEND_ONLY,
+        cache_epoch_id="initial",
+        prefix_message_count=2,
+        frozen_tools=[],
+        messages=messages,
+        cache_epoch_state=epoch,
+        append_only_state=_append_only_state(),
+    )
+
+
+def test_sqlite_store_round_trips_append_only_state(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "patchloop.db")
+    task = Task(goal="Append", repository=str(tmp_path))
+    store.save_task(task)
+    coordinator = _append_only_coordinator()
+    checkpoint = RuntimeCheckpoint(
+        task_id=task.id,
+        next_step_index=1,
+        messages=[*coordinator.frozen_prefix, ModelMessage(role="user", content="Append")],
+        **coordinator.checkpoint_fields(),
+    )
+
+    store.save_checkpoint(checkpoint)
+    restored = store.get_checkpoint(task.id)
+
+    assert restored.append_only_state == _append_only_state()
+    assert restored.cache_epoch_state is not None
+    again = PromptCacheCoordinator.from_legacy_state(
+        layout=PromptCacheLayout.APPEND_ONLY,
+        cache_epoch_id=restored.cache_epoch_state.epoch_id,
+        prefix_message_count=restored.prompt_prefix_message_count,
+        frozen_tools=restored.tool_specifications or [],
+        messages=restored.messages,
+        cache_epoch_state=restored.cache_epoch_state,
+        memory_publication_state=restored.memory_publication_state,
+        append_only_state=restored.append_only_state,
+    )
+    assert again.append_only_state == coordinator.append_only_state
+
+
+def test_checkpoint_adapter_keeps_payloads_without_append_only_state(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "patchloop.db")
+    task = Task(id="task-1", goal="Resume", repository=str(tmp_path))
+    store.save_task(task)
+    epoch = CacheEpoch.bootstrap(
+        [
+            ModelMessage(role="system", content="static"),
+            ModelMessage(role="user", content="Resume"),
+        ],
+        prefix_message_count=2,
+        epoch_id="initial",
+    )
+    payload = RuntimeCheckpoint(
+        task_id=task.id,
+        next_step_index=0,
+        messages=[ModelMessage(role="user", content="Resume")],
+        cache_epoch_state=epoch.snapshot,
+    ).model_dump(mode="json")
+    payload.pop("append_only_state")
+    with connect_write(store.path) as connection:
+        connection.execute(
+            "INSERT INTO checkpoints (task_id, payload_json, updated_at) VALUES (?, ?, ?)",
+            (task.id, json.dumps(payload), payload["updated_at"]),
+        )
+
+    restored = store.get_checkpoint(task.id)
+    assert restored.append_only_state is None
+    assert restored.cache_epoch_state is not None
+
+
+def test_checkpoint_adapter_rejects_corrupt_append_only_state(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "patchloop.db")
+    task = Task(id="task-1", goal="Resume", repository=str(tmp_path))
+    store.save_task(task)
+    coordinator = _append_only_coordinator()
+    checkpoint = RuntimeCheckpoint(
+        task_id=task.id,
+        next_step_index=1,
+        messages=coordinator.frozen_prefix,
+        **coordinator.checkpoint_fields(),
+    )
+    payload = checkpoint.model_dump(mode="json")
+    payload["append_only_state"]["last_submitted_message_count"] = 1
+    with connect_write(store.path) as connection:
+        connection.execute(
+            "INSERT INTO checkpoints (task_id, payload_json, updated_at) VALUES (?, ?, ?)",
+            (task.id, json.dumps(payload), payload["updated_at"]),
+        )
+
+    with pytest.raises(CheckpointSchemaError, match="RuntimeCheckpoint schema"):
+        store.get_checkpoint(task.id)
+
+
+def test_decode_task_payload_pins_legacy_layout_for_old_rows() -> None:
+    without_execution = json.dumps(
+        {"id": "task-1", "goal": "Goal", "repository": "repo", "status": "created"}
+    )
+    assert (
+        _decode_task_payload(without_execution).execution.prompt_cache_layout
+        is PromptCacheLayout.LEGACY
+    )
+    partial_execution = json.dumps(
+        {
+            "id": "task-2",
+            "goal": "Goal",
+            "repository": "repo",
+            "execution": {"sandbox_backend": "local"},
+        }
+    )
+    assert (
+        _decode_task_payload(partial_execution).execution.prompt_cache_layout
+        is PromptCacheLayout.LEGACY
+    )
+
+
+def test_decode_task_payload_preserves_explicit_layouts() -> None:
+    for index, layout in enumerate(
+        (
+            PromptCacheLayout.LEGACY,
+            PromptCacheLayout.STABLE,
+            PromptCacheLayout.APPEND_ONLY,
+        )
+    ):
+        payload = json.dumps(
+            {
+                "id": f"task-{index}",
+                "goal": "Goal",
+                "repository": "repo",
+                "execution": {"prompt_cache_layout": layout.value},
+            }
+        )
+        assert _decode_task_payload(payload).execution.prompt_cache_layout is layout
+
+
+def test_decode_task_payload_rejects_structurally_invalid_execution() -> None:
+    for execution_value in (None, "legacy", []):
+        payload = json.dumps(
+            {
+                "id": "task-bad",
+                "goal": "Goal",
+                "repository": "repo",
+                "execution": execution_value,
+            }
+        )
+        with pytest.raises(ValidationError):
+            _decode_task_payload(payload)
+
+
+def test_store_task_decode_pins_old_rows_to_legacy(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "patchloop.db")
+    legacy_row = json.dumps(
+        {"id": "task-old", "goal": "Goal", "repository": "repo", "status": "created"}
+    )
+    append_only_row = json.dumps(
+        {
+            "id": "task-new",
+            "goal": "Goal",
+            "repository": "repo",
+            "status": "created",
+            "execution": {"prompt_cache_layout": "append_only"},
+        }
+    )
+    with connect_write(store.path) as connection:
+        for task_id, row in (("task-old", legacy_row), ("task-new", append_only_row)):
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                    id, status, payload_json, updated_at,
+                    session_id, outcome, runtime_condition, version
+                ) VALUES (?, 'created', ?, ?, NULL, 'active', 'idle', 1)
+                """,
+                (task_id, row, datetime.now(UTC).isoformat()),
+            )
+
+    assert store.get_task("task-old").execution.prompt_cache_layout is PromptCacheLayout.LEGACY
+    assert (
+        store.get_task("task-new").execution.prompt_cache_layout
+        is PromptCacheLayout.APPEND_ONLY
+    )
+
+
+def test_session_and_runtime_checkpoints_project_the_same_append_only_state(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "patchloop.db")
+    session = store.create_session(Session(id="session-1", workspace_ref="workspace"))
+    task = store.start_task(
+        session.id,
+        Task(
+            id="task-1",
+            goal="Append",
+            repository="workspace",
+            execution=TaskExecutionConfig(prompt_cache_layout=PromptCacheLayout.APPEND_ONLY),
+        ),
+        expected_version=session.version,
+    )
+    execution = store.claim_execution(
+        Execution(
+            id="execution-1",
+            session_id=session.id,
+            task_id=task.id,
+            owner_id="worker-1",
+            lease_token="secret-token",
+            lease_expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        ),
+        expected_version=task.version,
+    )
+    guard = LeaseGuard(
+        execution.id,
+        task.id,
+        execution.lease_token,
+        execution.generation,
+        execution.owner_id,
+    )
+    state = _append_only_state()
+    messages = [
+        ModelMessage(role="system", content="static"),
+        ModelMessage(role="user", content="Append"),
+        ModelMessage(role="assistant", content="inspected"),
+    ]
+    session_checkpoint = SessionCheckpoint(
+        session_id=session.id,
+        task_id=task.id,
+        messages=messages,
+        append_only_state=state,
+    )
+    store.commit_checkpoint(
+        session_checkpoint,
+        expected_version=store.get_task(task.id).version,
+        lease_guard=guard,
+    )
+
+    restored_session = store.get_session_checkpoint(task.id)
+    assert restored_session.append_only_state == state
+
+    runtime_checkpoint = RuntimeCheckpoint(
+        task_id=task.id,
+        session_id=session.id,
+        next_step_index=1,
+        messages=messages,
+        append_only_state=restored_session.append_only_state,
+    )
+    assert runtime_checkpoint.append_only_state == restored_session.append_only_state
+    assert RuntimeCheckpoint.model_validate_json(
+        runtime_checkpoint.model_dump_json()
+    ).append_only_state == state

@@ -7,13 +7,15 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from patchloop.domain import (
     AgentStep,
     ErrorKind,
     Plan,
+    PromptCacheLayout,
     SessionStatus,
     Task,
     TaskOutcome,
@@ -61,6 +63,7 @@ from patchloop.persistence_contracts import (
     WorkspaceLeaseGuard,
 )
 from patchloop.prompt_cache import (
+    AppendOnlyPromptState,
     CacheDiagnosticsSnapshot,
     CacheEpochSnapshot,
     MemoryPublicationSnapshot,
@@ -470,7 +473,7 @@ def _migrate_legacy_runtime_v0(connection: sqlite3.Connection) -> None:
         "SELECT id, payload_json FROM tasks WHERE session_id IS NULL ORDER BY id"
     ).fetchall()
     for row in rows:
-        task = Task.model_validate_json(row["payload_json"])
+        task = _decode_task_payload(row["payload_json"])
         session_id = f"legacy-session-{task.id}"
         condition = {
             TaskStatus.CREATED: TaskRuntimeCondition.IDLE,
@@ -686,6 +689,7 @@ class RuntimeCheckpoint(BaseModel):
     prompt_prefix_message_count: int = Field(default=2, ge=2)
     cache_epoch_state: CacheEpochSnapshot | None = None
     memory_publication_state: MemoryPublicationSnapshot | None = None
+    append_only_state: AppendOnlyPromptState | None = None
     plan: Plan | None = None
     requires_replan: bool = False
     replan_count: int = Field(default=0, ge=0)
@@ -727,9 +731,33 @@ class RuntimeCheckpoint(BaseModel):
     memory_manager: MemoryManagerSnapshot | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
+    @model_validator(mode="after")
+    def validate_append_only_transcript(self) -> Self:
+        if self.append_only_state is not None:
+            self.append_only_state.validate_message_boundaries(len(self.messages))
+        return self
+
 
 class CheckpointSchemaError(RuntimeError):
     """Raised when a persisted checkpoint cannot be safely adapted."""
+
+
+def _decode_task_payload(payload_json: str) -> Task:
+    """Decode one persisted Task JSON, pinning the legacy layout for old rows.
+
+    TaskExecutionConfig defaults may change for new tasks; persisted payloads
+    that never recorded a prompt_cache_layout must keep decoding as legacy.
+    Rows with a structurally invalid execution value still fail validation.
+    """
+
+    payload = json.loads(payload_json)
+    if isinstance(payload, dict):
+        execution = payload.get("execution")
+        if "execution" not in payload:
+            payload["execution"] = {"prompt_cache_layout": PromptCacheLayout.LEGACY.value}
+        elif isinstance(execution, dict) and "prompt_cache_layout" not in execution:
+            execution["prompt_cache_layout"] = PromptCacheLayout.LEGACY.value
+    return Task.model_validate(payload)
 
 
 def _adapt_checkpoint_json[ModelT: BaseModel](
@@ -745,7 +773,12 @@ def _adapt_checkpoint_json[ModelT: BaseModel](
     if schema_version != "1.0":
         raise CheckpointSchemaError(f"checkpoint schema {schema_version} is not supported")
     payload["schema_version"] = "1.0"
-    return model_type.model_validate(payload)
+    try:
+        return model_type.model_validate(payload)
+    except ValidationError as exc:
+        raise CheckpointSchemaError(
+            f"checkpoint payload does not satisfy the {model_type.__name__} schema"
+        ) from exc
 
 
 class SQLiteStore:
@@ -828,7 +861,7 @@ class SQLiteStore:
             ).fetchone()
         if row is None:
             raise TaskNotFoundError(task_id)
-        return Task.model_validate_json(row["payload_json"])
+        return _decode_task_payload(row["payload_json"])
 
     def record_step(self, step: AgentStep, *, lease_guard: LeaseGuard | None = None) -> None:
         with connect_write(self.path) as connection:
@@ -3276,7 +3309,7 @@ class SQLiteStore:
         row = connection.execute(
             "SELECT payload_json FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
-        return None if row is None else Task.model_validate_json(row["payload_json"])
+        return None if row is None else _decode_task_payload(row["payload_json"])
 
     def _require_task(self, connection: sqlite3.Connection, task_id: str) -> Task:
         task = self._task_row(connection, task_id)

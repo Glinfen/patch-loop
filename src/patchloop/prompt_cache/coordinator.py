@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Self
+import re
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -32,9 +33,72 @@ from patchloop.prompt_cache.usage import (
 from patchloop.providers.base import ModelMessage, ModelUsage, ToolSpec
 from patchloop.security import SecretRedactor
 
+_SHA256_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+
+# Layouts whose coordinator owns a frozen cache epoch; legacy keeps none.
+_FROZEN_EPOCH_LAYOUTS = frozenset({PromptCacheLayout.STABLE, PromptCacheLayout.APPEND_ONLY})
+
 
 class PromptCacheCoordinatorError(ValueError):
     """Raised when a prompt-cache lifecycle transition is invalid."""
+
+
+class AppendOnlyPromptState(BaseModel):
+    """Recoverable boundary state of the append_only single-transcript contract.
+
+    Message bodies live only in the checkpoint transcript; this state records
+    counts and fingerprints so a restored process can verify that the previous
+    submitted request is still an exact prefix without a second copy.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    root_prefix_message_count: int = Field(ge=2)
+    last_submitted_message_count: int = Field(default=0, ge=0)
+    last_submitted_message_fingerprints: list[str] = Field(default_factory=list)
+    last_submitted_tool_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    last_submitted_binding_fingerprint: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    last_submitted_request_id: str | None = Field(default=None, min_length=1, max_length=128)
+    epoch_generation: int = Field(default=0, ge=0)
+    compression_source_request_id: str | None = Field(
+        default=None, min_length=1, max_length=128
+    )
+    compression_source_message_count: int | None = Field(default=None, ge=0)
+    compression_request_id: str | None = Field(default=None, min_length=1, max_length=128)
+    deferred_compression_fingerprint: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+
+    @model_validator(mode="after")
+    def validate_submission_contract(self) -> Self:
+        if self.last_submitted_message_count != len(self.last_submitted_message_fingerprints):
+            raise ValueError(
+                "append-only submitted message count must equal its fingerprint vector length"
+            )
+        for fingerprint in self.last_submitted_message_fingerprints:
+            if _SHA256_FINGERPRINT.fullmatch(fingerprint) is None:
+                raise ValueError("append-only submitted fingerprints must be SHA-256 digests")
+        if (
+            self.compression_source_message_count is not None
+            and self.compression_source_message_count > self.last_submitted_message_count
+        ):
+            raise ValueError(
+                "compression source cannot exceed the last submitted message boundary"
+            )
+        return self
+
+    def validate_message_boundaries(self, message_count: int) -> None:
+        """Cross-check declared boundaries against the persisted transcript length."""
+
+        if message_count < self.root_prefix_message_count:
+            raise ValueError("append-only transcript is shorter than its declared root prefix")
+        if message_count < self.last_submitted_message_count:
+            raise ValueError(
+                "append-only transcript is shorter than its last submitted request"
+            )
 
 
 class PromptCacheCoordinatorSnapshot(BaseModel):
@@ -49,6 +113,7 @@ class PromptCacheCoordinatorSnapshot(BaseModel):
     frozen_tools: list[ToolSpec] = Field(default_factory=list)
     cache_epoch_state: CacheEpochSnapshot | None = None
     memory_publication_state: MemoryPublicationSnapshot | None = None
+    append_only_state: AppendOnlyPromptState | None = None
     cache_diagnostics: CacheDiagnosticsSnapshot
     cache_usage: CacheUsageAccumulatorSnapshot
     miss_threshold_tokens: int = Field(default=70_000, ge=1)
@@ -58,8 +123,16 @@ class PromptCacheCoordinatorSnapshot(BaseModel):
     def validate_layout_state(self) -> Self:
         if self.layout is PromptCacheLayout.STABLE and self.cache_epoch_state is None:
             raise ValueError("stable prompt-cache coordinator requires an epoch snapshot")
+        if self.layout is PromptCacheLayout.APPEND_ONLY and self.cache_epoch_state is None:
+            raise ValueError("append_only prompt-cache coordinator requires an epoch snapshot")
         if self.layout is PromptCacheLayout.LEGACY and self.cache_epoch_state is not None:
             raise ValueError("legacy prompt-cache coordinator cannot carry an epoch snapshot")
+        if self.layout is PromptCacheLayout.APPEND_ONLY and self.append_only_state is None:
+            raise ValueError(
+                "append_only prompt-cache coordinator requires append-only state"
+            )
+        if self.layout is not PromptCacheLayout.APPEND_ONLY and self.append_only_state is not None:
+            raise ValueError("only the append_only layout can carry append-only state")
         return self
 
 
@@ -101,6 +174,7 @@ class PromptCacheCheckpointFields(CacheUsageCheckpointFields):
     prompt_prefix_message_count: int
     cache_epoch_state: CacheEpochSnapshot | None
     memory_publication_state: MemoryPublicationSnapshot | None
+    append_only_state: AppendOnlyPromptState | None
     cache_diagnostics: CacheDiagnosticsSnapshot
 
 
@@ -116,6 +190,7 @@ class PromptCacheCoordinator:
         frozen_tools: list[ToolSpec],
         cache_epoch: CacheEpoch | None = None,
         publication: MemoryDeltaPublisher | None = None,
+        append_only_state: AppendOnlyPromptState | None = None,
         diagnostics: CacheDiagnostics | None = None,
         usage: CacheUsageAccumulator | None = None,
         redactor: SecretRedactor | None = None,
@@ -128,14 +203,25 @@ class PromptCacheCoordinator:
             raise ValueError("prompt-cache coordinator epoch id cannot be empty")
         if layout is PromptCacheLayout.STABLE and cache_epoch is None:
             raise ValueError("stable prompt-cache coordinator requires an epoch")
+        if layout is PromptCacheLayout.APPEND_ONLY and cache_epoch is None:
+            raise ValueError("append_only prompt-cache coordinator requires an epoch")
         if layout is PromptCacheLayout.LEGACY and cache_epoch is not None:
             raise ValueError("legacy prompt-cache coordinator cannot carry an epoch")
+        if layout is PromptCacheLayout.APPEND_ONLY and append_only_state is None:
+            raise ValueError(
+                "append_only prompt-cache coordinator requires append-only state"
+            )
+        if layout is not PromptCacheLayout.APPEND_ONLY and append_only_state is not None:
+            raise ValueError("only the append_only layout can carry append-only state")
         self.layout = layout
         self._cache_epoch_id = cache_epoch_id
         self._prefix_message_count = prefix_message_count
         self._frozen_tools = [tool.model_copy(deep=True) for tool in frozen_tools]
         self._epoch = cache_epoch
         self._publication = publication or MemoryDeltaPublisher(max_delta_tokens=max_delta_tokens)
+        self._append_only_state = (
+            append_only_state.model_copy(deep=True) if append_only_state is not None else None
+        )
         self._diagnostics = diagnostics or CacheDiagnostics(
             redactor=redactor,
             miss_threshold_tokens=miss_threshold_tokens,
@@ -211,6 +297,7 @@ class PromptCacheCoordinator:
         messages: list[ModelMessage],
         cache_epoch_state: CacheEpochSnapshot | None = None,
         memory_publication_state: MemoryPublicationSnapshot | None = None,
+        append_only_state: AppendOnlyPromptState | None = None,
         cache_diagnostics: CacheDiagnosticsSnapshot | None = None,
         cache_hit_tokens: int = 0,
         cache_miss_tokens: int = 0,
@@ -225,6 +312,8 @@ class PromptCacheCoordinator:
     ) -> PromptCacheCoordinator:
         """Restore old RuntimeCheckpoint fields into one coordinator."""
 
+        if append_only_state is not None:
+            append_only_state.validate_message_boundaries(len(messages))
         epoch = cache_epoch_state
         if layout is PromptCacheLayout.STABLE and epoch is None:
             epoch = CacheEpoch.bootstrap(
@@ -251,9 +340,10 @@ class PromptCacheCoordinator:
                     memory_publication_state,
                     max_delta_tokens=max_delta_tokens,
                 )
-                if layout is PromptCacheLayout.STABLE
+                if layout in _FROZEN_EPOCH_LAYOUTS
                 else None
             ),
+            append_only_state=append_only_state,
             diagnostics=diagnostics,
             usage=CacheUsageAccumulator.from_legacy(
                 cache_hit_tokens=cache_hit_tokens,
@@ -295,6 +385,7 @@ class PromptCacheCoordinator:
                 snapshot.memory_publication_state,
                 max_delta_tokens=snapshot.max_delta_tokens,
             ),
+            append_only_state=snapshot.append_only_state,
             diagnostics=diagnostics,
             usage=CacheUsageAccumulator.from_snapshot(snapshot.cache_usage),
             redactor=redactor,
@@ -333,6 +424,10 @@ class PromptCacheCoordinator:
         return self._publication.snapshot
 
     @property
+    def append_only_state(self) -> AppendOnlyPromptState | None:
+        return self._append_only_state
+
+    @property
     def usage(self) -> CacheUsageAccumulator:
         return self._usage
 
@@ -344,6 +439,7 @@ class PromptCacheCoordinator:
             "prompt_prefix_message_count": self.prefix_message_count,
             "cache_epoch_state": self._epoch.snapshot if self._epoch is not None else None,
             "memory_publication_state": self._publication.snapshot,
+            "append_only_state": self._append_only_state,
             "cache_diagnostics": self._diagnostics.snapshot(),
             **self._usage.checkpoint_fields(),
         }
@@ -540,6 +636,7 @@ class PromptCacheCoordinator:
             frozen_tools=self.frozen_tools,
             cache_epoch_state=self._epoch.snapshot if self._epoch is not None else None,
             memory_publication_state=self._publication.snapshot,
+            append_only_state=self._append_only_state,
             cache_diagnostics=self._diagnostics.snapshot(),
             cache_usage=self._usage.snapshot(),
             miss_threshold_tokens=self._miss_threshold_tokens,
@@ -575,6 +672,7 @@ class PromptCacheCoordinator:
 
 
 __all__ = [
+    "AppendOnlyPromptState",
     "PromptCacheCheckpointFields",
     "PromptCacheCompressionPreparation",
     "PromptCacheCoordinator",

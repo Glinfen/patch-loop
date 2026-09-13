@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from patchloop.domain import PromptCacheLayout
 from patchloop.prompt_cache import (
     MEMORY_SNAPSHOT_PREFIX,
+    AppendOnlyPromptState,
+    CacheEpoch,
     CacheEpochBoundary,
     PromptCacheCoordinator,
     PromptCacheCoordinatorError,
+    PromptCacheCoordinatorSnapshot,
 )
 from patchloop.providers import ModelMessage, ModelUsage, ToolSpec
 
@@ -167,3 +171,156 @@ def test_pending_request_blocks_interleaving_and_mismatched_response() -> None:
     )
     with pytest.raises(PromptCacheCoordinatorError, match="does not match"):
         coordinator.observe_response(mismatched, _usage())
+
+
+def _append_only_state(**overrides: object) -> AppendOnlyPromptState:
+    values: dict[str, object] = {
+        "root_prefix_message_count": 2,
+        "last_submitted_message_count": 2,
+        "last_submitted_message_fingerprints": ["a" * 64, "b" * 64],
+        "last_submitted_request_id": "request-1",
+    }
+    values.update(overrides)
+    return AppendOnlyPromptState(**values)  # type: ignore[arg-type]
+
+
+_UNSET: object = object()
+
+
+def _append_only_coordinator(
+    messages: list[ModelMessage] | None = None,
+    state: AppendOnlyPromptState | object | None = _UNSET,
+) -> PromptCacheCoordinator:
+    transcript = _messages() if messages is None else messages
+    epoch = CacheEpoch.bootstrap(
+        transcript,
+        prefix_message_count=2,
+        epoch_id="initial",
+    ).snapshot
+    return PromptCacheCoordinator.from_legacy_state(
+        layout=PromptCacheLayout.APPEND_ONLY,
+        cache_epoch_id="initial",
+        prefix_message_count=2,
+        frozen_tools=_tools(),
+        messages=transcript,
+        cache_epoch_state=epoch,
+        append_only_state=(
+            _append_only_state() if state is _UNSET else state  # type: ignore[arg-type]
+        ),
+    )
+
+
+def test_append_only_state_round_trips_through_coordinator() -> None:
+    state = _append_only_state(
+        last_submitted_tool_fingerprint="c" * 64,
+        last_submitted_binding_fingerprint="d" * 64,
+        epoch_generation=1,
+        compression_source_request_id="request-1",
+        compression_source_message_count=2,
+        compression_request_id="compression-1",
+        deferred_compression_fingerprint="e" * 64,
+    )
+    coordinator = _append_only_coordinator(state=state)
+
+    assert coordinator.append_only_state == state
+    assert coordinator.checkpoint_fields()["append_only_state"] == state
+
+    restored = PromptCacheCoordinator.from_snapshot(coordinator.snapshot())
+    assert restored.append_only_state == state
+    assert restored.snapshot() == coordinator.snapshot()
+
+
+def test_append_only_state_count_must_match_its_fingerprint_vector() -> None:
+    with pytest.raises(ValidationError, match="fingerprint vector length"):
+        _append_only_state(
+            last_submitted_message_count=3,
+            last_submitted_message_fingerprints=["a" * 64, "b" * 64],
+        )
+
+
+def test_append_only_state_fingerprints_must_be_sha256_digests() -> None:
+    with pytest.raises(ValidationError, match="SHA-256"):
+        _append_only_state(
+            last_submitted_message_fingerprints=["a" * 64, "not-a-digest"],
+        )
+    with pytest.raises(ValidationError):
+        _append_only_state(last_submitted_tool_fingerprint="short")
+
+
+def test_append_only_state_compression_source_cannot_exceed_submission() -> None:
+    with pytest.raises(ValidationError, match="last submitted message boundary"):
+        _append_only_state(
+            compression_source_request_id="request-1",
+            compression_source_message_count=3,
+        )
+
+
+def test_append_only_coordinator_requires_state_and_epoch() -> None:
+    with pytest.raises(ValueError, match="requires append-only state"):
+        _append_only_coordinator(state=None)
+    with pytest.raises(ValueError, match="requires an epoch"):
+        PromptCacheCoordinator.from_legacy_state(
+            layout=PromptCacheLayout.APPEND_ONLY,
+            cache_epoch_id="initial",
+            prefix_message_count=2,
+            frozen_tools=_tools(),
+            messages=_messages(),
+            append_only_state=_append_only_state(),
+        )
+
+
+def test_legacy_and_stable_layouts_reject_append_only_state() -> None:
+    state = _append_only_state()
+    with pytest.raises(ValueError, match="only the append_only layout"):
+        PromptCacheCoordinator.from_legacy_state(
+            layout=PromptCacheLayout.STABLE,
+            cache_epoch_id="initial",
+            prefix_message_count=2,
+            frozen_tools=_tools(),
+            messages=_messages(),
+            cache_epoch_state=CacheEpoch.bootstrap(
+                _messages(), prefix_message_count=2, epoch_id="initial"
+            ).snapshot,
+            append_only_state=state,
+        )
+    with pytest.raises(ValueError, match="only the append_only layout"):
+        PromptCacheCoordinator.from_legacy_state(
+            layout=PromptCacheLayout.LEGACY,
+            cache_epoch_id="initial",
+            prefix_message_count=2,
+            frozen_tools=_tools(),
+            messages=_messages(),
+            append_only_state=state,
+        )
+
+
+def test_append_only_snapshot_rejects_missing_and_foreign_state() -> None:
+    snapshot = _append_only_coordinator().snapshot()
+    without_state = snapshot.model_dump(mode="json")
+    without_state["append_only_state"] = None
+    with pytest.raises(ValidationError, match="requires append-only state"):
+        PromptCacheCoordinatorSnapshot.model_validate(without_state)
+
+    stable = PromptCacheCoordinator.bootstrap(
+        _messages(),
+        _tools(),
+        layout=PromptCacheLayout.STABLE,
+        prefix_message_count=2,
+    ).snapshot()
+    foreign = stable.model_dump(mode="json")
+    foreign["append_only_state"] = snapshot.model_dump(mode="json")["append_only_state"]
+    with pytest.raises(ValidationError, match="only the append_only layout"):
+        PromptCacheCoordinatorSnapshot.model_validate(foreign)
+
+
+def test_append_only_restore_rejects_boundaries_beyond_the_transcript() -> None:
+    beyond_submission = _append_only_state(
+        last_submitted_message_count=4,
+        last_submitted_message_fingerprints=["a" * 64, "b" * 64, "c" * 64, "d" * 64],
+    )
+    with pytest.raises(ValueError, match="shorter than its last submitted request"):
+        _append_only_coordinator(messages=_messages(), state=beyond_submission)
+
+    oversized_root = _append_only_state(root_prefix_message_count=4)
+    with pytest.raises(ValueError, match="shorter than its declared root prefix"):
+        _append_only_coordinator(messages=_messages(), state=oversized_root)

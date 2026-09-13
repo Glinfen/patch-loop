@@ -7,6 +7,9 @@ from patchloop.domain import (
     TaskRuntimeCondition,
     TaskStatus,
 )
+from patchloop.persistence import RuntimeCheckpoint
+from patchloop.prompt_cache import AppendOnlyPromptState
+from patchloop.providers import ModelMessage
 from patchloop.session.models import Session, SessionCheckpoint, Turn, TurnRole
 
 
@@ -81,3 +84,63 @@ def test_turn_and_checkpoint_are_round_trip_serializable(tmp_path) -> None:
     restored = SessionCheckpoint.model_validate_json(checkpoint.model_dump_json())
     assert restored == checkpoint
     assert turn.session_id == "session-1"
+
+
+def test_session_checkpoint_round_trips_append_only_state(tmp_path) -> None:
+    state = AppendOnlyPromptState(
+        root_prefix_message_count=2,
+        last_submitted_message_count=2,
+        last_submitted_message_fingerprints=["a" * 64, "b" * 64],
+        last_submitted_request_id="request-1",
+    )
+    messages = [
+        ModelMessage(role="system", content="static"),
+        ModelMessage(role="user", content="inspect"),
+        ModelMessage(role="assistant", content="done"),
+    ]
+    checkpoint = SessionCheckpoint(
+        session_id="session-1",
+        task_id="task-1",
+        messages=messages,
+        append_only_state=state,
+    )
+
+    restored = SessionCheckpoint.model_validate_json(checkpoint.model_dump_json())
+    assert restored.append_only_state == state
+    runtime = RuntimeCheckpoint(
+        task_id="task-1",
+        next_step_index=1,
+        messages=messages,
+        append_only_state=state,
+    )
+    assert runtime.append_only_state == restored.append_only_state
+    without_state = checkpoint.model_dump(mode="json")
+    without_state.pop("append_only_state")
+    assert SessionCheckpoint.model_validate(without_state).append_only_state is None
+
+
+def test_session_checkpoint_rejects_state_beyond_its_transcript(tmp_path) -> None:
+    beyond_submission = AppendOnlyPromptState(
+        root_prefix_message_count=2,
+        last_submitted_message_count=4,
+        last_submitted_message_fingerprints=["a" * 64, "b" * 64, "c" * 64, "d" * 64],
+    )
+    with pytest.raises(ValidationError, match="last submitted request"):
+        SessionCheckpoint(
+            session_id="session-1",
+            task_id="task-1",
+            messages=[
+                ModelMessage(role="system", content="static"),
+                ModelMessage(role="user", content="inspect"),
+                ModelMessage(role="assistant", content="done"),
+            ],
+            append_only_state=beyond_submission,
+        )
+
+    oversized_root = AppendOnlyPromptState(root_prefix_message_count=4)
+    with pytest.raises(ValidationError, match="declared root prefix"):
+        SessionCheckpoint(
+            session_id="session-1",
+            task_id="task-1",
+            append_only_state=oversized_root,
+        )

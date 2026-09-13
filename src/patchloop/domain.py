@@ -54,6 +54,7 @@ class PromptCacheLayout(StrEnum):
 
     LEGACY = "legacy"
     STABLE = "stable"
+    APPEND_ONLY = "append_only"
 
 
 class StepStatus(StrEnum):

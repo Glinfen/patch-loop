@@ -26,9 +26,10 @@ from patchloop.execution.models import (
     Execution,
     ExecutionStatus,
 )
-from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
+from patchloop.persistence import CheckpointSchemaError, RuntimeCheckpoint, SQLiteStore
 from patchloop.persistence_contracts import AdvanceStatus, LeaseConflict
-from patchloop.providers import FakeProvider, ModelResponse, ModelUsage
+from patchloop.prompt_cache import CacheEpoch
+from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ModelUsage
 from patchloop.runtime import AgentRuntime
 from patchloop.security import RiskLevel
 from patchloop.session import SessionService
@@ -1054,3 +1055,41 @@ def test_second_task_requires_a_new_one_time_approval(tmp_path: Path) -> None:
     assert store.get_approval(first_approval.id).status is ApprovalStatus.CONSUMED
     assert store.get_approval(second_approval.id).status is ApprovalStatus.PENDING
     assert not (repository / "second.txt").exists()
+
+
+def test_append_only_resume_without_state_fails_as_checkpoint_schema_error(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    task = Task(
+        id="task-1",
+        goal="Inspect the repository",
+        repository=str(repository),
+        execution=TaskExecutionConfig(prompt_cache_layout=PromptCacheLayout.APPEND_ONLY),
+    )
+    task.transition(TaskStatus.RUNNING)
+    epoch = CacheEpoch.bootstrap(
+        [
+            ModelMessage(role="system", content="static"),
+            ModelMessage(role="user", content="Inspect"),
+        ],
+        prefix_message_count=2,
+        epoch_id="initial",
+    )
+    checkpoint = RuntimeCheckpoint(
+        task_id=task.id,
+        next_step_index=0,
+        messages=[
+            ModelMessage(role="system", content="static"),
+            ModelMessage(role="user", content="Inspect"),
+        ],
+        prompt_prefix_message_count=2,
+        cache_epoch_state=epoch.snapshot,
+    )
+
+    with pytest.raises(CheckpointSchemaError, match="cannot be safely restored"):
+        AgentRuntime(
+            FakeProvider([]),
+            _write_gateway(repository),
+        ).resume(task, checkpoint)

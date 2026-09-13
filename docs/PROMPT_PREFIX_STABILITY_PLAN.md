@@ -1,6 +1,6 @@
 # Prompt 前缀稳定性修改方案
 
-调研日期：2026-09-13。状态：方案完成；PPS-01 已完成，后续任务尚未实施。任务前缀：PPS。
+调研日期：2026-09-13。状态：方案完成；PPS-01、PPS-02 已完成，后续任务尚未实施。任务前缀：PPS。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，基于当前工作区实际代码（含尚未提交的 Provider 契约改动）。不把其他计划中的接口当作已经完成的实现。
 
@@ -372,7 +372,7 @@ src/patchloop/evaluation/cache.py::CacheBenchmarkRunner
 - 增加 `CacheEvaluationVariant.APPEND_ONLY` 标识。append_only Runtime 断言及行为仍由后续任务启用；旧手工仿真矩阵暂不把它作为已支持变体。
 - 验证：PPS-01 定向测试 13 项通过，扩展相关回归集合 54 项通过；`ruff check src tests`、`mypy src/patchloop` 通过。全量测试在新增最后一项单元测试前运行，结果为 551 项通过、1 项跳过、1 项失败；唯一失败为 Windows `test_takeover_terminates_verified_live_command_before_new_writer` 无权终止子进程（错误码 5），与 PPS-01 改动无关。
 
-### PPS-02：追加状态和兼容读取
+### PPS-02：追加状态和兼容读取（已完成）
 
 **Goal**
 
@@ -408,6 +408,17 @@ src/patchloop/prompt_cache/__init__.py
 **Acceptance Criteria**
 
 旧任务不被新默认改变；新状态可跨进程还原且不复制第二份正文。
+
+**Implementation Record**
+
+- `PromptCacheLayout` 增加 `APPEND_ONLY`，`TaskExecutionConfig` 默认保持 legacy；CLI `run` 显式限定 legacy/stable，避免在 PPS-06 完成前运行未实现的新模式。
+- `AppendOnlyPromptState`（frozen、extra=forbid）实现 4.4 全部字段：count 非负、root ≥ 2、last_submitted count 等于摘要向量长度、指纹固定 SHA-256、compression source 不超过已提交边界；`validate_message_boundaries` 提供与 checkpoint.messages 的跨模型上界校验。
+- Coordinator 构造/snapshot/from_legacy_state/from_snapshot 均持有并传递可空 `append_only_state`；append_only 缺状态或缺 epoch 快照一律拒绝，不从当前消息猜测 prefix；legacy/stable 携带新状态被拒绝；stable 与 append_only 同属冻结 epoch 布局（`_FROZEN_EPOCH_LAYOUTS`），append_only 恢复时同样还原 publication 状态。
+- `RuntimeCheckpoint`、`SessionCheckpoint`、`PromptCacheCoordinatorSnapshot`、`PromptCacheCheckpointFields` 均增加 `append_only_state=None`；两个 checkpoint 模型用同一 `validate_message_boundaries` 校验消息边界，保存路径经 `checkpoint_fields()` 自动投影，不需要第二份正文。
+- `_adapt_checkpoint_json` 将 pydantic ValidationError 包装为 `CheckpointSchemaError`；Runtime 新增 `_restore_prompt_cache` 边界（合并 resume/advance 两处重复恢复代码），append_only 恢复失败转换为 `CheckpointSchemaError`，legacy/stable 错误类型不变。
+- 新增 `_decode_task_payload`：仅当 JSON 缺 `execution.prompt_cache_layout` 时补 legacy，显式 legacy/stable/append_only 原样保持，结构非法的 execution 仍然校验失败；替换 persistence.py 内全部三处 `Task.model_validate_json` 直接解析点（v0 迁移、`get_task`、事务内 `_task_row`）。
+- 验证：新增定向测试 19 项（coordinator 8、storage 8、session models 2、runtime 边界 1，含旧无字段/legacy/stable round trip、count/hash 不匹配、缺状态拒绝、Session/Runtime 投影等价、Task 解码钉住）；定向集合 73 项、集成/session 集合 136 项通过；全量 pytest 572 passed、1 skipped（Windows 符号链接）、0 failed；`ruff check src tests`、`mypy src/patchloop` 通过。全量运行使用仓库外 basetemp（默认 pytest 临时目录在本机报 WinError 5，仓库内 basetemp 会污染检索基准索引）。
+- 独立复核：PPS-02 相关测试集合 71 项、CLI 与 Session CLI 31 项通过；`ruff check src tests` 和 `mypy src/patchloop` 再次通过。
 
 ### PPS-03：记忆 V2 按序追加
 
@@ -686,6 +697,13 @@ PPS-03 与 PPS-07 的 diagnostics 部分可以在 PPS-02 后并行；PPS-04 与 
 - `tests/unit/test_prompt_prefix_stability.py`、`tests/e2e/test_prompt_prefix_runtime.py` 和缓存评估测试验证实际 Runtime 请求基线；PPS-01 定向测试 13 项通过，扩展相关回归集合 54 项通过。
 - 全量 pytest：551 passed、1 skipped、1 failed。失败是 `tests/integration/test_execution_takeover_recovery.py::test_takeover_terminates_verified_live_command_before_new_writer`，Windows `TerminateProcess` 返回拒绝访问（错误码 5）。
 - `ruff check src tests` 与 `mypy src/patchloop` 均通过。
+
+### PPS-02 实施验证（2026-09-13）
+
+- 新增 append_only 状态契约测试 19 项通过；定向集合（prefix stability、layout、coordinator、publication、context、epoch、cache、evaluation、gates、dependencies、storage、session models）73 项通过；session 迁移/runtime/store 集合 136 项通过。
+- 全量 pytest：571 passed、1 skipped（Windows 符号链接不可用）、0 failed；PPS-01 记录的 takeover 失败在本轮环境未复现。
+- `ruff check src tests` 与 `mypy src/patchloop` 均通过。
+- 本机默认 pytest 临时目录报 WinError 5；全量运行需要仓库外 basetemp（例如 `--basetemp=D:/codes/git/.pl_pytest_tmp`），仓库内 basetemp 会让 `test_committed_retrieval_report_is_reproducible` 检索到临时文件而失败。
 
 ### 本次方案调研已执行
 

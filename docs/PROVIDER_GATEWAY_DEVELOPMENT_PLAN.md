@@ -2,7 +2,7 @@
 
 ## 1. Problem
 
-**状态：** PGW-01～PGW-04 已完成，下一任务为 **PGW-05**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
+**状态：** PGW-01～PGW-05 已完成，下一任务为 **PGW-06**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
 
 **Current Problem：** SRF 已交付 Session、审批、所有权和恢复主线，但 CLI 仍固定创建 DeepSeek Provider，构造器只接受一个模型；请求非流式，Runtime 直接读取供应商配置，Task 未绑定模型配置，协议续接信息也未完整保存。这是 [第二阶段目标](PHASE_2_PROJECT_GOALS.md) S2-G2 的直接缺口。
 
@@ -262,7 +262,7 @@ SSEFrame: event, data, id
 
 ### PGW-04：Gateway 生命周期、能力检查与重试
 
-**实施状态：已完成（2026-09-14）。** 新增 ProviderGateway 与 LegacyProviderAdapter，统一能力预检、JSON/SSE 完整响应校验、请求级重试/取消、全局 deadline 和生命周期事件；StreamReducer 契约明确要求拒绝未终止或未结算的流。Provider 定向回归 78 通过，mypy 与改动文件 Ruff/格式检查通过；全仓回归 647 通过、1 项因 Windows 符号链接不可用跳过。ProviderFactory 继续对尚未实现的 Adapter 路径 fail-closed，具体协议路由由 PGW-05/06 注册。
+**实施状态：已完成（2026-09-14）。** 新增 ProviderGateway 与 LegacyProviderAdapter，统一能力预检、JSON/SSE 完整响应校验、请求级重试/取消、全局 deadline 和生命周期事件；StreamReducer 契约明确要求拒绝未终止或未结算的流。Provider 定向回归 78 通过，mypy 与改动文件 Ruff/格式检查通过；全仓回归 647 通过、1 项因 Windows 符号链接不可用跳过。ProviderFactory 的 Chat/DeepSeek 路由由 PGW-05 注册，Responses 路由继续 fail-closed，等待 PGW-06。
 
 **Goal**
 
@@ -348,6 +348,8 @@ DeepSeekProvider.complete(...) -> Gateway 的完整响应
 
 - 标准 loopback 服务可用自定义模型完成读取→工具反馈→回答，无 DeepSeek 凭据依赖。
 - 默认 DeepSeek 已迁入同一 Gateway，续接保留有多轮证据，不只更换 base URL。
+
+**实施状态：已完成（2026-09-14）。** 新增标准/DeepSeek Chat Completions Adapter 与 SSE reducer，Factory 已注册这两种方言；JSON 与 SSE 汇总结果、交错工具片段、usage-only 尾帧、完整终止、拒绝/截断/服务错误和 DeepSeek reasoning continuation 均有测试。DeepSeek 默认路径已委托可取消 HTTPX Gateway，旧同步 JsonTransport 与 sleeper 通过仅用于兼容测试的桥接保留，重试统一归 Gateway；自定义模型名不再受静态白名单限制。全仓 pytest **660 通过、1 跳过**（Windows 主机不支持符号链接）；mypy、Ruff 和改动文件格式检查通过。未调用真实外部模型服务。
 
 ### PGW-06：OpenAI Responses Adapter
 

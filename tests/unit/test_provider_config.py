@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from patchloop.domain import TaskExecutionConfig
 from patchloop.providers import (
+    ChatCompletionsAdapter,
+    ChatDialect,
     CredentialResolver,
     ProfileResolver,
     ProviderAuth,
@@ -13,6 +15,7 @@ from patchloop.providers import (
     ProviderProtocol,
     provider_endpoint,
 )
+from patchloop.providers.transport import HttpxTransport
 
 CONFIG = """
 schema_version = 1
@@ -158,11 +161,23 @@ def test_legacy_task_execution_config_has_no_binding() -> None:
     assert execution.provider is None
 
 
-def test_factory_fails_closed_until_route_adapter_is_registered() -> None:
-    binding = ProfileResolver().resolve("deepseek")
+def test_factory_registers_chat_dialects_and_keeps_responses_fail_closed(
+    tmp_path: Path,
+) -> None:
+    resolver = ProfileResolver()
+    local = resolver.resolve("local", config_path=write_config(tmp_path))
+    deepseek = resolver.resolve("deepseek")
+    standard_gateway = ProviderFactory().create(local, HttpxTransport(local.base_url))
+    deepseek_gateway = ProviderFactory().create(deepseek, HttpxTransport(deepseek.base_url))
 
+    assert isinstance(standard_gateway.adapter, ChatCompletionsAdapter)
+    assert standard_gateway.binding.dialect is ChatDialect.STANDARD
+    assert isinstance(deepseek_gateway.adapter, ChatCompletionsAdapter)
+    assert deepseek_gateway.binding.dialect is ChatDialect.DEEPSEEK
+
+    responses = resolver.resolve("responses", config_path=write_config(tmp_path))
     with pytest.raises(ProviderError, match="not implemented yet"):
-        ProviderFactory().create(binding)
+        ProviderFactory().create(responses, HttpxTransport(responses.base_url))
 
 
 def test_binding_still_rejects_auth_none_with_a_credential_reference(tmp_path: Path) -> None:

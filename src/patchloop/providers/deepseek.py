@@ -1,28 +1,51 @@
-"""DeepSeek Flash provider using the OpenAI-compatible Chat API."""
+"""DeepSeek provider compatibility facade backed by the provider gateway."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Protocol
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from patchloop.domain import ToolCall
 from patchloop.providers.base import (
+    EncodedRequest,
     ModelMessage,
     ModelResponse,
-    ModelUsage,
+    ProviderControl,
     ToolSpec,
+)
+from patchloop.providers.chat import ChatCompletionsAdapter
+from patchloop.providers.contracts import (
+    ChatDialect,
+    ProviderAuth,
+    ProviderBinding,
+    ProviderCapabilities,
+    ProviderError,
+    ProviderErrorKind,
+    ProviderGeneration,
+    ProviderPricing,
+    ProviderProtocol,
+    ProviderTransportConfig,
+    ReasoningTransport,
+)
+from patchloop.providers.gateway import ProviderGateway
+from patchloop.providers.transport import (
+    AsyncTransport,
+    HttpxTransport,
+    TransportControlError,
+    TransportResponse,
 )
 
 DEFAULT_DEEPSEEK_MODEL = "deepseek-flash"
-SUPPORTED_DEEPSEEK_MODELS = frozenset({DEFAULT_DEEPSEEK_MODEL, "deepseek-v4-flash"})
 
 
 class DeepSeekConfig(BaseModel):
@@ -102,6 +125,8 @@ def _configuration_value(file_values: dict[str, str], *names: str) -> str | None
 
 
 class ProviderRequestError(RuntimeError):
+    """Compatibility exception raised by the legacy synchronous transport."""
+
     def __init__(self, message: str, *, retryable: bool) -> None:
         super().__init__(message)
         self.retryable = retryable
@@ -145,7 +170,12 @@ class UrllibJsonTransport:
                 f"DeepSeek API connection failed: {exc.reason}",
                 retryable=True,
             ) from exc
-        parsed = json.loads(body)
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            raise ProviderRequestError(
+                "DeepSeek API returned invalid JSON", retryable=False
+            ) from None
         if not isinstance(parsed, dict):
             raise ProviderRequestError(
                 "DeepSeek API returned a non-object response", retryable=False
@@ -153,19 +183,154 @@ class UrllibJsonTransport:
         return parsed
 
 
+class _LegacyJsonTransportBridge:
+    """Adapt the old blocking JSON injection seam to the async gateway transport."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: SecretStr,
+        transport: JsonTransport,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.transport = transport
+
+    @asynccontextmanager
+    async def client_scope(self) -> AsyncIterator[None]:
+        yield
+
+    @asynccontextmanager
+    async def open(
+        self,
+        encoded: EncodedRequest,
+        timeouts: ProviderTransportConfig,
+        *,
+        control: ProviderControl | None = None,
+    ) -> AsyncIterator[TransportResponse]:
+        if control is not None:
+            try:
+                action = control()
+            except Exception:
+                raise ProviderError(
+                    ProviderErrorKind.OBSERVER,
+                    "provider execution control callback failed",
+                ) from None
+            if action is not None:
+                raise TransportControlError(action)
+        headers = dict(encoded.headers)
+        headers["Authorization"] = f"Bearer {self.api_key.get_secret_value()}"
+        endpoint = f"{self.base_url}/{encoded.path.lstrip('/')}"
+        try:
+            payload = await asyncio.to_thread(
+                self.transport.post,
+                endpoint,
+                headers,
+                encoded.body,
+                timeouts.total_timeout_seconds,
+            )
+        except ProviderRequestError as exc:
+            safe_message = str(exc).replace(self.api_key.get_secret_value(), "[REDACTED]")
+            raise ProviderError(
+                ProviderErrorKind.CONNECTION,
+                safe_message,
+                request_sent=False,
+                retryable=exc.retryable,
+                usage_unknown=True,
+            ) from None
+        except Exception:
+            raise ProviderError(
+                ProviderErrorKind.CONNECTION,
+                "legacy DeepSeek transport failed",
+                request_sent=False,
+                usage_unknown=True,
+            ) from None
+
+        try:
+            response_bytes = json.dumps(
+                payload,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            raise ProviderError(
+                ProviderErrorKind.PROTOCOL,
+                "legacy DeepSeek transport returned an invalid response",
+                request_sent=True,
+                usage_unknown=True,
+            ) from None
+        response = httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=response_bytes,
+        )
+        wrapped = TransportResponse(
+            response,
+            max_response_bytes=timeouts.max_response_bytes,
+            control=None,
+            deadline=time.monotonic() + timeouts.total_timeout_seconds,
+            clock=time.monotonic,
+        )
+        try:
+            yield wrapped
+        finally:
+            await wrapped.aclose()
+
+
 class DeepSeekProvider:
+    """Keep the established provider facade while using PGW lifecycle handling."""
+
     def __init__(
         self,
         config: DeepSeekConfig,
         transport: JsonTransport | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
-        if config.model not in SUPPORTED_DEEPSEEK_MODELS:
-            supported = ", ".join(sorted(SUPPORTED_DEEPSEEK_MODELS))
-            raise ValueError(f"unsupported DeepSeek model {config.model!r}; supported: {supported}")
         self.config = config
         self.transport = transport or UrllibJsonTransport()
         self.sleeper = sleeper
+        binding = self._binding(config, legacy=transport is not None)
+        adapter = ChatCompletionsAdapter(ChatDialect.DEEPSEEK)
+        if transport is None:
+            gateway_transport: AsyncTransport = HttpxTransport(
+                config.base_url,
+                credential=config.api_key,
+                config=binding.transport,
+            )
+            self.supports_live_cancellation = True
+            if sleeper is time.sleep:
+                self.gateway = ProviderGateway(binding, adapter, gateway_transport)
+            else:
+
+                async def injected_sleep(delay: float) -> None:
+                    await asyncio.to_thread(sleeper, delay)
+
+                self.gateway = ProviderGateway(
+                    binding,
+                    adapter,
+                    gateway_transport,
+                    random_source=lambda: 0.0,
+                    sleep=injected_sleep,
+                )
+        else:
+            gateway_transport = _LegacyJsonTransportBridge(
+                config.base_url,
+                config.api_key,
+                transport,
+            )
+
+            async def legacy_sleep(delay: float) -> None:
+                await asyncio.to_thread(sleeper, delay)
+
+            self.supports_live_cancellation = False
+            self.gateway = ProviderGateway(
+                binding,
+                adapter,
+                gateway_transport,
+                random_source=lambda: 0.0,
+                sleep=legacy_sleep,
+            )
 
     @classmethod
     def from_env(cls, env_file: Path | None = None) -> DeepSeekProvider:
@@ -180,151 +345,60 @@ class DeepSeekProvider:
         messages: list[ModelMessage],
         tools: list[ToolSpec],
     ) -> ModelResponse:
-        payload: dict[str, Any] = {
-            "model": self.config.model,
-            "messages": [self._message_payload(message) for message in messages],
-            "tools": [self._tool_payload(tool) for tool in tools],
-            "tool_choice": "auto",
-            "thinking": {"type": "enabled" if self.config.thinking_enabled else "disabled"},
-            "reasoning_effort": self.config.reasoning_effort,
-            "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
-            "stream": False,
-        }
-        response = self._request_with_retry(payload)
-        return self._parse_response(response)
-
-    def _request_with_retry(self, payload: dict[str, Any]) -> dict[str, Any]:
-        api_key = self.config.api_key.get_secret_value()
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        endpoint = f"{self.config.base_url.rstrip('/')}/chat/completions"
-        for attempt in range(self.config.max_retries + 1):
-            try:
-                return self.transport.post(
-                    endpoint,
-                    headers,
-                    payload,
-                    self.config.timeout_seconds,
-                )
-            except ProviderRequestError as exc:
-                safe_message = str(exc).replace(api_key, "[REDACTED]")
-                if not exc.retryable or attempt >= self.config.max_retries:
-                    raise RuntimeError(safe_message) from exc
-                self.sleeper(float(2**attempt))
-        raise RuntimeError("DeepSeek request retry loop terminated unexpectedly")
+        return self.gateway.complete(messages, tools)
 
     @staticmethod
-    def _message_payload(message: ModelMessage) -> dict[str, Any]:
-        payload: dict[str, Any] = {"role": message.role, "content": message.content}
-        if message.tool_calls:
-            payload["tool_calls"] = [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {
-                        "name": call.name,
-                        "arguments": json.dumps(call.arguments),
-                    },
-                }
-                for call in message.tool_calls
-            ]
-        if message.tool_call_id is not None:
-            payload["tool_call_id"] = message.tool_call_id
-        return payload
-
-    @staticmethod
-    def _tool_payload(tool: ToolSpec) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": f"[{tool.permission}] {tool.description}",
-                "parameters": tool.parameters,
-            },
-        }
-
-    def _parse_response(self, response: dict[str, Any]) -> ModelResponse:
-        choices = response.get("choices")
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise RuntimeError("DeepSeek response does not contain a valid choice")
-        message = choices[0].get("message")
-        if not isinstance(message, dict):
-            raise RuntimeError("DeepSeek response does not contain a valid message")
-        raw_content = message.get("content")
-        content = raw_content if isinstance(raw_content, str) else ""
-        calls: list[ToolCall] = []
-        raw_calls = message.get("tool_calls", [])
-        if isinstance(raw_calls, list):
-            for raw_call in raw_calls:
-                if not isinstance(raw_call, dict):
-                    continue
-                function = raw_call.get("function")
-                if not isinstance(function, dict) or not isinstance(function.get("name"), str):
-                    continue
-                raw_arguments = function.get("arguments", "{}")
-                arguments, arguments_error = DeepSeekProvider._parse_arguments(raw_arguments)
-                raw_id = raw_call.get("id")
-                calls.append(
-                    ToolCall(
-                        id=raw_id if isinstance(raw_id, str) else "missing-tool-call-id",
-                        name=function["name"],
-                        arguments=arguments,
-                        arguments_error=arguments_error,
-                    )
-                )
-        raw_usage = response.get("usage")
-        usage = raw_usage if isinstance(raw_usage, dict) else {}
-        input_tokens = self._integer(usage.get("prompt_tokens"))
-        output_tokens = self._integer(usage.get("completion_tokens"))
-        cache_hit_tokens = self._optional_integer(usage.get("prompt_cache_hit_tokens"))
-        cache_miss_tokens = self._optional_integer(usage.get("prompt_cache_miss_tokens"))
-        if (
-            cache_hit_tokens is not None
-            and cache_miss_tokens is not None
-            and cache_hit_tokens + cache_miss_tokens == input_tokens
-        ):
-            cost_hit_tokens = cache_hit_tokens
-            cost_miss_tokens = cache_miss_tokens
-        else:
-            cost_hit_tokens = 0
-            cost_miss_tokens = input_tokens
-        estimated_cost = (
-            cost_hit_tokens * self.config.cache_hit_cost_per_million
-            + cost_miss_tokens * self.config.cache_miss_cost_per_million
-            + output_tokens * self.config.output_cost_per_million
-        ) / 1_000_000
-        return ModelResponse(
-            content=content,
-            tool_calls=calls,
-            usage=ModelUsage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cost_usd=estimated_cost,
-                cache_hit_tokens=cache_hit_tokens,
-                cache_miss_tokens=cache_miss_tokens,
+    def _binding(config: DeepSeekConfig, *, legacy: bool) -> ProviderBinding:
+        capabilities = ProviderCapabilities(
+            tools=True,
+            multiple_tool_calls=True,
+            streaming=True,
+            reasoning_transport=ReasoningTransport.DEEPSEEK_TEXT,
+            structured_output=False,
+            context_window_tokens=max(32_000, config.max_tokens + 8_192),
+            max_output_tokens=config.max_tokens,
+            usage_supported=True,
+            cache_usage_supported=True,
+        )
+        timeout = config.timeout_seconds
+        transport = ProviderTransportConfig(
+            streaming=not legacy,
+            connect_timeout_seconds=min(10.0, timeout),
+            write_timeout_seconds=min(30.0, timeout),
+            idle_timeout_seconds=timeout,
+            total_timeout_seconds=timeout,
+            max_retries=config.max_retries,
+        )
+        return ProviderBinding(
+            profile_id="deepseek",
+            protocol=ProviderProtocol.CHAT_COMPLETIONS,
+            dialect=ChatDialect.DEEPSEEK,
+            model=config.model,
+            base_url=config.base_url,
+            auth=ProviderAuth.BEARER,
+            credential_env="DEEPSEEK_API_KEY",
+            capabilities=capabilities,
+            generation=ProviderGeneration(
+                max_output_tokens=config.max_tokens,
+                temperature=config.temperature,
+                reasoning_enabled=config.thinking_enabled,
+                reasoning_effort=config.reasoning_effort if config.thinking_enabled else None,
+            ),
+            transport=transport,
+            pricing=ProviderPricing(
+                version="deepseek-configured",
+                input_per_million=config.cache_miss_cost_per_million,
+                output_per_million=config.output_cost_per_million,
+                cached_input_per_million=config.cache_hit_cost_per_million,
             ),
         )
 
-    @staticmethod
-    def _parse_arguments(raw_arguments: Any) -> tuple[dict[str, Any], str | None]:
-        if not isinstance(raw_arguments, str):
-            return {}, "tool arguments are not a JSON string"
-        try:
-            parsed = json.loads(raw_arguments)
-        except json.JSONDecodeError as exc:
-            return {}, f"invalid tool arguments JSON: {exc.msg}"
-        if not isinstance(parsed, dict):
-            return {}, "tool arguments JSON must be an object"
-        return parsed, None
 
-    @staticmethod
-    def _integer(value: Any) -> int:
-        return value if isinstance(value, int) and value >= 0 else 0
-
-    @staticmethod
-    def _optional_integer(value: Any) -> int | None:
-        return value if isinstance(value, int) and value >= 0 else None
+__all__ = [
+    "DEFAULT_DEEPSEEK_MODEL",
+    "DeepSeekConfig",
+    "DeepSeekProvider",
+    "JsonTransport",
+    "ProviderRequestError",
+    "UrllibJsonTransport",
+]

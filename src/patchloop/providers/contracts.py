@@ -214,6 +214,8 @@ class ProviderErrorKind(StrEnum):
     OBSERVER = "observer_error"
     STRUCTURED_OUTPUT_INVALID = "structured_output_invalid"
     RESPONSE_TOO_LARGE = "response_too_large"
+    CONTINUATION_UNAVAILABLE = "continuation_unavailable"
+    REFUSAL = "refusal"
 
 
 class ProviderError(Exception):

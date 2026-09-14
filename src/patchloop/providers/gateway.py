@@ -540,6 +540,15 @@ class ProviderGateway(ProviderGatewayPort):
         control: ProviderControl | None,
         deadline: float,
     ) -> None:
+        if control is None:
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise self._deadline_error()
+            await self.sleep(min(delay, remaining))
+            if delay >= remaining:
+                raise self._deadline_error()
+            return
+
         backoff_deadline = self.clock() + delay
         while True:
             self._check_control(control)

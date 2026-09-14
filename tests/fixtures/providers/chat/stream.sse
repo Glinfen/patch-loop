@@ -1,0 +1,11 @@
+data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"Reading ","tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_","arguments":""}}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"the file","tool_calls":[{"index":0,"function":{"name":"file","arguments":"{\"path\":"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"app.py\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4}}
+
+data: [DONE]

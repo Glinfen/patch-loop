@@ -5,7 +5,15 @@ import pytest
 from pydantic import SecretStr
 
 from patchloop.domain import ToolCall
-from patchloop.providers import DeepSeekConfig, DeepSeekProvider, ModelMessage, ToolSpec
+from patchloop.providers import (
+    DeepSeekConfig,
+    DeepSeekProvider,
+    ModelMessage,
+    ProviderContinuation,
+    ProviderError,
+    ProviderErrorKind,
+    ToolSpec,
+)
 from patchloop.providers.deepseek import ProviderRequestError
 
 
@@ -28,20 +36,28 @@ class FakeTransport:
         return response
 
 
-def completion_response(arguments: str = '{"path":"app.py"}') -> dict[str, Any]:
+def completion_response(
+    arguments: str = '{"path":"app.py"}', *, include_tool_call: bool = False
+) -> dict[str, Any]:
     return {
         "choices": [
             {
+                "finish_reason": "tool_calls" if include_tool_call else "stop",
                 "message": {
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call-1",
-                            "type": "function",
-                            "function": {"name": "read_file", "arguments": arguments},
-                        }
-                    ],
-                }
+                    "content": "" if include_tool_call else "done",
+                    "reasoning_content": "internal reasoning",
+                    "tool_calls": (
+                        [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {"name": "read_file", "arguments": arguments},
+                            }
+                        ]
+                        if include_tool_call
+                        else []
+                    ),
+                },
             }
         ],
         "usage": {"prompt_tokens": 12, "completion_tokens": 5},
@@ -67,7 +83,7 @@ def make_provider(transport: FakeTransport) -> DeepSeekProvider:
 
 
 def test_provider_maps_messages_tools_and_usage() -> None:
-    transport = FakeTransport([completion_response()])
+    transport = FakeTransport([completion_response(include_tool_call=True)])
     provider = make_provider(transport)
     tools = [
         ToolSpec(
@@ -86,6 +102,18 @@ def test_provider_maps_messages_tools_and_usage() -> None:
     assert response.usage.cache_hit_tokens is None
     assert response.usage.cache_miss_tokens is None
     assert response.usage.cost_usd == pytest.approx((12 * 0.14 + 5 * 0.28) / 1_000_000)
+    assert transport.requests[0][2]["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "[read] Read a file",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+    assert transport.requests[0][2]["stream"] is False
+    assert provider.supports_live_cancellation is False
     url, headers, payload, _ = transport.requests[0]
     assert url == "https://api.deepseek.com/chat/completions"
     assert headers["Authorization"] == "Bearer test-secret"
@@ -93,18 +121,25 @@ def test_provider_maps_messages_tools_and_usage() -> None:
     assert payload["thinking"] == {"type": "enabled"}
     assert payload["reasoning_effort"] == "high"
     assert payload["tools"][0]["function"]["description"].startswith("[read]")
+    assert response.continuation == ProviderContinuation(
+        deepseek_reasoning_content="internal reasoning"
+    )
 
 
 def test_provider_preserves_cache_usage_and_prices_mixed_cache_tokens() -> None:
-    provider = make_provider(
-        FakeTransport([completion_response_with_cache(cache_hit_tokens=8, cache_miss_tokens=4)])
+    transport = FakeTransport(
+        [completion_response_with_cache(cache_hit_tokens=8, cache_miss_tokens=4)]
     )
+    provider = make_provider(transport)
 
     response = provider.complete([ModelMessage(role="user", content="Inspect")], [])
 
     assert response.usage.cache_hit_tokens == 8
     assert response.usage.cache_miss_tokens == 4
     assert response.usage.cost_usd == pytest.approx((8 * 0.0028 + 4 * 0.14 + 5 * 0.28) / 1_000_000)
+    assert "tools" not in transport.requests[0][2]
+    assert "tool_choice" not in transport.requests[0][2]
+    assert transport.requests[0][2]["stream"] is False
 
 
 @pytest.mark.parametrize(
@@ -181,6 +216,7 @@ def test_provider_preserves_tool_call_context() -> None:
             role="assistant",
             content="",
             tool_calls=[ToolCall(id="call-previous", name="read_file", arguments={})],
+            continuation=ProviderContinuation(deepseek_reasoning_content="prior reasoning"),
         ),
         ModelMessage(role="tool", content="result", tool_call_id="call-previous"),
     ]
@@ -189,13 +225,19 @@ def test_provider_preserves_tool_call_context() -> None:
 
     messages = transport.requests[0][2]["messages"]
     assert messages[0]["tool_calls"][0]["id"] == "call-previous"
+    assert messages[0]["reasoning_content"] == "prior reasoning"
     assert messages[1]["tool_call_id"] == "call-previous"
 
 
 def test_provider_marks_invalid_tool_json() -> None:
-    provider = make_provider(FakeTransport([completion_response("{not-json")]))
+    provider = make_provider(
+        FakeTransport([completion_response("{not-json", include_tool_call=True)])
+    )
 
-    response = provider.complete([ModelMessage(role="user", content="Inspect")], [])
+    response = provider.complete(
+        [ModelMessage(role="user", content="Inspect")],
+        [ToolSpec(name="read_file", description="Read", parameters={"type": "object"})],
+    )
 
     assert response.tool_calls[0].arguments == {}
     assert (
@@ -230,18 +272,21 @@ def test_provider_accepts_legacy_flash_model() -> None:
     assert provider.name == "deepseek-v4-flash"
 
 
-def test_provider_rejects_unsupported_model() -> None:
+def test_provider_accepts_configured_model_without_static_allowlist() -> None:
     config = DeepSeekConfig(api_key=SecretStr("test-secret"), model="deepseek-v4-pro")
 
-    with pytest.raises(ValueError, match="deepseek-flash"):
-        DeepSeekProvider(config)
+    provider = DeepSeekProvider(config)
+    assert provider.name == "deepseek-v4-pro"
+    assert provider.supports_live_cancellation is True
+    assert provider.gateway.transport.__class__.__name__ == "HttpxTransport"
 
 
 def test_provider_redacts_key_from_transport_error() -> None:
     transport = FakeTransport([ProviderRequestError("failed with test-secret", retryable=False)])
     provider = make_provider(transport)
 
-    with pytest.raises(RuntimeError, match=r"failed with \[REDACTED\]") as captured:
+    with pytest.raises(ProviderError, match=r"failed with \[REDACTED\]") as captured:
         provider.complete([ModelMessage(role="user", content="Inspect")], [])
 
+    assert captured.value.kind is ProviderErrorKind.CONNECTION
     assert "test-secret" not in str(captured.value)

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         StreamReducer,
         ToolSpec,
     )
+    from patchloop.providers.chat import ChatCompletionsAdapter, ChatStreamReducer
     from patchloop.providers.config import CredentialResolver, ProfileResolver, provider_endpoint
     from patchloop.providers.contracts import (
         ChatDialect,
@@ -46,7 +47,9 @@ if TYPE_CHECKING:
     from patchloop.providers.gateway import LegacyProviderAdapter, ProviderGateway
 
 _MODULE_BY_NAME = {
+    "ChatCompletionsAdapter": "chat",
     "ChatDialect": "contracts",
+    "ChatStreamReducer": "chat",
     "ControlAction": "base",
     "CredentialResolver": "config",
     "DeepSeekConfig": "deepseek",
@@ -87,7 +90,9 @@ _MODULE_BY_NAME = {
 }
 
 __all__ = [
+    "ChatCompletionsAdapter",
     "ChatDialect",
+    "ChatStreamReducer",
     "ControlAction",
     "CredentialResolver",
     "DeepSeekConfig",

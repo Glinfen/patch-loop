@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
-from patchloop.providers.base import ProviderGateway
+from patchloop.providers.base import ProviderGateway as ProviderGatewayPort
+from patchloop.providers.chat import ChatCompletionsAdapter
+from patchloop.providers.config import CredentialResolver
 from patchloop.providers.contracts import (
     ChatDialect,
     ProviderBinding,
@@ -13,9 +14,25 @@ from patchloop.providers.contracts import (
     ProviderErrorKind,
     ProviderProtocol,
 )
+from patchloop.providers.gateway import ProviderGateway
+from patchloop.providers.transport import AsyncTransport, HttpxTransport
 
-type GatewayBuilder = Callable[[ProviderBinding, Any | None], ProviderGateway]
+type GatewayBuilder = Callable[[ProviderBinding, AsyncTransport | None], ProviderGatewayPort]
 type ProviderRoute = tuple[ProviderProtocol, ChatDialect]
+
+
+def _build_chat_gateway(
+    binding: ProviderBinding,
+    transport: AsyncTransport | None,
+) -> ProviderGatewayPort:
+    if transport is None:
+        credential = CredentialResolver().resolve(binding)
+        transport = HttpxTransport(
+            binding.base_url,
+            credential=credential,
+            config=binding.transport,
+        )
+    return ProviderGateway(binding, ChatCompletionsAdapter(binding.dialect), transport)
 
 
 class ProviderFactory:
@@ -30,7 +47,11 @@ class ProviderFactory:
     )
 
     def __init__(self, builders: dict[ProviderRoute, GatewayBuilder] | None = None) -> None:
-        self._builders = dict(builders or {})
+        self._builders: dict[ProviderRoute, GatewayBuilder] = {
+            (ProviderProtocol.CHAT_COMPLETIONS, ChatDialect.STANDARD): _build_chat_gateway,
+            (ProviderProtocol.CHAT_COMPLETIONS, ChatDialect.DEEPSEEK): _build_chat_gateway,
+        }
+        self._builders.update(builders or {})
 
     def register(
         self, protocol: ProviderProtocol, dialect: ChatDialect, builder: GatewayBuilder
@@ -43,7 +64,11 @@ class ProviderFactory:
             )
         self._builders[route] = builder
 
-    def create(self, binding: ProviderBinding, transport: Any | None = None) -> ProviderGateway:
+    def create(
+        self,
+        binding: ProviderBinding,
+        transport: AsyncTransport | None = None,
+    ) -> ProviderGatewayPort:
         route = (binding.protocol, binding.dialect)
         builder = self._builders.get(route)
         if builder is None:

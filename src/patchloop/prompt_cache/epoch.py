@@ -9,6 +9,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from patchloop.context.engine import ContextEngine
 from patchloop.prompt_cache.diagnostics import fingerprint_json
 from patchloop.providers.base import ModelMessage, ToolSpec
 from patchloop.security import SecretRedactor, UntrustedContentGuard
@@ -40,7 +41,9 @@ class CacheEpochSnapshot(BaseModel):
 
     schema_version: str = Field(default="1.0", pattern=r"^1\.0$")
     epoch_id: str = Field(min_length=1, max_length=128)
-    generation: int = Field(default=0, ge=0)
+    generation: int = Field(default=0, ge=0, le=1_000_000_000)
+    root_epoch_id: str | None = Field(default=None, min_length=1, max_length=128)
+    root_prefix_message_count: int | None = Field(default=None, ge=2)
     prefix_message_count: int = Field(ge=2)
     prefix_messages: list[ModelMessage] = Field(min_length=2)
     prefix_message_ids: list[str] = Field(min_length=2)
@@ -52,6 +55,11 @@ class CacheEpochSnapshot(BaseModel):
     def validate_parallel_fields(self) -> Self:
         if self.prefix_message_count != len(self.prefix_messages):
             raise ValueError("epoch prefix message count must match prefix messages")
+        if (
+            self.root_prefix_message_count is not None
+            and self.root_prefix_message_count > self.prefix_message_count
+        ):
+            raise ValueError("epoch root prefix cannot exceed its frozen prefix")
         if len(self.prefix_message_ids) != len(self.prefix_messages):
             raise ValueError("epoch prefix ids must match prefix messages")
         if len(self.prefix_fingerprints) != len(self.prefix_messages):
@@ -75,6 +83,8 @@ class CacheCompressionRequest(BaseModel):
     messages: list[ModelMessage] = Field(min_length=3)
     tools: list[ToolSpec] = Field(default_factory=list)
     source_prefix_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_request_id: str | None = Field(default=None, min_length=1, max_length=128)
+    source_message_count: int | None = Field(default=None, ge=1)
 
 
 class CacheEpoch:
@@ -85,7 +95,13 @@ class CacheEpoch:
         snapshot: CacheEpochSnapshot,
         *,
         redactor: SecretRedactor | None = None,
+        root_prefix_message_count: int | None = None,
     ) -> None:
+        if snapshot.root_prefix_message_count is None and root_prefix_message_count is not None:
+            snapshot = snapshot.model_copy(
+                update={"root_prefix_message_count": root_prefix_message_count},
+                deep=True,
+            )
         self.snapshot = snapshot
         self.redactor = redactor or SecretRedactor()
         self.content_guard = UntrustedContentGuard(self.redactor)
@@ -98,13 +114,20 @@ class CacheEpoch:
         prefix_message_count: int,
         epoch_id: str,
         redactor: SecretRedactor | None = None,
+        root_prefix_message_count: int | None = None,
     ) -> CacheEpoch:
         if prefix_message_count < 2 or len(messages) < prefix_message_count:
             raise ValueError("an epoch requires at least a system and user prefix")
+        if root_prefix_message_count is not None and not (
+            2 <= root_prefix_message_count <= prefix_message_count
+        ):
+            raise ValueError("epoch root prefix must fit inside its frozen prefix")
         prefix = [message.model_copy(deep=True) for message in messages[:prefix_message_count]]
         return cls(
             CacheEpochSnapshot(
                 epoch_id=epoch_id,
+                root_epoch_id=epoch_id,
+                root_prefix_message_count=root_prefix_message_count,
                 prefix_message_count=len(prefix),
                 prefix_messages=prefix,
                 prefix_message_ids=[_message_id(message) for message in prefix],
@@ -122,8 +145,13 @@ class CacheEpoch:
         snapshot: CacheEpochSnapshot,
         *,
         redactor: SecretRedactor | None = None,
+        root_prefix_message_count: int | None = None,
     ) -> CacheEpoch:
-        return cls(snapshot, redactor=redactor)
+        return cls(
+            snapshot,
+            redactor=redactor,
+            root_prefix_message_count=root_prefix_message_count,
+        )
 
     @property
     def epoch_id(self) -> str:
@@ -151,8 +179,16 @@ class CacheEpoch:
         tools: list[ToolSpec],
         *,
         boundary: CacheEpochBoundary,
+        append_only_source: bool = False,
+        source_request_id: str | None = None,
+        source_message_count: int | None = None,
     ) -> CacheCompressionRequest:
-        request_messages = self.materialize(messages)
+        if append_only_source:
+            if source_message_count != len(messages):
+                raise ValueError("compression source count must match the submitted messages")
+            request_messages = [message.model_copy(deep=True) for message in messages]
+        else:
+            request_messages = self.materialize(messages)
         request_messages.append(ModelMessage(role="user", content=COMPRESSION_INSTRUCTION))
         return CacheCompressionRequest(
             epoch_id=self.epoch_id,
@@ -161,6 +197,8 @@ class CacheEpoch:
             messages=request_messages,
             tools=[tool.model_copy(deep=True) for tool in tools],
             source_prefix_fingerprint=self.snapshot.prefix_fingerprint,
+            source_request_id=source_request_id,
+            source_message_count=source_message_count if append_only_source else None,
         )
 
     def rollover(
@@ -168,19 +206,51 @@ class CacheEpoch:
         summary: str,
         *,
         boundary: CacheEpochBoundary,
+        replace_summary: bool = False,
+        root_prefix_message_count: int | None = None,
+        max_summary_tokens: int | None = None,
     ) -> CacheEpoch:
-        safe_summary = self.content_guard.inspect(summary.strip()).safe_text
-        if not safe_summary:
-            raise ValueError("epoch compression summary cannot be empty")
+        if replace_summary:
+            root_count = root_prefix_message_count or self.snapshot.root_prefix_message_count
+            if root_count is None:
+                raise ValueError("summary replacement requires a root prefix boundary")
+            safe_summary = validate_compression_summary(
+                summary,
+                guard=self.content_guard,
+                max_summary_tokens=max_summary_tokens,
+            )
+        else:
+            safe_summary = self.content_guard.inspect(summary.strip()).safe_text
+            if not safe_summary:
+                raise ValueError("epoch compression summary cannot be empty")
+            root_count = self.snapshot.root_prefix_message_count
         summary_message = ModelMessage(
             role="system",
-            content=SUMMARY_PREFIX + _normalize_summary(safe_summary),
+            content=(
+                SUMMARY_PREFIX + safe_summary
+                if replace_summary
+                else SUMMARY_PREFIX + _normalize_summary(safe_summary)
+            ),
         )
-        prefix = [*self.frozen_prefix, summary_message]
+        prefix = (
+            [*self.frozen_prefix[:root_count], summary_message]
+            if replace_summary and root_count is not None
+            else [*self.frozen_prefix, summary_message]
+        )
         generation = self.snapshot.generation + 1
+        root_epoch_id = self.snapshot.root_epoch_id or self.epoch_id
+        next_epoch_id = (
+            _bounded_generation_epoch_id(root_epoch_id, generation)
+            if replace_summary
+            else f"{self.epoch_id}.g{generation}"
+        )
         fingerprints = [_message_fingerprint(message) for message in prefix]
         next_snapshot = CacheEpochSnapshot(
-            epoch_id=f"{self.epoch_id}.g{generation}",
+            epoch_id=next_epoch_id,
+            root_epoch_id=root_epoch_id,
+            root_prefix_message_count=(
+                root_count if replace_summary else self.snapshot.root_prefix_message_count
+            ),
             generation=generation,
             prefix_message_count=len(prefix),
             prefix_messages=prefix,
@@ -198,6 +268,60 @@ class CacheEpoch:
             "prefix_message_count": self.prefix_message_count,
             "prefix_fingerprint": self.snapshot.prefix_fingerprint,
         }
+
+
+def validate_compression_summary(
+    summary: str,
+    *,
+    guard: UntrustedContentGuard | None = None,
+    max_summary_tokens: int | None = None,
+) -> str:
+    """Sanitize and validate the strict JSON contract used by append-only compression."""
+
+    safe_summary = (guard or UntrustedContentGuard()).inspect(summary.strip()).safe_text
+    try:
+        parsed = json.loads(safe_summary)
+    except json.JSONDecodeError as exc:
+        raise ValueError("compression summary must be valid JSON") from exc
+    required_list_keys = {
+        "constraints",
+        "paths",
+        "decisions",
+        "failures",
+        "tests",
+        "unfinished",
+    }
+    required_keys = required_list_keys | {"next_step"}
+    if not isinstance(parsed, dict) or set(parsed) != required_keys:
+        raise ValueError("compression summary must contain exactly the required fields")
+    for key in required_list_keys:
+        values = parsed[key]
+        if not isinstance(values, list) or any(not isinstance(item, str) for item in values):
+            raise ValueError(f"compression summary field {key} must be a list of strings")
+    if not isinstance(parsed["next_step"], str):
+        raise ValueError("compression summary field next_step must be a string")
+    normalized = json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if not normalized.strip():
+        raise ValueError("compression summary cannot be empty")
+    if max_summary_tokens is not None:
+        estimated = ContextEngine.estimate_message(
+            ModelMessage(role="assistant", content=normalized)
+        )
+        if estimated > max_summary_tokens:
+            raise ValueError(
+                f"compression summary requires {estimated} tokens, "
+                f"budget is {max_summary_tokens}"
+            )
+    return normalized
+
+
+def _bounded_generation_epoch_id(root_epoch_id: str, generation: int) -> str:
+    suffix = f".g{generation}"
+    if len(root_epoch_id) + len(suffix) <= 128:
+        return root_epoch_id + suffix
+    root_digest = hashlib.sha256(root_epoch_id.encode("utf-8")).hexdigest()[:12]
+    root_budget = 128 - len(suffix) - len(root_digest) - 1
+    return f"{root_epoch_id[:root_budget]}.{root_digest}{suffix}"
 
 
 def _message_fingerprint(message: ModelMessage) -> str:
@@ -247,4 +371,5 @@ __all__ = [
     "CacheEpoch",
     "CacheEpochBoundary",
     "CacheEpochSnapshot",
+    "validate_compression_summary",
 ]

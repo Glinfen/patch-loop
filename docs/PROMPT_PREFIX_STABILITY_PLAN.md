@@ -1,6 +1,6 @@
 # Prompt 前缀稳定性修改方案
 
-调研日期：2026-09-13。状态：PPS-01、PPS-02、PPS-03、PPS-04 已完成；PPS-05、PPS-06 尚未实施。任务前缀：PPS。
+调研日期：2026-09-13。状态：PPS-01、PPS-02、PPS-03、PPS-04、PPS-05 已完成；PPS-06 尚未实施。任务前缀：PPS。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，基于当前工作区实际代码（含尚未提交的 Provider 契约改动）。不把其他计划中的接口当作已经完成的实现。
 
@@ -708,6 +708,15 @@ PPS-06 + PPS-07 → PPS-08 → PPS-09
 PPS-03 与 PPS-07 的 diagnostics 部分可以在 PPS-02 后并行；PPS-04 与 PPS-05 都涉及 coordinator，实施时顺序执行以减少冲突。并行描述是开发依赖信息，不要求启动多 Agent。
 
 ## 8. Verification
+
+### PPS-05 实施验证（2026-09-14）
+
+- 新增 append-only 压缩路径：压缩 source 精确复用最近一次已提交请求（含当时 memory snapshot/delta），未发工具组和用户输入作为 suffix 原序保留；候选 memory 状态不进入 source，并在新 epoch 中生成单条 V2 snapshot。
+- 新 epoch 只保留原 root 和最新严格 JSON 摘要。摘要校验覆盖精确字段、字段类型、安全过滤和 token 上限；候选窗口只有满足 ordinary 上限且严格小于压缩前窗口时才提交。
+- source request ID、消息数、epoch generation 和消息指纹在准备、完成及失败处理时交叉校验。相同 source 的失败会被 defer；普通预算内可继续旧 epoch，超 hard limit 则要求暂停。旧 stable rollover 路径保持原行为。
+- 定向回归集合（context、cache/diagnostics、epoch、coordinator、memory publication、prompt-cache import/dependency/usage）65 项通过；`ruff check src tests` 与 `mypy src/patchloop` 通过。
+- 全量 pytest：597 passed、1 skipped、6 failed。3 项 `tests/integration/test_session_cli.py` 失败仍是 Click stderr 捕获和 Windows 交互退出码问题；另 3 项 coding benchmark 测试在首次验证失败后，fake agent 未先调用 `update_plan`，被 run_tests 权限门禁拒绝。上述失败路径不涉及 prompt-cache 组件。
+- PPS-05 当前只交付纯 coordinator/epoch/publication 路径；Runtime 请求前压缩、崩溃恢复及真实请求关联仍属于 PPS-06。
 
 ### PPS-01 实施验证（2026-09-13）
 

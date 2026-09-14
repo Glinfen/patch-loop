@@ -7,14 +7,17 @@ provider I/O, persistence, tracing, or runtime orchestration.
 
 from patchloop.prompt_cache.coordinator import (
     AppendOnlyPromptState,
+    CompressionFailureAction,
     PrefixBudget,
     PromptCacheCheckpointFields,
+    PromptCacheCompressionCompletion,
     PromptCacheCompressionPreparation,
     PromptCacheCoordinator,
     PromptCacheCoordinatorError,
     PromptCacheCoordinatorSnapshot,
     PromptCachePreparedRequest,
     PromptCacheResponseObservation,
+    PromptCompressionRejected,
     PromptPrefixViolation,
     compute_prefix_budget,
 )
@@ -38,6 +41,7 @@ from patchloop.prompt_cache.epoch import (
     CacheEpoch,
     CacheEpochBoundary,
     CacheEpochSnapshot,
+    validate_compression_summary,
 )
 from patchloop.prompt_cache.layout import (
     APPEND_ONLY_MEMORY_PROTOCOL,
@@ -78,12 +82,14 @@ __all__ = [
     "CacheSectionFingerprint",
     "CacheUsageAccumulator",
     "CacheUsageAccumulatorSnapshot",
+    "CompressionFailureAction",
     "MemoryDeltaPublisher",
     "MemoryDeltaTooLarge",
     "MemoryPublicationSnapshot",
     "MemoryPublicationUpdate",
     "PrefixBudget",
     "PromptCacheCheckpointFields",
+    "PromptCacheCompressionCompletion",
     "PromptCacheCompressionPreparation",
     "PromptCacheCoordinator",
     "PromptCacheCoordinatorError",
@@ -92,10 +98,12 @@ __all__ = [
     "PromptCacheDiagnosticsSnapshot",
     "PromptCachePreparedRequest",
     "PromptCacheResponseObservation",
+    "PromptCompressionRejected",
     "PromptLayout",
     "PromptPrefixViolation",
     "compute_prefix_budget",
     "fingerprint_json",
     "fingerprint_request",
     "fingerprint_text",
+    "validate_compression_summary",
 ]

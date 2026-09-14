@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+from enum import StrEnum
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -23,10 +24,12 @@ from patchloop.prompt_cache.epoch import (
     CacheEpoch,
     CacheEpochBoundary,
     CacheEpochSnapshot,
+    validate_compression_summary,
 )
 from patchloop.prompt_cache.layout import PromptLayout
 from patchloop.prompt_cache.publication import (
     MemoryDeltaPublisher,
+    MemoryDeltaTooLarge,
     MemoryPublicationSnapshot,
 )
 from patchloop.prompt_cache.usage import (
@@ -73,6 +76,20 @@ class PromptPrefixViolation(PromptCacheCoordinatorError):
                 f"got {actual_fingerprint[:12]})"
             )
         super().__init__(detail)
+
+
+class CompressionFailureAction(StrEnum):
+    CONTINUE_OLD_EPOCH = "continue_old_epoch"
+    PAUSE_CONTEXT_BUDGET = "pause_context_budget"
+
+
+class PromptCompressionRejected(PromptCacheCoordinatorError):
+    """A compression attempt was rejected without committing a new epoch."""
+
+    def __init__(self, reason: str, action: CompressionFailureAction) -> None:
+        self.reason = reason
+        self.action = action
+        super().__init__(f"append-only compression rejected: {reason} ({action.value})")
 
 
 class PrefixBudget(BaseModel):
@@ -199,16 +216,20 @@ class AppendOnlyPromptState(BaseModel):
     root_prefix_message_count: int = Field(ge=2)
     last_submitted_message_count: int = Field(default=0, ge=0)
     last_submitted_message_fingerprints: list[str] = Field(default_factory=list)
+    last_submitted_epoch_generation: int = Field(default=0, ge=0, le=1_000_000_000)
     last_submitted_tool_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     last_submitted_binding_fingerprint: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
     last_submitted_request_id: str | None = Field(default=None, min_length=1, max_length=128)
-    epoch_generation: int = Field(default=0, ge=0)
+    epoch_generation: int = Field(default=0, ge=0, le=1_000_000_000)
     compression_source_request_id: str | None = Field(
         default=None, min_length=1, max_length=128
     )
     compression_source_message_count: int | None = Field(default=None, ge=0)
+    compression_source_epoch_generation: int | None = Field(
+        default=None, ge=0, le=1_000_000_000
+    )
     compression_request_id: str | None = Field(default=None, min_length=1, max_length=128)
     deferred_compression_fingerprint: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
@@ -225,11 +246,19 @@ class AppendOnlyPromptState(BaseModel):
                 raise ValueError("append-only submitted fingerprints must be SHA-256 digests")
         if (
             self.compression_source_message_count is not None
+            and self.compression_source_epoch_generation in {None, self.epoch_generation}
             and self.compression_source_message_count > self.last_submitted_message_count
         ):
             raise ValueError(
                 "compression source cannot exceed the last submitted message boundary"
             )
+        if self.last_submitted_epoch_generation > self.epoch_generation:
+            raise ValueError("last submitted epoch generation cannot exceed current generation")
+        if (
+            self.compression_source_epoch_generation is not None
+            and self.compression_source_epoch_generation > self.epoch_generation
+        ):
+            raise ValueError("compression source generation cannot exceed current generation")
         return self
 
     def validate_message_boundaries(self, message_count: int) -> None:
@@ -299,6 +328,31 @@ class PromptCacheCompressionPreparation(BaseModel):
     epoch_id: str
     request: CacheCompressionRequest
     cache_layout: CacheLayoutTrace
+    source_request_id: str | None = Field(default=None, min_length=1, max_length=128)
+    source_message_count: int | None = Field(default=None, ge=1)
+    source_epoch_generation: int | None = Field(default=None, ge=0)
+    source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    unsent_suffix: list[ModelMessage] = Field(default_factory=list)
+    candidate_input_tokens: int | None = Field(default=None, ge=0)
+    ordinary_limit: int | None = Field(default=None, ge=1)
+    summary_limit: int | None = Field(default=None, ge=1)
+    memory_message_limit: int | None = Field(default=None, ge=1)
+    candidate_publication_state: MemoryPublicationSnapshot | None = None
+
+
+class PromptCacheCompressionCompletion(BaseModel):
+    """Validated append-only epoch and the complete transcript to submit next."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    epoch: CacheEpochSnapshot
+    messages: list[ModelMessage]
+    publication_state: MemoryPublicationSnapshot
+    source_request_id: str
+    source_message_count: int = Field(ge=1)
+    source_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_input_tokens: int = Field(ge=0)
+    rebased_input_tokens: int = Field(ge=0)
 
 
 class PromptCacheResponseObservation(BaseModel):
@@ -351,6 +405,15 @@ class PromptCacheCoordinator:
             raise ValueError(
                 "append_only prompt-cache coordinator requires append-only state"
             )
+        if (
+            layout is PromptCacheLayout.APPEND_ONLY
+            and cache_epoch is not None
+            and append_only_state is not None
+            and cache_epoch.snapshot.root_prefix_message_count is not None
+            and cache_epoch.snapshot.root_prefix_message_count
+            != append_only_state.root_prefix_message_count
+        ):
+            raise ValueError("append-only root count must match the epoch root count")
         if layout is not PromptCacheLayout.APPEND_ONLY and append_only_state is not None:
             raise ValueError("only the append_only layout can carry append-only state")
         self.layout = layout
@@ -388,18 +451,24 @@ class PromptCacheCoordinator:
         append_only_state: AppendOnlyPromptState | None = None,
     ) -> PromptCacheCoordinator:
         prefix_count = len(messages) if prefix_message_count is None else prefix_message_count
+        if layout is PromptCacheLayout.APPEND_ONLY and append_only_state is None:
+            append_only_state = AppendOnlyPromptState(root_prefix_message_count=prefix_count)
         epoch = (
             CacheEpoch.bootstrap(
                 messages,
                 prefix_message_count=prefix_count,
                 epoch_id=epoch_id,
                 redactor=redactor,
+                root_prefix_message_count=(
+                    append_only_state.root_prefix_message_count
+                    if layout is PromptCacheLayout.APPEND_ONLY
+                    and append_only_state is not None
+                    else None
+                ),
             )
             if PromptLayout(layout).has_frozen_epoch
             else None
         )
-        if layout is PromptCacheLayout.APPEND_ONLY and append_only_state is None:
-            append_only_state = AppendOnlyPromptState(root_prefix_message_count=prefix_count)
         return cls(
             layout=layout,
             cache_epoch_id=epoch_id,
@@ -477,7 +546,18 @@ class PromptCacheCoordinator:
             prefix_message_count=prefix_message_count,
             frozen_tools=frozen_tools,
             cache_epoch=(
-                CacheEpoch.from_snapshot(epoch, redactor=redactor) if epoch is not None else None
+                CacheEpoch.from_snapshot(
+                    epoch,
+                    redactor=redactor,
+                    root_prefix_message_count=(
+                        append_only_state.root_prefix_message_count
+                        if layout is PromptCacheLayout.APPEND_ONLY
+                        and append_only_state is not None
+                        else None
+                    ),
+                )
+                if epoch is not None
+                else None
             ),
             publication=(
                 MemoryDeltaPublisher(
@@ -521,7 +601,16 @@ class PromptCacheCoordinator:
             prefix_message_count=snapshot.prefix_message_count,
             frozen_tools=snapshot.frozen_tools,
             cache_epoch=(
-                CacheEpoch.from_snapshot(snapshot.cache_epoch_state, redactor=redactor)
+                CacheEpoch.from_snapshot(
+                    snapshot.cache_epoch_state,
+                    redactor=redactor,
+                    root_prefix_message_count=(
+                        snapshot.append_only_state.root_prefix_message_count
+                        if snapshot.layout is PromptCacheLayout.APPEND_ONLY
+                        and snapshot.append_only_state is not None
+                        else None
+                    ),
+                )
                 if snapshot.cache_epoch_state is not None
                 else None
             ),
@@ -630,6 +719,7 @@ class PromptCacheCoordinator:
         thinking: object | None = None,
         tools: list[ToolSpec] | None = None,
         provider_binding: ProviderBinding | None = None,
+        request_id: str | None = None,
         system_instructions: str | None = None,
         task_project_snapshot: object | None = None,
         memory_projection: str | None = None,
@@ -690,6 +780,7 @@ class PromptCacheCoordinator:
                 model=model,
                 thinking=thinking,
                 provider_binding=provider_binding,
+                request_id=request_id,
             )
         self._mark_pending("request", cache_layout.request_fingerprint)
         return prepared
@@ -719,11 +810,38 @@ class PromptCacheCoordinator:
         thinking: object | None = None,
         system_instructions: str | None = None,
         task_project_snapshot: object | None = None,
+        source_messages: list[ModelMessage] | None = None,
+        unsent_suffix_messages: list[ModelMessage] | None = None,
+        candidate_memory_messages: list[ModelMessage] | None = None,
+        source_request_id: str | None = None,
+        source_message_count: int | None = None,
+        budget: PrefixBudget | None = None,
+        provider_binding: ProviderBinding | None = None,
+        candidate_publication_state: MemoryPublicationSnapshot | None = None,
     ) -> PromptCacheCompressionPreparation:
         self._ensure_step_available(step)
         if self._epoch is None:
             raise PromptCacheCoordinatorError(
                 "cannot prepare epoch compression when stable layout is disabled"
+            )
+        if self.layout is PromptCacheLayout.APPEND_ONLY:
+            return self._prepare_append_only_compression(
+                step,
+                messages,
+                boundary=boundary,
+                provider=provider,
+                model=model,
+                thinking=thinking,
+                system_instructions=system_instructions,
+                task_project_snapshot=task_project_snapshot,
+                source_messages=source_messages,
+                unsent_suffix_messages=unsent_suffix_messages,
+                candidate_memory_messages=candidate_memory_messages or [],
+                source_request_id=source_request_id,
+                source_message_count=source_message_count,
+                budget=budget,
+                provider_binding=provider_binding,
+                candidate_publication_state=candidate_publication_state,
             )
         request = self._epoch.compression_request(
             messages,
@@ -747,6 +865,174 @@ class PromptCacheCoordinator:
             request=request,
             cache_layout=cache_layout,
         )
+        self._mark_pending("compression", cache_layout.request_fingerprint)
+        return prepared
+
+    def _prepare_append_only_compression(
+        self,
+        step: int,
+        candidate_messages: list[ModelMessage],
+        *,
+        boundary: CacheEpochBoundary,
+        provider: str,
+        model: str | None,
+        thinking: object | None,
+        system_instructions: str | None,
+        task_project_snapshot: object | None,
+        source_messages: list[ModelMessage] | None,
+        unsent_suffix_messages: list[ModelMessage] | None,
+        candidate_memory_messages: list[ModelMessage],
+        source_request_id: str | None,
+        source_message_count: int | None,
+        budget: PrefixBudget | None,
+        provider_binding: ProviderBinding | None,
+        candidate_publication_state: MemoryPublicationSnapshot | None,
+    ) -> PromptCacheCompressionPreparation:
+        state = self._append_only_state
+        if state is None or self._epoch is None:
+            raise PromptCacheCoordinatorError("append-only compression state is unavailable")
+        if not source_request_id:
+            raise ValueError("append-only compression requires a source request id")
+        if source_messages is None or unsent_suffix_messages is None or budget is None:
+            raise ValueError(
+                "append-only compression requires an explicit source, unsent suffix and budget"
+            )
+        if source_message_count != len(source_messages):
+            raise PromptPrefixViolation("compression source count does not match its messages")
+        if state.last_submitted_epoch_generation != self._epoch.snapshot.generation:
+            raise PromptPrefixViolation("compression source belongs to a different epoch")
+        if source_message_count != state.last_submitted_message_count:
+            raise PromptPrefixViolation("compression source is not the last submitted boundary")
+        if state.last_submitted_request_id is not None and (
+            source_request_id != state.last_submitted_request_id
+        ):
+            raise PromptPrefixViolation("compression source request id changed")
+        self._validate_append_only_request(
+            source_messages,
+            self._frozen_tools,
+            provider=provider,
+            model=model,
+            thinking=thinking,
+            provider_binding=provider_binding,
+        )
+        expected_candidate = [
+            *source_messages,
+            *unsent_suffix_messages,
+            *candidate_memory_messages,
+        ]
+        if expected_candidate != candidate_messages:
+            raise PromptPrefixViolation(
+                "source, unsent suffix and memory candidate do not form the candidate transcript"
+            )
+        if not source_messages:
+            raise ContextBudgetError("there is no submitted request available to compress")
+        estimated_candidate = (
+            ContextEngine.estimate_messages(candidate_messages)
+            + ContextEngine.estimate_tools(self._frozen_tools)
+        )
+        validation_budget = max(1, estimated_candidate)
+        ContextEngine(
+            max_tokens=256,
+            max_tool_output_chars=128,
+            recent_steps=1,
+        ).build_append_only(
+            candidate_messages,
+            self._frozen_tools,
+            max_input_tokens=validation_budget,
+        )
+        if (
+            boundary is CacheEpochBoundary.CONTEXT_THRESHOLD
+            and estimated_candidate <= budget.soft_limit
+        ):
+            raise PromptCacheCoordinatorError(
+                "append-only compression candidate does not exceed the soft limit"
+            )
+
+        source_fingerprint = _fingerprint_payload(
+            {
+                "epoch_id": self.epoch_id,
+                "messages": [message.model_dump(mode="json") for message in source_messages],
+                "tools": [tool.model_dump(mode="json") for tool in self._frozen_tools],
+                "binding": state.last_submitted_binding_fingerprint,
+            }
+        )
+        if state.deferred_compression_fingerprint == source_fingerprint:
+            action = (
+                CompressionFailureAction.CONTINUE_OLD_EPOCH
+                if estimated_candidate <= budget.ordinary_limit
+                else CompressionFailureAction.PAUSE_CONTEXT_BUDGET
+            )
+            raise PromptCompressionRejected("same_source_deferred", action)
+
+        request = self._epoch.compression_request(
+            source_messages,
+            self._frozen_tools,
+            boundary=boundary,
+            append_only_source=True,
+            source_request_id=source_request_id,
+            source_message_count=source_message_count,
+        )
+        ContextEngine(
+            max_tokens=256,
+            max_tool_output_chars=128,
+            recent_steps=1,
+        ).build_append_only(
+            request.messages,
+            request.tools,
+            max_input_tokens=budget.input_limit,
+        )
+        if candidate_publication_state is not None and (
+            candidate_publication_state.schema_version != "2.0"
+            or candidate_publication_state.epoch_id != self.epoch_id
+        ):
+            raise ValueError("append-only compression publication candidate must match its epoch")
+        if candidate_memory_messages and (
+            candidate_publication_state is None
+            or candidate_publication_state.messages[-len(candidate_memory_messages) :]
+            != candidate_memory_messages
+        ):
+            raise ValueError("memory candidate messages must match their publication state")
+        summary_limit = budget.summary_limit
+        if provider_binding is not None:
+            summary_limit = min(summary_limit, provider_binding.generation.max_output_tokens)
+
+        next_state = AppendOnlyPromptState.model_validate(
+            {
+                **state.model_dump(mode="python"),
+                "compression_source_request_id": source_request_id,
+                "compression_source_message_count": source_message_count,
+                "compression_source_epoch_generation": self._epoch.snapshot.generation,
+                "compression_request_id": None,
+            }
+        )
+        cache_layout = self._diagnostics.observe(
+            step,
+            request.messages,
+            request.tools,
+            provider=provider,
+            model=model,
+            thinking=thinking,
+            epoch_snapshot=self._epoch.diagnostic_snapshot(),
+            system_instructions=system_instructions,
+            task_project_snapshot=task_project_snapshot,
+        )
+        prepared = PromptCacheCompressionPreparation(
+            step=step,
+            epoch_id=self.epoch_id,
+            request=request,
+            cache_layout=cache_layout,
+            source_request_id=source_request_id,
+            source_message_count=source_message_count,
+            source_epoch_generation=self._epoch.snapshot.generation,
+            source_fingerprint=source_fingerprint,
+            unsent_suffix=[message.model_copy(deep=True) for message in unsent_suffix_messages],
+            candidate_input_tokens=estimated_candidate,
+            ordinary_limit=budget.ordinary_limit,
+            summary_limit=summary_limit,
+            memory_message_limit=budget.memory_message_limit,
+            candidate_publication_state=candidate_publication_state,
+        )
+        self._append_only_state = next_state
         self._mark_pending("compression", cache_layout.request_fingerprint)
         return prepared
 
@@ -798,11 +1084,228 @@ class PromptCacheCoordinator:
     ) -> CacheEpochSnapshot:
         if prepared.epoch_id != self.epoch_id:
             raise PromptCacheCoordinatorError("compression summary belongs to a different epoch")
+        if self.layout is PromptCacheLayout.APPEND_ONLY:
+            return self.complete_append_only_compression(prepared, summary).epoch
         return self.rollover(
             summary,
             boundary=prepared.request.boundary,
             expected_epoch_id=prepared.epoch_id,
         )
+
+    def complete_append_only_compression(
+        self,
+        prepared: PromptCacheCompressionPreparation,
+        summary: str,
+    ) -> PromptCacheCompressionCompletion:
+        """Validate a bounded new epoch and suffix before committing either state."""
+
+        if self.layout is not PromptCacheLayout.APPEND_ONLY:
+            raise PromptCacheCoordinatorError(
+                "append-only compression completion requires append_only layout"
+            )
+        if prepared.epoch_id != self.epoch_id or self._epoch is None:
+            raise PromptCacheCoordinatorError("compression summary belongs to a different epoch")
+        if self._compression_ready_epoch != self.epoch_id:
+            raise PromptCacheCoordinatorError(
+                "epoch rollover requires an observed compression response for the current epoch"
+            )
+        if (
+            prepared.source_fingerprint is None
+            or prepared.source_request_id is None
+            or prepared.source_message_count is None
+            or prepared.source_epoch_generation is None
+            or prepared.candidate_input_tokens is None
+            or prepared.ordinary_limit is None
+            or prepared.summary_limit is None
+            or prepared.memory_message_limit is None
+        ):
+            raise PromptCacheCoordinatorError("append-only compression metadata is incomplete")
+        self._validate_append_only_compression_preparation(prepared)
+
+        try:
+            validated_summary = validate_compression_summary(
+                summary,
+                guard=self._epoch.content_guard,
+                max_summary_tokens=prepared.summary_limit,
+            )
+        except ValueError as exc:
+            raise self._reject_append_only_compression(prepared, "invalid_summary") from exc
+
+        try:
+            candidate_epoch = self._epoch.rollover(
+                validated_summary,
+                boundary=prepared.request.boundary,
+                replace_summary=True,
+                root_prefix_message_count=(
+                    self._append_only_state.root_prefix_message_count
+                    if self._append_only_state is not None
+                    else None
+                ),
+                max_summary_tokens=prepared.summary_limit,
+            )
+            publication_source = (
+                prepared.candidate_publication_state or self._publication.snapshot
+            )
+            rebased_publication = MemoryDeltaPublisher(
+                publication_source,
+                max_delta_tokens=self._max_delta_tokens,
+            ).rebase_snapshot(
+                candidate_epoch.epoch_id,
+                max_message_tokens=prepared.memory_message_limit,
+                source_state=publication_source,
+            )
+            rebased_messages = [
+                *candidate_epoch.frozen_prefix,
+                *[message.model_copy(deep=True) for message in prepared.unsent_suffix],
+                *rebased_publication.messages,
+            ]
+            rebased_window = ContextEngine(
+                max_tokens=256,
+                max_tool_output_chars=128,
+                recent_steps=1,
+            ).build_append_only(
+                rebased_messages,
+                self._frozen_tools,
+                max_input_tokens=prepared.ordinary_limit,
+            )
+        except (ContextBudgetError, MemoryDeltaTooLarge, ValueError) as exc:
+            raise self._reject_append_only_compression(prepared, "no_gain") from exc
+
+        rebased_input_tokens = rebased_window.debug.estimated_tokens
+        if (
+            rebased_input_tokens > prepared.ordinary_limit
+            or rebased_input_tokens >= prepared.candidate_input_tokens
+        ):
+            raise self._reject_append_only_compression(prepared, "no_gain")
+
+        state = self._append_only_state
+        if state is None:
+            raise PromptCacheCoordinatorError("append-only compression state is unavailable")
+        self._epoch = candidate_epoch
+        self._cache_epoch_id = candidate_epoch.epoch_id
+        self._prefix_message_count = candidate_epoch.prefix_message_count
+        self._publication = MemoryDeltaPublisher(
+            rebased_publication.next_state,
+            max_delta_tokens=self._max_delta_tokens,
+        )
+        self._append_only_state = AppendOnlyPromptState.model_validate(
+            {
+                **state.model_dump(mode="python"),
+                "last_submitted_message_count": 0,
+                "last_submitted_message_fingerprints": [],
+                "last_submitted_epoch_generation": candidate_epoch.snapshot.generation,
+                "last_submitted_request_id": None,
+                "epoch_generation": candidate_epoch.snapshot.generation,
+                "compression_source_request_id": prepared.source_request_id,
+                "compression_source_message_count": prepared.source_message_count,
+                "compression_source_epoch_generation": prepared.source_epoch_generation,
+                "compression_request_id": None,
+                "deferred_compression_fingerprint": None,
+            }
+        )
+        self._compression_ready_epoch = None
+        return PromptCacheCompressionCompletion(
+            epoch=candidate_epoch.snapshot,
+            messages=rebased_messages,
+            publication_state=rebased_publication.next_state,
+            source_request_id=prepared.source_request_id,
+            source_message_count=prepared.source_message_count,
+            source_fingerprint=prepared.source_fingerprint,
+            candidate_input_tokens=prepared.candidate_input_tokens,
+            rebased_input_tokens=rebased_input_tokens,
+        )
+
+    def record_compression_failure(
+        self,
+        prepared: PromptCacheCompressionPreparation,
+        reason: str,
+    ) -> CompressionFailureAction:
+        """Defer this source after a failed attempt and choose soft/hard handling."""
+
+        if self.layout is not PromptCacheLayout.APPEND_ONLY:
+            raise PromptCacheCoordinatorError(
+                "append-only compression failures require append_only layout"
+            )
+        if (
+            prepared.epoch_id != self.epoch_id
+            or prepared.source_fingerprint is None
+            or prepared.candidate_input_tokens is None
+            or prepared.ordinary_limit is None
+        ):
+            raise PromptCacheCoordinatorError("compression failure metadata is incomplete")
+        self._validate_append_only_compression_preparation(prepared)
+        if not reason:
+            raise ValueError("compression failure reason cannot be empty")
+        action = (
+            CompressionFailureAction.CONTINUE_OLD_EPOCH
+            if prepared.candidate_input_tokens <= prepared.ordinary_limit
+            else CompressionFailureAction.PAUSE_CONTEXT_BUDGET
+        )
+        state = self._append_only_state
+        if state is None:
+            raise PromptCacheCoordinatorError("append-only compression state is unavailable")
+        self._append_only_state = AppendOnlyPromptState.model_validate(
+            {
+                **state.model_dump(mode="python"),
+                "deferred_compression_fingerprint": prepared.source_fingerprint,
+            }
+        )
+        self._compression_ready_epoch = None
+        return action
+
+    def _validate_append_only_compression_preparation(
+        self,
+        prepared: PromptCacheCompressionPreparation,
+    ) -> None:
+        """Ensure a completion or failure still targets the exact submitted source."""
+
+        state = self._append_only_state
+        if state is None or self._epoch is None:
+            raise PromptCacheCoordinatorError("append-only compression state is unavailable")
+        if (
+            prepared.epoch_id != self.epoch_id
+            or prepared.source_epoch_generation != self._epoch.snapshot.generation
+            or state.last_submitted_epoch_generation != self._epoch.snapshot.generation
+            or prepared.source_message_count != state.last_submitted_message_count
+            or prepared.source_request_id != state.last_submitted_request_id
+            or prepared.source_request_id != state.compression_source_request_id
+            or prepared.source_message_count != state.compression_source_message_count
+            or prepared.source_epoch_generation != state.compression_source_epoch_generation
+        ):
+            raise PromptCacheCoordinatorError(
+                "append-only compression source no longer matches the submitted request"
+            )
+        if (
+            prepared.request.source_request_id != prepared.source_request_id
+            or prepared.request.source_message_count != prepared.source_message_count
+            or len(prepared.request.messages) != prepared.source_message_count + 1
+            or prepared.request.messages[-1].content != COMPRESSION_INSTRUCTION
+        ):
+            raise PromptCacheCoordinatorError("compression request source boundary is invalid")
+        source_messages = prepared.request.messages[:-1]
+        source_fingerprints = [_message_fingerprint(message) for message in source_messages]
+        if source_fingerprints != state.last_submitted_message_fingerprints:
+            raise PromptCacheCoordinatorError(
+                "append-only compression source differs from the submitted request"
+            )
+        expected_fingerprint = _fingerprint_payload(
+            {
+                "epoch_id": self.epoch_id,
+                "messages": [message.model_dump(mode="json") for message in source_messages],
+                "tools": [tool.model_dump(mode="json") for tool in self._frozen_tools],
+                "binding": state.last_submitted_binding_fingerprint,
+            }
+        )
+        if prepared.source_fingerprint != expected_fingerprint:
+            raise PromptCacheCoordinatorError("append-only compression source fingerprint changed")
+
+    def _reject_append_only_compression(
+        self,
+        prepared: PromptCacheCompressionPreparation,
+        reason: str,
+    ) -> PromptCompressionRejected:
+        action = self.record_compression_failure(prepared, reason)
+        return PromptCompressionRejected(reason, action)
 
     def snapshot(self) -> PromptCacheCoordinatorSnapshot:
         return PromptCacheCoordinatorSnapshot(
@@ -858,7 +1361,10 @@ class PromptCacheCoordinator:
             raise PromptPrefixViolation("declared root prefix exceeds the frozen epoch")
         if len(messages) < self._epoch.prefix_message_count:
             raise PromptPrefixViolation("request is shorter than the frozen epoch prefix")
-        if len(messages) < state.last_submitted_message_count:
+        same_submitted_epoch = (
+            state.last_submitted_epoch_generation == self._epoch.snapshot.generation
+        )
+        if same_submitted_epoch and len(messages) < state.last_submitted_message_count:
             raise PromptPrefixViolation("request omits messages from the previous request")
 
         request_prefix_fingerprints = [
@@ -880,16 +1386,17 @@ class PromptCacheCoordinator:
                     actual_fingerprint=actual,
                 )
 
-        current_fingerprints = [_message_fingerprint(message) for message in messages]
-        for index, expected in enumerate(state.last_submitted_message_fingerprints):
-            actual = current_fingerprints[index]
-            if actual != expected:
-                raise PromptPrefixViolation(
-                    "previously submitted message changed",
-                    message_index=index,
-                    expected_fingerprint=expected,
-                    actual_fingerprint=actual,
-                )
+        if same_submitted_epoch:
+            current_fingerprints = [_message_fingerprint(message) for message in messages]
+            for index, expected in enumerate(state.last_submitted_message_fingerprints):
+                actual = current_fingerprints[index]
+                if actual != expected:
+                    raise PromptPrefixViolation(
+                        "previously submitted message changed",
+                        message_index=index,
+                        expected_fingerprint=expected,
+                        actual_fingerprint=actual,
+                    )
 
         expected_tools = _fingerprint_payload(
             [tool.model_dump(mode="json") for tool in self._frozen_tools]
@@ -936,6 +1443,7 @@ class PromptCacheCoordinator:
         model: str | None,
         thinking: object | None,
         provider_binding: ProviderBinding | None,
+        request_id: str | None,
     ) -> None:
         state = self._append_only_state
         if state is None:
@@ -947,6 +1455,9 @@ class PromptCacheCoordinator:
                 "last_submitted_message_fingerprints": [
                     _message_fingerprint(message) for message in messages
                 ],
+                "last_submitted_epoch_generation": (
+                    self._epoch.snapshot.generation if self._epoch is not None else 0
+                ),
                 "last_submitted_tool_fingerprint": _fingerprint_payload(
                     [tool.model_dump(mode="json") for tool in tools]
                 ),
@@ -956,9 +1467,7 @@ class PromptCacheCoordinator:
                     thinking,
                     provider_binding,
                 ),
-                # prepare_request has no Provider request id; retaining the old
-                # id here would associate it with the wrong immutable transcript.
-                "last_submitted_request_id": None,
+                "last_submitted_request_id": request_id,
             }
         )
 

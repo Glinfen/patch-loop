@@ -5,15 +5,20 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from patchloop.domain import PromptCacheLayout
+from patchloop.domain import PromptCacheLayout, ToolCall
 from patchloop.prompt_cache import (
     MEMORY_SNAPSHOT_PREFIX,
     AppendOnlyPromptState,
     CacheEpoch,
     CacheEpochBoundary,
+    CompressionFailureAction,
+    MemoryDeltaPublisher,
+    MemoryPublicationSnapshot,
+    PrefixBudget,
     PromptCacheCoordinator,
     PromptCacheCoordinatorError,
     PromptCacheCoordinatorSnapshot,
+    PromptCompressionRejected,
 )
 from patchloop.providers import ModelMessage, ModelUsage, ToolSpec
 
@@ -47,6 +52,82 @@ def _usage() -> ModelUsage:
         cache_hit_tokens=75,
         cache_miss_tokens=25,
     )
+
+
+def _strict_summary(next_step: str = "run tests") -> str:
+    return json.dumps(
+        {
+            "constraints": ["preserve the contract"],
+            "paths": [],
+            "decisions": [],
+            "failures": [],
+            "tests": [],
+            "unfinished": ["verify output"],
+            "next_step": next_step,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _append_only_compression_fixture() -> tuple[
+    PromptCacheCoordinator,
+    list[ModelMessage],
+    list[ToolSpec],
+    MemoryPublicationSnapshot,
+]:
+    root = [
+        ModelMessage(role="system", content="static system"),
+        ModelMessage(role="user", content="repair the parser"),
+    ]
+    tools = _tools()
+    publisher = MemoryDeltaPublisher()
+    first = publisher.preview(
+        "initial",
+        _projection([{"scope": "task", "text": "original memory", "type": "fact"}]),
+        invalidated_values=[],
+        max_message_tokens=2_048,
+    )
+    second = MemoryDeltaPublisher(first.next_state).preview(
+        "initial",
+        _projection(
+            [
+                {"scope": "task", "text": "original memory", "type": "fact"},
+                {"scope": "task", "text": "second memory delta", "type": "fact"},
+            ]
+        ),
+        invalidated_values=[],
+        max_message_tokens=2_048,
+    )
+    epoch = CacheEpoch.bootstrap(
+        root,
+        prefix_message_count=2,
+        root_prefix_message_count=2,
+        epoch_id="initial",
+    )
+    coordinator = PromptCacheCoordinator(
+        layout=PromptCacheLayout.APPEND_ONLY,
+        cache_epoch_id="initial",
+        prefix_message_count=2,
+        frozen_tools=tools,
+        cache_epoch=epoch,
+        publication=MemoryDeltaPublisher(second.next_state),
+        append_only_state=AppendOnlyPromptState(root_prefix_message_count=2),
+    )
+    source = [
+        *root,
+        *second.next_state.messages,
+        ModelMessage(role="assistant", content="old history " + "x" * 9_000),
+    ]
+    prepared = coordinator.prepare_request(
+        0,
+        source,
+        provider="fake",
+        model="model-1",
+        thinking={"enabled": False},
+        request_id="source-request-1",
+    )
+    coordinator.observe_response(prepared, _usage())
+    return coordinator, source, tools, second.next_state
 
 
 def test_bootstrap_prepares_frozen_provider_request_and_records_response() -> None:
@@ -150,6 +231,220 @@ def test_compression_requires_observation_before_rollover_and_changes_epoch() ->
 
     with pytest.raises(PromptCacheCoordinatorError, match="different epoch"):
         coordinator.complete_compression(prepared, '{"next_step":"run tests again"}')
+
+
+def test_append_only_compression_reuses_submitted_source_and_preserves_unsent_suffix() -> None:
+    coordinator, source, _, publication = _append_only_compression_fixture()
+    call = ToolCall(id="call-unsent", name="read_file", arguments={"path": "new.py"})
+    unsent_suffix = [
+        ModelMessage(role="assistant", content="", tool_calls=[call]),
+        ModelMessage(role="tool", content="new file contents", tool_call_id=call.id),
+        ModelMessage(role="user", content="also inspect this new file"),
+    ]
+    candidate_publication = MemoryDeltaPublisher(publication).preview(
+        "initial",
+        _projection(
+            [
+                {"scope": "task", "text": "original memory", "type": "fact"},
+                {"scope": "task", "text": "second memory delta", "type": "fact"},
+                {"scope": "task", "text": "current memory candidate", "type": "fact"},
+            ]
+        ),
+        invalidated_values=[],
+        max_message_tokens=2_048,
+    )
+    candidate_messages = [*source, *unsent_suffix, *candidate_publication.messages]
+    budget = PrefixBudget(
+        input_limit=20_000,
+        ordinary_limit=8_000,
+        soft_limit=1_000,
+        memory_message_limit=2_048,
+        summary_limit=512,
+    )
+
+    prepared = coordinator.prepare_compression(
+        1,
+        candidate_messages,
+        boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
+        provider="fake",
+        model="model-1",
+        thinking={"enabled": False},
+        source_messages=source,
+        unsent_suffix_messages=unsent_suffix,
+        candidate_memory_messages=candidate_publication.messages,
+        source_request_id="source-request-1",
+        source_message_count=len(source),
+        budget=budget,
+        candidate_publication_state=candidate_publication.next_state,
+    )
+
+    assert prepared.request.messages[:-1] == source
+    assert prepared.request.messages[-1].content.startswith("PATCHLOOP_EPOCH_COMPRESSION_V1")
+    assert prepared.request.source_request_id == "source-request-1"
+    assert prepared.request.source_message_count == len(source)
+    assert prepared.unsent_suffix == unsent_suffix
+    assert all(message not in prepared.request.messages for message in unsent_suffix)
+    assert all(
+        message not in prepared.request.messages
+        for message in candidate_publication.messages
+    )
+
+    coordinator.observe_compression_response(prepared, _usage())
+    completion = coordinator.complete_append_only_compression(prepared, _strict_summary())
+
+    assert completion.epoch.generation == 1
+    assert completion.epoch.prefix_message_count == 3
+    assert completion.epoch.prefix_messages[:2] == source[:2]
+    assert completion.messages[:3] == completion.epoch.prefix_messages
+    assert completion.messages[3:-1] == unsent_suffix
+    assert completion.messages[-1].content.startswith("PATCHLOOP_MEMORY_SNAPSHOT_V2")
+    assert completion.publication_state.epoch_id == completion.epoch.epoch_id
+    assert len(completion.publication_state.messages) == 1
+    assert completion.candidate_input_tokens > completion.rebased_input_tokens
+
+    next_request = coordinator.prepare_request(
+        2,
+        completion.messages,
+        provider="fake",
+        model="model-1",
+        thinking={"enabled": False},
+        request_id="new-epoch-request-1",
+    )
+    assert next_request.messages == completion.messages
+    assert coordinator.append_only_state is not None
+    assert coordinator.append_only_state.last_submitted_epoch_generation == 1
+
+
+@pytest.mark.parametrize(
+    ("summary", "reason"),
+    [(_strict_summary(next_step="x"), "no_gain"), ("not json", "invalid_summary")],
+)
+def test_append_only_compression_rejection_keeps_epoch_and_publication(
+    summary: str,
+    reason: str,
+) -> None:
+    root = [
+        ModelMessage(role="system", content="static system"),
+        ModelMessage(role="user", content="small task"),
+    ]
+    tools = _tools()
+    coordinator = PromptCacheCoordinator.bootstrap(
+        root,
+        tools,
+        layout=PromptCacheLayout.APPEND_ONLY,
+        prefix_message_count=2,
+        epoch_id="initial",
+    )
+    source_request = coordinator.prepare_request(
+        0,
+        root,
+        provider="fake",
+        model="model-1",
+        thinking={"enabled": False},
+        request_id="small-source",
+    )
+    coordinator.observe_response(source_request, _usage())
+    budget = PrefixBudget(
+        input_limit=20_000,
+        ordinary_limit=10_000,
+        soft_limit=1,
+        memory_message_limit=2_048,
+        summary_limit=512,
+    )
+    prepared = coordinator.prepare_compression(
+        1,
+        root,
+        boundary=CacheEpochBoundary.EXPLICIT_COMPRESSION,
+        provider="fake",
+        model="model-1",
+        thinking={"enabled": False},
+        source_messages=root,
+        unsent_suffix_messages=[],
+        source_request_id="small-source",
+        source_message_count=len(root),
+        budget=budget,
+    )
+    old_epoch = coordinator.snapshot().cache_epoch_state
+    old_publication = coordinator.publication_snapshot
+    coordinator.observe_compression_response(prepared, _usage())
+
+    with pytest.raises(PromptCompressionRejected) as error:
+        coordinator.complete_append_only_compression(prepared, summary)
+
+    assert error.value.reason == reason
+    assert error.value.action is CompressionFailureAction.CONTINUE_OLD_EPOCH
+    assert coordinator.snapshot().cache_epoch_state == old_epoch
+    assert coordinator.publication_snapshot == old_publication
+    assert coordinator.append_only_state is not None
+    assert (
+        coordinator.append_only_state.deferred_compression_fingerprint
+        == prepared.source_fingerprint
+    )
+    with pytest.raises(PromptCompressionRejected, match="same_source_deferred"):
+        coordinator.prepare_compression(
+            2,
+            root,
+            boundary=CacheEpochBoundary.EXPLICIT_COMPRESSION,
+            provider="fake",
+            model="model-1",
+            thinking={"enabled": False},
+            source_messages=root,
+            unsent_suffix_messages=[],
+            source_request_id="small-source",
+            source_message_count=len(root),
+            budget=budget,
+        )
+
+
+def test_append_only_compression_failure_pauses_when_candidate_exceeds_hard_limit() -> None:
+    root = [
+        ModelMessage(role="system", content="static system"),
+        ModelMessage(role="user", content="small task"),
+    ]
+    coordinator = PromptCacheCoordinator.bootstrap(
+        root,
+        _tools(),
+        layout=PromptCacheLayout.APPEND_ONLY,
+        prefix_message_count=2,
+        epoch_id="initial",
+    )
+    source_request = coordinator.prepare_request(
+        0,
+        root,
+        provider="fake",
+        model="model-1",
+        thinking={"enabled": False},
+        request_id="hard-source",
+    )
+    coordinator.observe_response(source_request, _usage())
+    suffix = [ModelMessage(role="user", content="pending input " + "x" * 40_000)]
+    candidate = [*root, *suffix]
+    budget = PrefixBudget(
+        input_limit=30_000,
+        ordinary_limit=1_000,
+        soft_limit=500,
+        memory_message_limit=128,
+        summary_limit=256,
+    )
+    prepared = coordinator.prepare_compression(
+        1,
+        candidate,
+        boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
+        provider="fake",
+        model="model-1",
+        thinking={"enabled": False},
+        source_messages=root,
+        unsent_suffix_messages=suffix,
+        source_request_id="hard-source",
+        source_message_count=len(root),
+        budget=budget,
+    )
+    coordinator.abort_pending()
+
+    assert (
+        coordinator.record_compression_failure(prepared, "provider_error")
+        is CompressionFailureAction.PAUSE_CONTEXT_BUDGET
+    )
 
 
 def test_legacy_layout_rejects_compression_and_rollover() -> None:

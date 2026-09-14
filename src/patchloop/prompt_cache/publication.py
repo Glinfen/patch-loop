@@ -322,6 +322,43 @@ class MemoryDeltaPublisher:
             messages=[*prefix_messages, *delta_messages],
         )
 
+    def rebase_snapshot(
+        self,
+        epoch_id: str,
+        *,
+        max_message_tokens: int,
+        source_state: MemoryPublicationSnapshot | None = None,
+    ) -> MemoryPublicationUpdate:
+        """Create a fresh V2 snapshot for a new epoch without re-running retrieval."""
+
+        if not epoch_id or len(epoch_id) > 128:
+            raise ValueError("memory publication epoch id must contain 1 to 128 characters")
+        token_budget = max_message_tokens
+        if isinstance(token_budget, bool) or not isinstance(token_budget, int) or token_budget < 64:
+            raise ValueError("memory message token budget must be at least 64")
+        current = source_state or self._state
+        payload = (
+            _normalize_v2_payload(current.current_payload) if current is not None else {}
+        )
+        invalidations = (
+            _normalize_invalidated_values(current.invalidated_values)
+            if current is not None
+            else []
+        )
+        fingerprint = _publication_fingerprint(payload, invalidations)
+        message = _v2_snapshot_message(epoch_id, payload, invalidations, fingerprint)
+        self._require_message_budget(message, token_budget, "memory snapshot")
+        next_state = _v2_state_for(
+            epoch_id,
+            snapshot_fingerprint=fingerprint,
+            current_fingerprint=fingerprint,
+            current_payload=payload,
+            invalidated_values=invalidations,
+            messages=[message],
+            delta_count=0,
+        )
+        return MemoryPublicationUpdate(next_state=next_state, messages=[message])
+
     def _build_v2_deltas(
         self,
         epoch_id: str,

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from patchloop.prompt_cache import (
     COMPRESSION_INSTRUCTION,
     SUMMARY_PREFIX,
@@ -22,6 +26,21 @@ def _tools() -> list[ToolSpec]:
     return [
         ToolSpec(name="read_file", description="read", parameters={"type": "object"}),
     ]
+
+
+def _strict_summary(step: str = "run tests") -> str:
+    return json.dumps(
+        {
+            "constraints": ["keep the API"],
+            "paths": ["parser.py"],
+            "decisions": [],
+            "failures": [],
+            "tests": [],
+            "unfinished": ["verify output"],
+            "next_step": step,
+        },
+        ensure_ascii=False,
+    )
 
 
 def test_epoch_prefix_identity_is_deterministic_and_checkpoint_safe() -> None:
@@ -88,3 +107,99 @@ def test_compression_summary_is_security_filtered_and_has_fixed_shape() -> None:
     assert "extra" not in summary
     assert "ignore previous instructions" not in summary
     assert "[UNTRUSTED_INSTRUCTION_BLOCKED]" in summary
+
+
+def test_append_only_rollover_keeps_only_root_and_latest_summary_for_ten_generations() -> None:
+    root = _history()[:2]
+    epoch = CacheEpoch.bootstrap(
+        root,
+        prefix_message_count=2,
+        root_prefix_message_count=2,
+        epoch_id="root-epoch",
+    )
+
+    for generation in range(1, 11):
+        epoch = epoch.rollover(
+            _strict_summary(f"run tests {generation}"),
+            boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
+            replace_summary=True,
+            root_prefix_message_count=2,
+            max_summary_tokens=512,
+        )
+        assert epoch.snapshot.generation == generation
+        assert epoch.snapshot.root_prefix_message_count == 2
+        assert epoch.snapshot.root_epoch_id == "root-epoch"
+        assert epoch.snapshot.epoch_id == f"root-epoch.g{generation}"
+        assert epoch.frozen_prefix[:2] == root
+        assert len(epoch.frozen_prefix) == 3
+        summary_count = sum(
+            message.content.startswith(SUMMARY_PREFIX) for message in epoch.frozen_prefix
+        )
+        assert summary_count == 1
+
+
+def test_append_only_epoch_id_stays_bounded_for_long_root_ids() -> None:
+    root = _history()[:2]
+    root_id = "root-" + "x" * 120
+    epoch = CacheEpoch.bootstrap(
+        root,
+        prefix_message_count=2,
+        root_prefix_message_count=2,
+        epoch_id=root_id,
+    ).rollover(
+        _strict_summary(),
+        boundary=CacheEpochBoundary.EXPLICIT_COMPRESSION,
+        replace_summary=True,
+        root_prefix_message_count=2,
+        max_summary_tokens=512,
+    )
+
+    assert len(epoch.epoch_id) <= 128
+    assert epoch.snapshot.root_epoch_id == root_id
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "not json",
+        '{"next_step":"missing fields"}',
+        (
+            '{"constraints":"wrong type","paths":[],"decisions":[],"failures":[],'
+            '"tests":[],"unfinished":[],"next_step":"x"}'
+        ),
+    ],
+)
+def test_append_only_epoch_rejects_invalid_strict_summaries(summary: str) -> None:
+    epoch = CacheEpoch.bootstrap(
+        _history(),
+        prefix_message_count=2,
+        root_prefix_message_count=2,
+        epoch_id="root-epoch",
+    )
+
+    with pytest.raises(ValueError, match="compression summary"):
+        epoch.rollover(
+            summary,
+            boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
+            replace_summary=True,
+            root_prefix_message_count=2,
+            max_summary_tokens=512,
+        )
+
+
+def test_append_only_epoch_rejects_summary_over_its_token_budget() -> None:
+    epoch = CacheEpoch.bootstrap(
+        _history(),
+        prefix_message_count=2,
+        root_prefix_message_count=2,
+        epoch_id="root-epoch",
+    )
+
+    with pytest.raises(ValueError, match="budget"):
+        epoch.rollover(
+            _strict_summary(),
+            boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
+            replace_summary=True,
+            root_prefix_message_count=2,
+            max_summary_tokens=32,
+        )

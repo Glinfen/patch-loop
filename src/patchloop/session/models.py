@@ -88,6 +88,9 @@ class SessionCheckpoint(BaseModel):
     consumed_input_sequence: int = Field(default=0, ge=0)
     event_sequence: int = Field(default=0, ge=0)
     pending_effect_ids: list[str] = Field(default_factory=list)
+    pending_provider_request_id: str | None = Field(default=None, min_length=1, max_length=256)
+    accounted_provider_request_ids: list[str] = Field(default_factory=list)
+    accounted_provider_attempt_ids: list[str] = Field(default_factory=list)
     messages: list[ModelMessage] = Field(default_factory=list)
     tool_specifications: list[ToolSpec] | None = None
     plan: Plan | None = None
@@ -104,6 +107,14 @@ class SessionCheckpoint(BaseModel):
     def validate_append_only_transcript(self) -> Self:
         if self.append_only_state is not None:
             self.append_only_state.validate_message_boundaries(len(self.messages))
+        if len(self.accounted_provider_request_ids) != len(
+            set(self.accounted_provider_request_ids)
+        ):
+            raise ValueError("accounted provider request IDs must be unique")
+        if len(self.accounted_provider_attempt_ids) != len(
+            set(self.accounted_provider_attempt_ids)
+        ):
+            raise ValueError("accounted provider attempt IDs must be unique")
         return self
 
 

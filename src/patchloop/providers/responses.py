@@ -424,6 +424,11 @@ def _encode_message(message: Any) -> list[dict[str, Any]]:
                 ProviderErrorKind.CONTINUATION_UNAVAILABLE,
                 "assistant history has no replayable Responses continuation items",
             )
+        if not message.continuation.replayable:
+            raise _error(
+                ProviderErrorKind.CONTINUATION_UNAVAILABLE,
+                "stored Responses continuation was redacted and cannot be replayed",
+            )
         replayed: list[dict[str, Any]] = []
         for item in message.continuation.responses_items:
             try:

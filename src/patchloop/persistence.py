@@ -57,6 +57,13 @@ from patchloop.persistence_contracts import (
     LeaseConflict,
     LeaseGuard,
     LeaseLost,
+    ProviderAttemptOutcome,
+    ProviderAttemptRecord,
+    ProviderAttemptStatus,
+    ProviderRequestConflict,
+    ProviderRequestRecord,
+    ProviderRequestStatus,
+    ProviderUsageStatus,
     RecoveryRequired,
     StaleVersion,
     SubmissionConflict,
@@ -68,7 +75,11 @@ from patchloop.prompt_cache import (
     CacheEpochSnapshot,
     MemoryPublicationSnapshot,
 )
-from patchloop.providers.base import ModelMessage, ToolSpec
+from patchloop.providers.base import ModelMessage, ModelResponse, ModelUsage, ToolSpec
+from patchloop.providers.continuation import (
+    ContinuationCodec,
+    ContinuationUnavailable,
+)
 from patchloop.sandbox import ManagedCommandIdentity, ManagedCommandStatus
 from patchloop.security import SecretRedactor, persist_tool_arguments
 from patchloop.session.models import Session, SessionCheckpoint, Turn
@@ -83,7 +94,7 @@ from patchloop.sqlite_support import (
 )
 from patchloop.storage import TaskNotFoundError
 
-RUNTIME_SCHEMA_VERSION = 4
+RUNTIME_SCHEMA_VERSION = 5
 _RUNTIME_TABLES = {
     "tasks",
     "agent_steps",
@@ -100,6 +111,8 @@ _RUNTIME_TABLES = {
     "session_events",
     "workspace_leases",
     "managed_commands",
+    "provider_requests",
+    "provider_attempts",
 }
 
 _RUNTIME_TASK_COLUMNS = {"session_id", "outcome", "runtime_condition", "version"}
@@ -362,6 +375,50 @@ _RUNTIME_MIGRATION_V4 = (
     "CREATE INDEX idx_managed_commands_status ON managed_commands(status)",
 )
 
+_RUNTIME_MIGRATION_V5 = (
+    """
+    CREATE TABLE provider_requests (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        step_index INTEGER NOT NULL,
+        epoch_generation INTEGER NOT NULL,
+        input_revision INTEGER NOT NULL,
+        binding_fingerprint TEXT NOT NULL,
+        input_digest TEXT NOT NULL,
+        status TEXT NOT NULL,
+        response_json TEXT,
+        response_sha256 TEXT,
+        usage_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        UNIQUE (task_id, purpose, step_index, epoch_generation, input_revision),
+        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE provider_attempts (
+        id TEXT PRIMARY KEY,
+        provider_request_id TEXT NOT NULL,
+        execution_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        error_kind TEXT,
+        usage_status TEXT NOT NULL,
+        budget_reservation_usd REAL NOT NULL,
+        payload_json TEXT NOT NULL,
+        UNIQUE (provider_request_id, ordinal),
+        FOREIGN KEY (provider_request_id) REFERENCES provider_requests(id) ON DELETE CASCADE,
+        FOREIGN KEY (execution_id) REFERENCES executions(id) ON DELETE CASCADE
+    )
+    """,
+    "CREATE INDEX idx_provider_requests_task ON provider_requests(task_id, status)",
+    "CREATE INDEX idx_provider_attempts_execution ON provider_attempts(execution_id)",
+)
+
 
 class RuntimeSchemaError(RuntimeError):
     """Raised when the runtime schema cannot be migrated or is unusable."""
@@ -430,6 +487,17 @@ def initialize_runtime_schema(connection: sqlite3.Connection) -> None:
                 SET version = ?, updated_at = ? WHERE component = 'runtime'
                 """,
                 (4, datetime.now(UTC).isoformat()),
+            )
+            version = 4
+        if version < 5:
+            for statement in _RUNTIME_MIGRATION_V5:
+                connection.execute(statement)
+            connection.execute(
+                """
+                UPDATE patchloop_schema_migrations
+                SET version = ?, updated_at = ? WHERE component = 'runtime'
+                """,
+                (5, datetime.now(UTC).isoformat()),
             )
         tables = {
             str(table[0])
@@ -681,7 +749,10 @@ class RuntimeCheckpoint(BaseModel):
     event_sequence: int = Field(default=0, ge=0)
     pending_effect_ids: list[str] = Field(default_factory=list)
     pending_model_request_step: int | None = Field(default=None, ge=0)
+    pending_provider_request_id: str | None = Field(default=None, min_length=1, max_length=256)
     accounted_model_response_steps: list[int] = Field(default_factory=list)
+    accounted_provider_request_ids: list[str] = Field(default_factory=list)
+    accounted_provider_attempt_ids: list[str] = Field(default_factory=list)
     unknown_model_usage_steps: list[int] = Field(default_factory=list)
     next_step_index: int = Field(ge=0)
     messages: list[ModelMessage]
@@ -735,11 +806,38 @@ class RuntimeCheckpoint(BaseModel):
     def validate_append_only_transcript(self) -> Self:
         if self.append_only_state is not None:
             self.append_only_state.validate_message_boundaries(len(self.messages))
+        if len(self.accounted_provider_request_ids) != len(
+            set(self.accounted_provider_request_ids)
+        ):
+            raise ValueError("accounted provider request IDs must be unique")
+        if len(self.accounted_provider_attempt_ids) != len(
+            set(self.accounted_provider_attempt_ids)
+        ):
+            raise ValueError("accounted provider attempt IDs must be unique")
         return self
 
 
 class CheckpointSchemaError(RuntimeError):
     """Raised when a persisted checkpoint cannot be safely adapted."""
+
+
+def _provider_request_identity(record: ProviderRequestRecord) -> tuple[object, ...]:
+    return (
+        record.request_id,
+        record.task_id,
+        record.purpose,
+        record.step_index,
+        record.epoch_generation,
+        record.input_revision,
+        record.binding_fingerprint,
+        record.input_digest,
+    )
+
+
+def _provider_usage_status(usage: ModelUsage) -> ProviderUsageStatus:
+    if usage.input_tokens_reported is True or usage.output_tokens_reported is True:
+        return ProviderUsageStatus.REPORTED
+    return ProviderUsageStatus.UNKNOWN
 
 
 def _decode_task_payload(payload_json: str) -> Task:
@@ -785,13 +883,14 @@ class SQLiteStore:
     def __init__(self, path: Path, redactor: SecretRedactor | None = None) -> None:
         self.path = path
         self.redactor = redactor or SecretRedactor()
+        self.continuation_codec = ContinuationCodec(self.redactor)
         self.last_migration_backup: MigrationBackup | None = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
         self.memory = SQLiteMemoryStore(self.path, self.redactor)
 
     def _redacted_json(self, model: BaseModel) -> str:
-        payload = self.redactor.redact(model.model_dump(mode="json"))
+        payload = self.continuation_codec.to_storage(model.model_dump(mode="json"))
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     def _initialize(self) -> None:
@@ -1980,6 +2079,7 @@ class SQLiteStore:
         *,
         expected_version: int,
         lease_guard: LeaseGuard | None = None,
+        provider_request_id: str | None = None,
     ) -> list[Effect]:
         """Atomically persist one provider response and its ordered Effect identities."""
 
@@ -2000,6 +2100,31 @@ class SQLiteStore:
             task = self._require_task(connection, step.task_id)
             self._assert_legacy_write_guard(connection, step.task_id, lease_guard)
             self._check_version(task.id, task.version, expected_version)
+            provider_request = None
+            if provider_request_id is not None:
+                if lease_guard is None or lease_guard.task_id != step.task_id:
+                    raise LeaseLost(step.task_id)
+                self._assert_guard(connection, lease_guard)
+                provider_request = self._provider_request_row(connection, provider_request_id)
+                if provider_request is None:
+                    raise KeyError(f"provider request not found: {provider_request_id}")
+                if provider_request.task_id != step.task_id:
+                    raise ProviderRequestConflict(
+                        provider_request_id, "provider request belongs to another task"
+                    )
+                if provider_request.status not in {
+                    ProviderRequestStatus.RESPONSE_READY,
+                    ProviderRequestStatus.COMPLETED,
+                }:
+                    raise ProviderRequestConflict(
+                        provider_request_id, "provider response is not complete"
+                    )
+                if provider_request.response is None or self._canonical_payload(
+                    provider_request.response.model_dump(mode="json")
+                ) != self._canonical_payload(safe_step.model_response):
+                    raise ProviderRequestConflict(
+                        provider_request_id, "Step response differs from provider response"
+                    )
             existing_step_row = connection.execute(
                 "SELECT payload_json FROM agent_steps WHERE task_id = ? AND step_index = ?",
                 (step.task_id, step.index),
@@ -2053,7 +2178,350 @@ class SQLiteStore:
                     task_id=task.id,
                     data={"effect_ids": effect_ids, "step_id": safe_step.id},
                 )
+            if (
+                provider_request is not None
+                and provider_request.status is ProviderRequestStatus.RESPONSE_READY
+            ):
+                assert provider_request_id is not None
+                completed = provider_request.model_copy(
+                    update={
+                        "status": ProviderRequestStatus.COMPLETED,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                self._write_provider_request(connection, completed)
+                if task.session_id is not None:
+                    self._journal(
+                        connection,
+                        self._require_session(connection, task.session_id),
+                        event_id=journal_event_id(
+                            "provider.request.completed",
+                            provider_request_id,
+                            completed.updated_at.isoformat(),
+                        ),
+                        event_type="provider.request.completed",
+                        task_id=task.id,
+                        data={"request_id": provider_request_id},
+                    )
             return prepared
+
+    def begin_provider_request(
+        self, record: ProviderRequestRecord, *, lease_guard: LeaseGuard
+    ) -> ProviderRequestRecord:
+        if record.status is not ProviderRequestStatus.PENDING or record.response is not None:
+            raise ValueError("new provider request must be pending and have no response")
+        with connect_write(self.path) as connection:
+            self._assert_guard(connection, lease_guard)
+            if lease_guard.task_id != record.task_id:
+                raise LeaseLost(record.task_id)
+            self._require_task(connection, record.task_id)
+            existing = self._provider_request_row(connection, record.request_id)
+            if existing is not None:
+                if _provider_request_identity(existing) != _provider_request_identity(record):
+                    raise ProviderRequestConflict(record.request_id)
+                if existing.status is ProviderRequestStatus.INVALIDATED:
+                    raise ProviderRequestConflict(
+                        record.request_id, "provider request was invalidated"
+                    )
+                return existing
+            logical = connection.execute(
+                """
+                SELECT payload_json FROM provider_requests
+                WHERE task_id = ? AND purpose = ? AND step_index = ?
+                    AND epoch_generation = ? AND input_revision = ?
+                """,
+                (
+                    record.task_id,
+                    record.purpose.value,
+                    record.step_index,
+                    record.epoch_generation,
+                    record.input_revision,
+                ),
+            ).fetchone()
+            if logical is not None:
+                current = ProviderRequestRecord.model_validate_json(logical["payload_json"])
+                if _provider_request_identity(current) != _provider_request_identity(record):
+                    raise ProviderRequestConflict(
+                        record.request_id,
+                        "logical provider request already exists with different input",
+                    )
+                if current.status is ProviderRequestStatus.INVALIDATED:
+                    raise ProviderRequestConflict(
+                        record.request_id, "provider request was invalidated"
+                    )
+                return current
+            self._write_provider_request(connection, record)
+            task = self._require_task(connection, record.task_id)
+            if task.session_id is not None:
+                self._journal(
+                    connection,
+                    self._require_session(connection, task.session_id),
+                    event_id=journal_event_id("provider.request.started", record.request_id, 1),
+                    event_type="provider.request.started",
+                    task_id=task.id,
+                    data={"request_id": record.request_id, "purpose": record.purpose.value},
+                )
+            return record
+
+    def begin_provider_attempt(
+        self, record: ProviderAttemptRecord, *, lease_guard: LeaseGuard
+    ) -> ProviderAttemptRecord:
+        if record.status is not ProviderAttemptStatus.RUNNING:
+            raise ValueError("new provider attempt must be running")
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard)
+            if (
+                record.execution_id != execution.id
+                or record.execution_id != lease_guard.execution_id
+            ):
+                raise LeaseLost(lease_guard.task_id)
+            request = self._provider_request_row(connection, record.request_id)
+            if request is None:
+                raise KeyError(f"provider request not found: {record.request_id}")
+            if request.task_id != execution.task_id:
+                raise LeaseLost(lease_guard.task_id)
+            if request.status is not ProviderRequestStatus.PENDING:
+                raise ProviderRequestConflict(
+                    request.request_id, "provider request is not awaiting an attempt"
+                )
+            current = connection.execute(
+                "SELECT payload_json FROM provider_attempts WHERE id = ?", (record.attempt_id,)
+            ).fetchone()
+            if current is not None:
+                existing = ProviderAttemptRecord.model_validate_json(current["payload_json"])
+                if existing == record:
+                    return existing
+                raise ProviderRequestConflict(
+                    record.request_id, "provider attempt identity conflict"
+                )
+            rows = connection.execute(
+                """
+                SELECT payload_json FROM provider_attempts
+                WHERE provider_request_id = ? ORDER BY ordinal
+                """,
+                (record.request_id,),
+            ).fetchall()
+            existing_attempts = [
+                ProviderAttemptRecord.model_validate_json(row["payload_json"]) for row in rows
+            ]
+            if record.ordinal != len(existing_attempts) + 1:
+                raise ProviderRequestConflict(
+                    record.request_id, "provider attempt ordinal is not sequential"
+                )
+            now = datetime.now(UTC)
+            for prior in existing_attempts:
+                if prior.status is ProviderAttemptStatus.RUNNING:
+                    interrupted = prior.model_copy(
+                        update={
+                            "status": ProviderAttemptStatus.INTERRUPTED,
+                            "finished_at": now,
+                            "usage_status": ProviderUsageStatus.UNKNOWN,
+                        }
+                    )
+                    self._write_provider_attempt(connection, interrupted)
+                    self._journal_provider_attempt(
+                        connection,
+                        request.task_id,
+                        interrupted,
+                        "provider.attempt.interrupted",
+                    )
+            self._write_provider_attempt(connection, record)
+            self._journal_provider_attempt(
+                connection, request.task_id, record, "provider.attempt.started"
+            )
+            return record
+
+    def finish_provider_attempt(
+        self,
+        attempt_id: str,
+        outcome: ProviderAttemptOutcome,
+        *,
+        lease_guard: LeaseGuard,
+    ) -> ProviderAttemptRecord:
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard)
+            attempt = self._provider_attempt_row(connection, attempt_id)
+            if attempt is None:
+                raise KeyError(f"provider attempt not found: {attempt_id}")
+            request = self._provider_request_row(connection, attempt.request_id)
+            if request is None or request.task_id != execution.task_id:
+                raise LeaseLost(lease_guard.task_id)
+            if attempt.execution_id != execution.id:
+                raise LeaseLost(lease_guard.task_id)
+            if attempt.status is not ProviderAttemptStatus.RUNNING:
+                if attempt.status is outcome.status:
+                    return attempt
+                raise ProviderRequestConflict(
+                    attempt.request_id, "provider attempt already has another outcome"
+                )
+            finished = attempt.model_copy(
+                update={
+                    "status": outcome.status,
+                    "finished_at": datetime.now(UTC),
+                    "error_kind": outcome.error_kind,
+                    "safe_message": self.redactor.redact_text(outcome.safe_message or "") or None,
+                    "usage_status": outcome.usage_status,
+                    "usage": outcome.usage,
+                    "request_sent": outcome.request_sent,
+                }
+            )
+            self._write_provider_attempt(connection, finished)
+            self._journal_provider_attempt(
+                connection,
+                request.task_id,
+                finished,
+                f"provider.attempt.{finished.status.value}",
+            )
+            return finished
+
+    def commit_provider_response(
+        self,
+        request_id: str,
+        response: ModelResponse,
+        *,
+        lease_guard: LeaseGuard,
+    ) -> ProviderRequestRecord:
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard)
+            if execution.task_id != lease_guard.task_id:
+                raise LeaseLost(lease_guard.task_id)
+            request = self._provider_request_row(connection, request_id)
+            if request is None:
+                raise KeyError(f"provider request not found: {request_id}")
+            if request.task_id != execution.task_id:
+                raise LeaseLost(lease_guard.task_id)
+            safe_response = self.continuation_codec.to_storage(response)
+            if request.status in {
+                ProviderRequestStatus.RESPONSE_READY,
+                ProviderRequestStatus.COMPLETED,
+            }:
+                if request.response == safe_response:
+                    return request
+                raise ProviderRequestConflict(
+                    request_id, "provider response conflicts with committed response"
+                )
+            attempt = self._active_provider_attempt(connection, request_id, execution.id)
+            if attempt is None:
+                raise ProviderRequestConflict(request_id, "complete response has no active attempt")
+            digest = self.continuation_codec.response_digest(safe_response)
+            status = (
+                ProviderRequestStatus.COMPLETED
+                if request.purpose.value == "epoch_compression"
+                else ProviderRequestStatus.RESPONSE_READY
+            )
+            updated = request.model_copy(
+                update={
+                    "status": status,
+                    "response": safe_response,
+                    "response_sha256": digest,
+                    "usage": safe_response.usage,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            succeeded = attempt.model_copy(
+                update={
+                    "status": ProviderAttemptStatus.SUCCEEDED,
+                    "finished_at": updated.updated_at,
+                    "usage_status": _provider_usage_status(safe_response.usage),
+                    "usage": safe_response.usage,
+                    "request_sent": True,
+                }
+            )
+            self._write_provider_request(connection, updated)
+            self._write_provider_attempt(connection, succeeded)
+            self._journal_provider_attempt(
+                connection, request.task_id, succeeded, "provider.attempt.succeeded"
+            )
+            task = self._require_task(connection, request.task_id)
+            if task.session_id is not None:
+                self._journal(
+                    connection,
+                    self._require_session(connection, task.session_id),
+                    event_id=journal_event_id(
+                        "provider.response.saved", request_id, updated.updated_at.isoformat()
+                    ),
+                    event_type="provider.response.saved",
+                    task_id=task.id,
+                    data={
+                        "request_id": request_id,
+                        "status": status.value,
+                        "response_sha256": digest,
+                    },
+                )
+            return updated
+
+    def get_provider_request(self, request_id: str) -> ProviderRequestRecord:
+        with connect(self.path) as connection:
+            record = self._provider_request_row(connection, request_id)
+        if record is None:
+            raise KeyError(f"provider request not found: {request_id}")
+        return record
+
+    def list_provider_attempts(self, request_id: str) -> list[ProviderAttemptRecord]:
+        with connect(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json FROM provider_attempts
+                WHERE provider_request_id = ? ORDER BY ordinal
+                """,
+                (request_id,),
+            ).fetchall()
+        return [ProviderAttemptRecord.model_validate_json(row["payload_json"]) for row in rows]
+
+    def invalidate_provider_request(
+        self, request_id: str, *, lease_guard: LeaseGuard
+    ) -> ProviderRequestRecord:
+        with connect_write(self.path) as connection:
+            execution = self._assert_guard(connection, lease_guard)
+            request = self._provider_request_row(connection, request_id)
+            if request is None:
+                raise KeyError(f"provider request not found: {request_id}")
+            if request.task_id != execution.task_id:
+                raise LeaseLost(lease_guard.task_id)
+            if request.status is ProviderRequestStatus.COMPLETED:
+                raise ProviderRequestConflict(
+                    request_id, "completed provider request cannot be invalidated"
+                )
+            now = datetime.now(UTC)
+            for attempt in self._provider_attempts_for_request(connection, request_id):
+                if attempt.status is ProviderAttemptStatus.RUNNING:
+                    interrupted = attempt.model_copy(
+                        update={
+                            "status": ProviderAttemptStatus.INTERRUPTED,
+                            "finished_at": now,
+                            "usage_status": ProviderUsageStatus.UNKNOWN,
+                        }
+                    )
+                    self._write_provider_attempt(connection, interrupted)
+                    self._journal_provider_attempt(
+                        connection,
+                        request.task_id,
+                        interrupted,
+                        "provider.attempt.interrupted",
+                    )
+            invalidated = request.model_copy(
+                update={
+                    "status": ProviderRequestStatus.INVALIDATED,
+                    "response": None,
+                    "response_sha256": None,
+                    "usage": None,
+                    "updated_at": now,
+                }
+            )
+            self._write_provider_request(connection, invalidated)
+            task = self._require_task(connection, request.task_id)
+            if task.session_id is not None:
+                self._journal(
+                    connection,
+                    self._require_session(connection, task.session_id),
+                    event_id=journal_event_id(
+                        "provider.request.invalidated", request_id, request.input_revision
+                    ),
+                    event_type="provider.request.invalidated",
+                    task_id=task.id,
+                    data={"request_id": request_id, "input_revision": request.input_revision},
+                )
+            return invalidated
 
     def get_effect(self, effect_id: str) -> Effect:
         with connect(self.path) as connection:
@@ -3265,11 +3733,227 @@ class SQLiteStore:
             ).fetchone()
             if row is None or row["task_id"] != checkpoint.task_id:
                 raise ValueError("checkpoint references an Effect outside its task")
+        referenced_requests = set(checkpoint.accounted_provider_request_ids)
+        if checkpoint.pending_provider_request_id is not None:
+            referenced_requests.add(checkpoint.pending_provider_request_id)
+        for request_id in referenced_requests:
+            row = connection.execute(
+                "SELECT task_id, status, response_json FROM provider_requests WHERE id = ?",
+                (request_id,),
+            ).fetchone()
+            if row is None or row["task_id"] != checkpoint.task_id:
+                raise ValueError("checkpoint references a provider request outside its task")
+            if (
+                request_id in checkpoint.accounted_provider_request_ids
+                and row["response_json"] is None
+            ):
+                raise ValueError("checkpoint accounts for a provider request without a response")
+            if (
+                request_id == checkpoint.pending_provider_request_id
+                and row["status"] == ProviderRequestStatus.INVALIDATED.value
+            ):
+                raise ValueError("checkpoint references an invalidated provider request")
+        for attempt_id in checkpoint.accounted_provider_attempt_ids:
+            row = connection.execute(
+                """
+                SELECT requests.task_id FROM provider_attempts AS attempts
+                JOIN provider_requests AS requests ON requests.id = attempts.provider_request_id
+                WHERE attempts.id = ?
+                """,
+                (attempt_id,),
+            ).fetchone()
+            if row is None or row["task_id"] != checkpoint.task_id:
+                raise ValueError("checkpoint references a provider attempt outside its task")
 
     def _redacted_model[ModelT: BaseModel](
         self, model: BaseModel, model_type: type[ModelT]
     ) -> ModelT:
-        return model_type.model_validate(self.redactor.redact(model.model_dump(mode="json")))
+        return model_type.model_validate(
+            self.continuation_codec.to_storage(model.model_dump(mode="json"))
+        )
+
+    def _provider_request_row(
+        self, connection: sqlite3.Connection, request_id: str
+    ) -> ProviderRequestRecord | None:
+        row = connection.execute(
+            """
+            SELECT payload_json, response_json, response_sha256, status
+            FROM provider_requests WHERE id = ?
+            """,
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            record = ProviderRequestRecord.model_validate_json(row["payload_json"])
+        except ValidationError as exc:
+            raise ProviderRequestConflict(request_id, "stored provider request is invalid") from exc
+        if record.status.value != row["status"] or record.response_sha256 != row["response_sha256"]:
+            raise ProviderRequestConflict(
+                request_id, "stored provider request projection is inconsistent"
+            )
+        if record.response is None:
+            if row["response_json"] is not None:
+                raise ProviderRequestConflict(request_id, "unexpected stored provider response")
+        else:
+            encoded = self._canonical_payload(record.response.model_dump(mode="json"))
+            if row["response_json"] != encoded:
+                raise ProviderRequestConflict(
+                    request_id, "stored provider response projection is inconsistent"
+                )
+            if self.continuation_codec.response_digest(record.response) != record.response_sha256:
+                raise ContinuationUnavailable("stored provider response failed integrity check")
+        return record
+
+    def _write_provider_request(
+        self, connection: sqlite3.Connection, record: ProviderRequestRecord
+    ) -> None:
+        safe = self._redacted_model(record, ProviderRequestRecord)
+        response_json = (
+            None
+            if safe.response is None
+            else self._canonical_payload(safe.response.model_dump(mode="json"))
+        )
+        connection.execute(
+            """
+            INSERT INTO provider_requests (
+                id, task_id, purpose, step_index, epoch_generation, input_revision,
+                binding_fingerprint, input_digest, status, response_json, response_sha256,
+                usage_json, created_at, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                response_json = excluded.response_json,
+                response_sha256 = excluded.response_sha256,
+                usage_json = excluded.usage_json,
+                updated_at = excluded.updated_at,
+                payload_json = excluded.payload_json
+            """,
+            (
+                safe.request_id,
+                safe.task_id,
+                safe.purpose.value,
+                safe.step_index,
+                safe.epoch_generation,
+                safe.input_revision,
+                safe.binding_fingerprint,
+                safe.input_digest,
+                safe.status.value,
+                response_json,
+                safe.response_sha256,
+                None
+                if safe.usage is None
+                else self._canonical_payload(safe.usage.model_dump(mode="json")),
+                safe.created_at.isoformat(),
+                safe.updated_at.isoformat(),
+                self._redacted_json(safe),
+            ),
+        )
+
+    def _provider_attempt_row(
+        self, connection: sqlite3.Connection, attempt_id: str
+    ) -> ProviderAttemptRecord | None:
+        row = connection.execute(
+            "SELECT payload_json, status FROM provider_attempts WHERE id = ?", (attempt_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            record = ProviderAttemptRecord.model_validate_json(row["payload_json"])
+        except ValidationError as exc:
+            raise ProviderRequestConflict(attempt_id, "stored provider attempt is invalid") from exc
+        if record.status.value != row["status"]:
+            raise ProviderRequestConflict(
+                attempt_id, "stored provider attempt projection is inconsistent"
+            )
+        return record
+
+    def _provider_attempts_for_request(
+        self, connection: sqlite3.Connection, request_id: str
+    ) -> list[ProviderAttemptRecord]:
+        rows = connection.execute(
+            """
+            SELECT payload_json FROM provider_attempts
+            WHERE provider_request_id = ? ORDER BY ordinal
+            """,
+            (request_id,),
+        ).fetchall()
+        return [ProviderAttemptRecord.model_validate_json(row["payload_json"]) for row in rows]
+
+    def _active_provider_attempt(
+        self, connection: sqlite3.Connection, request_id: str, execution_id: str
+    ) -> ProviderAttemptRecord | None:
+        return next(
+            (
+                attempt
+                for attempt in reversed(self._provider_attempts_for_request(connection, request_id))
+                if attempt.execution_id == execution_id
+                and attempt.status is ProviderAttemptStatus.RUNNING
+            ),
+            None,
+        )
+
+    def _write_provider_attempt(
+        self, connection: sqlite3.Connection, record: ProviderAttemptRecord
+    ) -> None:
+        safe = self._redacted_model(record, ProviderAttemptRecord)
+        connection.execute(
+            """
+            INSERT INTO provider_attempts (
+                id, provider_request_id, execution_id, ordinal, status, started_at,
+                finished_at, error_kind, usage_status, budget_reservation_usd, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                finished_at = excluded.finished_at,
+                error_kind = excluded.error_kind,
+                usage_status = excluded.usage_status,
+                budget_reservation_usd = excluded.budget_reservation_usd,
+                payload_json = excluded.payload_json
+            """,
+            (
+                safe.attempt_id,
+                safe.request_id,
+                safe.execution_id,
+                safe.ordinal,
+                safe.status.value,
+                safe.started_at.isoformat(),
+                None if safe.finished_at is None else safe.finished_at.isoformat(),
+                safe.error_kind,
+                safe.usage_status.value,
+                safe.budget_reservation_usd,
+                self._redacted_json(safe),
+            ),
+        )
+
+    @staticmethod
+    def _canonical_payload(value: object) -> str:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+    def _journal_provider_attempt(
+        self,
+        connection: sqlite3.Connection,
+        task_id: str,
+        attempt: ProviderAttemptRecord,
+        event_type: str,
+    ) -> None:
+        task = self._require_task(connection, task_id)
+        if task.session_id is None:
+            return
+        self._journal(
+            connection,
+            self._require_session(connection, task.session_id),
+            event_id=journal_event_id(event_type, attempt.attempt_id, attempt.ordinal),
+            event_type=event_type,
+            task_id=task.id,
+            data={
+                "request_id": attempt.request_id,
+                "attempt_id": attempt.attempt_id,
+                "ordinal": attempt.ordinal,
+                "status": attempt.status.value,
+                "usage_status": attempt.usage_status.value,
+            },
+        )
 
     def _redacted_session(self, session: Session) -> Session:
         return Session.model_validate(self.redactor.redact(session.model_dump(mode="json")))

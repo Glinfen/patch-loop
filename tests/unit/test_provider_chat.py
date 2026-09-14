@@ -24,6 +24,7 @@ from patchloop.providers import (
     ProviderTransportConfig,
     ReasoningTransport,
     ToolSpec,
+    ValidatedResponseItem,
 )
 from patchloop.providers.chat import ChatStreamReducer
 from patchloop.providers.sse import SSEDecoder, SSEFrame
@@ -252,6 +253,37 @@ def test_deepseek_adapter_sends_and_replays_reasoning_continuation_without_tools
     assert response.continuation == ProviderContinuation(
         deepseek_reasoning_content="new private reasoning"
     )
+
+
+def test_standard_chat_refuses_to_silently_drop_responses_continuation() -> None:
+    continuation = ProviderContinuation(
+        responses_items=(
+            ValidatedResponseItem(
+                type="message",
+                item={
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "answer"}],
+                },
+            ),
+        )
+    )
+    with pytest.raises(ProviderError) as unavailable:
+        ChatCompletionsAdapter().encode(
+            make_request(
+                messages=(
+                    ModelMessage(
+                        role="assistant",
+                        content="answer",
+                        continuation=continuation,
+                    ),
+                )
+            ),
+            make_binding(),
+        )
+    assert unavailable.value.kind is ProviderErrorKind.CONTINUATION_UNAVAILABLE
 
 
 def test_deepseek_enabled_reasoning_requires_replayable_history_and_response() -> None:

@@ -2,7 +2,7 @@
 
 ## 1. Problem
 
-**状态：** PGW-01～PGW-06 已完成，下一任务为 **PGW-07**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
+**状态：** PGW-01～PGW-07 已完成，下一任务为 **PGW-08**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
 
 **Current Problem：** SRF 已交付 Session、审批、所有权和恢复主线，但 CLI 仍固定创建 DeepSeek Provider，构造器只接受一个模型；请求非流式，Runtime 直接读取供应商配置，Task 未绑定模型配置，协议续接信息也未完整保存。这是 [第二阶段目标](PHASE_2_PROJECT_GOALS.md) S2-G2 的直接缺口。
 
@@ -26,7 +26,7 @@
 | `runtime.py::_execute/_compress_epoch` | 两处直接 complete；普通响应以 Effect 批次落库，压缩有独立错误和用量路径 | 两处统一请求生命周期；压缩结果可恢复，不创建伪工具 Step |
 | `runtime.py::_provider_model/_provider_thinking` | getattr(provider.config, ...) 读取供应商内部字段 | 改读已冻结的 binding/capabilities |
 | `execution/effects.py::persist_model_response_batch/response_from_step` | 完整 ModelResponse 保存到 AgentStep，再产生稳定 Effect | 保持提交边界，拒绝半截流触发工具，保存续接 |
-| `persistence.py::prepare_effect_batch/RuntimeCheckpoint` | Runtime schema 当前为 4；已有 pending_model_request_step 和累计步骤 | 增加 request/attempt 存储、原子响应提交与兼容游标 |
+| `persistence.py::prepare_effect_batch/RuntimeCheckpoint` | Runtime schema 5；保留 pending_model_request_step 和累计步骤 | 增加 request/attempt 存储、原子响应提交与兼容游标 |
 | `context/engine.py::ContextEngine` | model_dump 后通用脱敏，按消息组裁剪 | 续接与原 assistant/工具结果成组，不误改 opaque 项 |
 | `prompt_cache/usage.py::CacheUsageAccumulator` | 缓存缺失值保留 None，普通用量缺精度信息 | 保留原含义，补 request/attempt 去重与未知费用 |
 | `observability.py::TaskMetrics/ProviderUsageRecord` | 从 Trace 汇总模型用量 | 区分逻辑请求、HTTP attempt、用量来源与未知消耗 |
@@ -442,6 +442,10 @@ ContinuationCodec.to_storage / to_public / validate_for_replay
 
 - 普通/压缩两路径均可恢复，断流没有半个可执行响应。
 - 新续接数据不会被现有脱敏器静默改坏后继续发送，也不会进入用户 Turn/公开 Trace。
+
+**实施状态：已完成（2026-09-14）。** Runtime schema 从 4 升至 5，新增级联的 provider_requests/provider_attempts；SQLiteStore 与 FakeStore 实现请求开始、attempt 开始/结束、完整响应保存、恢复读取及输入修订作废，并以 lease fencing 拒绝旧 owner 写入。完整普通响应先持久化为 response_ready，成功 attempt 与响应在同一事务落库；prepare_effect_batch 再在同一事务提交 Step/Effects 并完成请求，崩溃重试幂等且冲突响应拒绝；压缩响应直接完成请求而不建伪 Step。RuntimeCheckpoint 与 SessionCheckpoint 增加 pending/accounted 请求和 attempt 游标，旧字段继续兼容。
+
+新增 ContinuationCodec 将 opaque Responses encrypted_content 原样存储、公开诊断降为类型/长度/摘要，并对被脱敏改写的 DeepSeek 文本标记不可重放；ContextEngine 按完整消息组保留续接并计入文本/opaque token 预算，prompt-cache 诊断不泄漏续接正文。schema 4 升级、幂等重升、回滚、响应/Effect 故障注入、压缩及无工具响应、lease 恢复、输入修订、密文与损坏检测均有测试。全仓 pytest **682 通过、1 跳过**（Windows 主机不支持符号链接）；随后追加跨协议续接拒绝用例后，provider Chat/Responses、持久化和迁移的定向回归 **48 通过**；mypy 检查 90 个源码文件通过。Runtime 两处调用接入仍属于 PGW-08。
 
 ### PGW-08：Runtime 两条调用路径接入
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import patchloop.persistence
+from patchloop.domain import Task
 from patchloop.memory.store import MemoryStoreError, initialize_memory_schema
 from patchloop.persistence import (
     RUNTIME_SCHEMA_VERSION,
@@ -231,3 +232,53 @@ def test_initialize_runtime_schema_is_idempotent(tmp_path: Path) -> None:
 
     assert rows == 1
     assert _migration_versions(database) == {"runtime": RUNTIME_SCHEMA_VERSION}
+
+
+def test_runtime_v4_migrates_provider_tables_once_and_preserves_tasks(tmp_path: Path) -> None:
+    database = tmp_path / "runtime-v4.db"
+    store = SQLiteStore(database)
+    task = store.create_task(Task(id="preserved-task", goal="keep me", repository="."))
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("DROP TABLE provider_attempts")
+        connection.execute("DROP TABLE provider_requests")
+        connection.execute(
+            "UPDATE patchloop_schema_migrations SET version = 4 WHERE component = 'runtime'"
+        )
+
+    upgraded = SQLiteStore(database)
+    assert upgraded.get_task(task.id) == task
+    assert _migration_versions(database)["runtime"] == RUNTIME_SCHEMA_VERSION
+    assert {"provider_requests", "provider_attempts"}.issubset(_table_names(database))
+
+    SQLiteStore(database)
+    assert _migration_versions(database)["runtime"] == RUNTIME_SCHEMA_VERSION
+
+
+def test_runtime_v5_migration_failure_rolls_back_only_new_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "runtime-v4-failure.db"
+    store = SQLiteStore(database)
+    task = store.create_task(Task(id="preserved-task", goal="keep me", repository="."))
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("DROP TABLE provider_attempts")
+        connection.execute("DROP TABLE provider_requests")
+        connection.execute(
+            "UPDATE patchloop_schema_migrations SET version = 4 WHERE component = 'runtime'"
+        )
+    monkeypatch.setattr(
+        patchloop.persistence,
+        "_RUNTIME_MIGRATION_V5",
+        (*patchloop.persistence._RUNTIME_MIGRATION_V5, "CREATE TABLE broken_v5 ("),
+    )
+
+    with pytest.raises(RuntimeSchemaError, match="runtime schema migration failed"):
+        SQLiteStore(database)
+
+    assert _migration_versions(database)["runtime"] == 4
+    assert not {"provider_requests", "provider_attempts"}.intersection(_table_names(database))
+    with closing(sqlite3.connect(database)) as connection:
+        row = connection.execute(
+            "SELECT payload_json FROM tasks WHERE id = ?", (task.id,)
+        ).fetchone()
+    assert row is not None

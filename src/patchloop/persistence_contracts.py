@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol, TypeVar
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 from patchloop.domain import (
     AgentStep,
     ErrorKind,
@@ -41,6 +43,7 @@ from patchloop.execution.models import (
     WorkspaceLease,
 )
 from patchloop.execution.recovery import validate_recovery_resolution
+from patchloop.providers.base import ModelResponse, ModelUsage, ProviderRequestPurpose
 from patchloop.sandbox import ManagedCommandIdentity, ManagedCommandStatus
 from patchloop.session.models import Session, SessionCheckpoint, Turn
 
@@ -199,6 +202,132 @@ class WorkspaceLeaseGuard:
     owner_id: str
 
 
+class ProviderRequestStatus(StrEnum):
+    PENDING = "pending"
+    RESPONSE_READY = "response_ready"
+    COMPLETED = "completed"
+    INVALIDATED = "invalidated"
+
+
+class ProviderAttemptStatus(StrEnum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+
+
+class ProviderUsageStatus(StrEnum):
+    REPORTED = "reported"
+    UNKNOWN = "unknown"
+    UNREPORTED = "unreported"
+
+
+class ProviderRequestRecord(BaseModel):
+    """Durable identity and completion state for one logical provider request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_id: str = Field(min_length=1, max_length=256)
+    task_id: str = Field(min_length=1, max_length=128)
+    purpose: ProviderRequestPurpose
+    step_index: int = Field(ge=0)
+    epoch_generation: int = Field(default=0, ge=0)
+    input_revision: int = Field(default=0, ge=0)
+    binding_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    input_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: ProviderRequestStatus = ProviderRequestStatus.PENDING
+    response: ModelResponse | None = None
+    response_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    usage: ModelUsage | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def logical_key(self) -> tuple[str, ProviderRequestPurpose, int, int, int]:
+        return (
+            self.task_id,
+            self.purpose,
+            self.step_index,
+            self.epoch_generation,
+            self.input_revision,
+        )
+
+    @model_validator(mode="after")
+    def validate_response_state(self) -> ProviderRequestRecord:
+        if self.response is None and self.response_sha256 is not None:
+            raise ValueError("provider response digest requires a stored response")
+        if self.response is not None and self.response_sha256 is None:
+            raise ValueError("stored provider response requires an integrity digest")
+        if (
+            self.status in {ProviderRequestStatus.RESPONSE_READY, ProviderRequestStatus.COMPLETED}
+            and self.response is None
+        ):
+            raise ValueError("completed provider request requires its full response")
+        if self.status is ProviderRequestStatus.INVALIDATED and self.response is not None:
+            raise ValueError("invalidated provider request cannot retain a replayable response")
+        return self
+
+
+class ProviderAttemptOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: ProviderAttemptStatus
+    error_kind: str | None = Field(default=None, max_length=128)
+    safe_message: str | None = Field(default=None, max_length=2_000)
+    usage_status: ProviderUsageStatus = ProviderUsageStatus.UNKNOWN
+    usage: ModelUsage | None = None
+    request_sent: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_terminal_outcome(self) -> ProviderAttemptOutcome:
+        if self.status not in {
+            ProviderAttemptStatus.FAILED,
+            ProviderAttemptStatus.CANCELLED,
+            ProviderAttemptStatus.INTERRUPTED,
+        }:
+            raise ValueError("provider attempt outcome must be terminal and unsuccessful")
+        return self
+
+
+class ProviderAttemptRecord(BaseModel):
+    """One network attempt, including failed/unknown remote usage states."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    attempt_id: str = Field(min_length=1, max_length=256)
+    request_id: str = Field(min_length=1, max_length=256)
+    execution_id: str = Field(min_length=1, max_length=128)
+    ordinal: int = Field(ge=1)
+    status: ProviderAttemptStatus = ProviderAttemptStatus.RUNNING
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    finished_at: datetime | None = None
+    error_kind: str | None = Field(default=None, max_length=128)
+    safe_message: str | None = Field(default=None, max_length=2_000)
+    usage_status: ProviderUsageStatus = ProviderUsageStatus.UNREPORTED
+    usage: ModelUsage | None = None
+    request_sent: bool | None = None
+    budget_reservation_usd: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def validate_terminal_state(self) -> ProviderAttemptRecord:
+        if self.status is ProviderAttemptStatus.RUNNING and self.finished_at is not None:
+            raise ValueError("running provider attempt cannot have a finish time")
+        if self.status is not ProviderAttemptStatus.RUNNING and self.finished_at is None:
+            raise ValueError("terminal provider attempt requires a finish time")
+        return self
+
+
+class ProviderRequestConflict(ContractError):
+    code = "provider_request_conflict"
+
+    def __init__(
+        self, request_id: str, message: str = "provider request identity conflict"
+    ) -> None:
+        super().__init__(message, request_id=request_id)
+        self.request_id = request_id
+
+
 class AdvanceStatus(StrEnum):
     PROGRESSED = "progressed"
     WAITING = "waiting"
@@ -330,7 +459,40 @@ class RuntimeStore(Protocol):
         *,
         expected_version: int,
         lease_guard: LeaseGuard | None = None,
+        provider_request_id: str | None = None,
     ) -> list[Effect]: ...
+
+    def begin_provider_request(
+        self, record: ProviderRequestRecord, *, lease_guard: LeaseGuard
+    ) -> ProviderRequestRecord: ...
+
+    def begin_provider_attempt(
+        self, record: ProviderAttemptRecord, *, lease_guard: LeaseGuard
+    ) -> ProviderAttemptRecord: ...
+
+    def finish_provider_attempt(
+        self,
+        attempt_id: str,
+        outcome: ProviderAttemptOutcome,
+        *,
+        lease_guard: LeaseGuard,
+    ) -> ProviderAttemptRecord: ...
+
+    def commit_provider_response(
+        self,
+        request_id: str,
+        response: ModelResponse,
+        *,
+        lease_guard: LeaseGuard,
+    ) -> ProviderRequestRecord: ...
+
+    def get_provider_request(self, request_id: str) -> ProviderRequestRecord: ...
+
+    def list_provider_attempts(self, request_id: str) -> list[ProviderAttemptRecord]: ...
+
+    def invalidate_provider_request(
+        self, request_id: str, *, lease_guard: LeaseGuard
+    ) -> ProviderRequestRecord: ...
 
     def decide_approval(
         self, approval: Approval, *, expected_version: int | None = None
@@ -483,6 +645,8 @@ class FakeStore:
         self.events: dict[str, list[SessionEvent]] = {}
         self.tool_results: dict[tuple[str, str], tuple[ToolCall, ToolResult]] = {}
         self.managed_commands: dict[str, ManagedCommandIdentity] = {}
+        self.provider_requests: dict[str, ProviderRequestRecord] = {}
+        self.provider_attempts: dict[str, ProviderAttemptRecord] = {}
 
     @staticmethod
     def _copy(value: _T) -> _T:
@@ -1160,6 +1324,7 @@ class FakeStore:
         *,
         expected_version: int,
         lease_guard: LeaseGuard | None = None,
+        provider_request_id: str | None = None,
     ) -> list[Effect]:
         if step.model_response is None:
             raise ValueError("an Effect batch requires a persisted model response")
@@ -1172,20 +1337,46 @@ class FakeStore:
             for position, effect in enumerate(effects)
         ):
             raise ValueError("Effect batch does not match its Step")
+        safe_step = AgentStep.model_validate(
+            self._safe_provider_value(step.model_dump(mode="json"))
+        )
         task = self.get_task(step.task_id)
         self._require_session_guard(task, lease_guard)
         self._check_version(task.id, task.version, expected_version)
+        provider_request = None
+        if provider_request_id is not None:
+            self._assert_provider_guard(step.task_id, lease_guard)
+            provider_request = self.get_provider_request(provider_request_id)
+            if provider_request.task_id != step.task_id:
+                raise ProviderRequestConflict(
+                    provider_request_id, "provider request belongs to another task"
+                )
+            if provider_request.status not in {
+                ProviderRequestStatus.RESPONSE_READY,
+                ProviderRequestStatus.COMPLETED,
+            }:
+                raise ProviderRequestConflict(
+                    provider_request_id, "provider response is not complete"
+                )
+            if (
+                provider_request.response is None
+                or self._safe_provider_value(provider_request.response.model_dump(mode="json"))
+                != safe_step.model_response
+            ):
+                raise ProviderRequestConflict(
+                    provider_request_id, "Step response differs from provider response"
+                )
         key = (step.task_id, step.index)
         existing = self.steps.get(key)
         if existing is not None and (
-            existing.id != step.id
+            existing.id != safe_step.id
             or (
                 existing.model_response is not None
-                and existing.model_response != step.model_response
+                and existing.model_response != safe_step.model_response
             )
-            or (existing.effect_ids and existing.effect_ids != step.effect_ids)
+            or (existing.effect_ids and existing.effect_ids != safe_step.effect_ids)
         ):
-            raise EffectIdentityConflict(step.id, (step.task_id, step.id, step.index))
+            raise EffectIdentityConflict(safe_step.id, (step.task_id, step.id, step.index))
         prepared: list[Effect] = []
         new_effects: list[Effect] = []
         for effect in effects:
@@ -1204,9 +1395,17 @@ class FakeStore:
             else:
                 new_effects.append(effect)
                 prepared.append(self._copy(effect))
-        self.steps[key] = self._copy(step)
+        self.steps[key] = self._copy(safe_step)
         for effect in new_effects:
             self.effects[effect.id] = self._copy(effect)
+        if (
+            provider_request is not None
+            and provider_request.status is ProviderRequestStatus.RESPONSE_READY
+        ):
+            assert provider_request_id is not None
+            self.provider_requests[provider_request_id] = provider_request.model_copy(
+                update={"status": ProviderRequestStatus.COMPLETED, "updated_at": datetime.now(UTC)}
+            )
         if new_effects and task.session_id is not None:
             effect_ids = [effect.id for effect in new_effects]
             self._journal(
@@ -1217,6 +1416,296 @@ class FakeStore:
                 data={"effect_ids": effect_ids, "step_id": step.id},
             )
         return prepared
+
+    def begin_provider_request(
+        self, record: ProviderRequestRecord, *, lease_guard: LeaseGuard
+    ) -> ProviderRequestRecord:
+        self._assert_provider_guard(record.task_id, lease_guard)
+        existing = self.provider_requests.get(record.request_id)
+        if existing is not None:
+            if _provider_request_identity(existing) != _provider_request_identity(record):
+                raise ProviderRequestConflict(record.request_id)
+            if existing.status is ProviderRequestStatus.INVALIDATED:
+                raise ProviderRequestConflict(record.request_id, "provider request was invalidated")
+            return self._copy(existing)
+        for current in self.provider_requests.values():
+            if current.logical_key == record.logical_key:
+                if _provider_request_identity(current) == _provider_request_identity(record):
+                    if current.status is ProviderRequestStatus.INVALIDATED:
+                        raise ProviderRequestConflict(
+                            record.request_id, "provider request was invalidated"
+                        )
+                    return self._copy(current)
+                raise ProviderRequestConflict(
+                    record.request_id, "logical provider request already exists"
+                )
+        task = self.get_task(record.task_id)
+        self.provider_requests[record.request_id] = self._copy(record)
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("provider.request.started", record.request_id, 1),
+                event_type="provider.request.started",
+                task_id=task.id,
+                data={"request_id": record.request_id, "purpose": record.purpose.value},
+            )
+        return self._copy(record)
+
+    def begin_provider_attempt(
+        self, record: ProviderAttemptRecord, *, lease_guard: LeaseGuard
+    ) -> ProviderAttemptRecord:
+        self._assert_provider_guard(lease_guard.task_id, lease_guard)
+        request = self.get_provider_request(record.request_id)
+        if (
+            request.task_id != lease_guard.task_id
+            or record.execution_id != lease_guard.execution_id
+        ):
+            raise LeaseLost(lease_guard.task_id)
+        if request.status is not ProviderRequestStatus.PENDING:
+            raise ProviderRequestConflict(
+                request.request_id, "provider request is not awaiting an attempt"
+            )
+        existing = self.provider_attempts.get(record.attempt_id)
+        if existing is not None:
+            if existing == record:
+                return self._copy(existing)
+            raise ProviderRequestConflict(request.request_id, "provider attempt identity conflict")
+        prior = self.list_provider_attempts(record.request_id)
+        if record.ordinal != len(prior) + 1:
+            raise ProviderRequestConflict(
+                request.request_id, "provider attempt ordinal is not sequential"
+            )
+        self._interrupt_open_provider_attempts(record.request_id, datetime.now(UTC))
+        self.provider_attempts[record.attempt_id] = self._copy(record)
+        self._journal_provider_attempt(request.task_id, record, "provider.attempt.started")
+        return self._copy(record)
+
+    def finish_provider_attempt(
+        self,
+        attempt_id: str,
+        outcome: ProviderAttemptOutcome,
+        *,
+        lease_guard: LeaseGuard,
+    ) -> ProviderAttemptRecord:
+        attempt = self.provider_attempts.get(attempt_id)
+        if attempt is None:
+            raise KeyError(f"provider attempt not found: {attempt_id}")
+        self._assert_provider_guard(lease_guard.task_id, lease_guard)
+        if (
+            attempt.execution_id != lease_guard.execution_id
+            or attempt.request_id not in self.provider_requests
+        ):
+            raise LeaseLost(lease_guard.task_id)
+        if attempt.status is not ProviderAttemptStatus.RUNNING:
+            if attempt.status is outcome.status:
+                return self._copy(attempt)
+            raise ProviderRequestConflict(
+                attempt.request_id, "provider attempt already has another outcome"
+            )
+        finished = attempt.model_copy(
+            update={
+                "status": outcome.status,
+                "finished_at": datetime.now(UTC),
+                "error_kind": outcome.error_kind,
+                "safe_message": self._safe_provider_value(outcome.safe_message),
+                "usage_status": outcome.usage_status,
+                "usage": outcome.usage,
+                "request_sent": outcome.request_sent,
+            }
+        )
+        self.provider_attempts[attempt_id] = finished
+        self._journal_provider_attempt(
+            self.provider_requests[attempt.request_id].task_id,
+            finished,
+            f"provider.attempt.{finished.status.value}",
+        )
+        return self._copy(finished)
+
+    def commit_provider_response(
+        self,
+        request_id: str,
+        response: ModelResponse,
+        *,
+        lease_guard: LeaseGuard,
+    ) -> ProviderRequestRecord:
+        from patchloop.providers.continuation import ContinuationCodec
+
+        request = self.get_provider_request(request_id)
+        self._assert_provider_guard(request.task_id, lease_guard)
+        if request.status in {
+            ProviderRequestStatus.RESPONSE_READY,
+            ProviderRequestStatus.COMPLETED,
+        }:
+            safe_response = ContinuationCodec().to_storage(response)
+            if request.response == safe_response:
+                return request
+            raise ProviderRequestConflict(
+                request_id, "provider response conflicts with committed response"
+            )
+        attempt = next(
+            (
+                item
+                for item in reversed(self.list_provider_attempts(request_id))
+                if item.status is ProviderAttemptStatus.RUNNING
+                and item.execution_id == lease_guard.execution_id
+            ),
+            None,
+        )
+        if attempt is None:
+            raise ProviderRequestConflict(request_id, "complete response has no active attempt")
+        safe_response = ContinuationCodec().to_storage(response)
+        digest = ContinuationCodec.response_digest(safe_response)
+        status = (
+            ProviderRequestStatus.COMPLETED
+            if request.purpose is ProviderRequestPurpose.EPOCH_COMPRESSION
+            else ProviderRequestStatus.RESPONSE_READY
+        )
+        updated = request.model_copy(
+            update={
+                "status": status,
+                "response": safe_response,
+                "response_sha256": digest,
+                "usage": safe_response.usage,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self.provider_requests[request_id] = updated
+        succeeded = attempt.model_copy(
+            update={
+                "status": ProviderAttemptStatus.SUCCEEDED,
+                "finished_at": datetime.now(UTC),
+                "usage_status": _provider_usage_status(safe_response.usage),
+                "usage": safe_response.usage,
+                "request_sent": True,
+            }
+        )
+        self.provider_attempts[attempt.attempt_id] = succeeded
+        self._journal_provider_attempt(updated.task_id, succeeded, "provider.attempt.succeeded")
+        self._journal_provider_request(updated.task_id, updated)
+        return self._copy(updated)
+
+    def get_provider_request(self, request_id: str) -> ProviderRequestRecord:
+        from patchloop.providers.continuation import ContinuationCodec
+
+        request = self.provider_requests.get(request_id)
+        if request is None:
+            raise KeyError(f"provider request not found: {request_id}")
+        if (
+            request.response is not None
+            and ContinuationCodec.response_digest(request.response) != request.response_sha256
+        ):
+            raise ProviderRequestConflict(
+                request_id, "stored provider response failed integrity check"
+            )
+        return self._copy(request)
+
+    def list_provider_attempts(self, request_id: str) -> list[ProviderAttemptRecord]:
+        return [
+            self._copy(item)
+            for item in sorted(
+                (
+                    attempt
+                    for attempt in self.provider_attempts.values()
+                    if attempt.request_id == request_id
+                ),
+                key=lambda attempt: attempt.ordinal,
+            )
+        ]
+
+    def invalidate_provider_request(
+        self, request_id: str, *, lease_guard: LeaseGuard
+    ) -> ProviderRequestRecord:
+        request = self.get_provider_request(request_id)
+        self._assert_provider_guard(request.task_id, lease_guard)
+        if request.status is ProviderRequestStatus.COMPLETED:
+            raise ProviderRequestConflict(
+                request_id, "completed provider request cannot be invalidated"
+            )
+        self._interrupt_open_provider_attempts(request_id, datetime.now(UTC))
+        invalidated = request.model_copy(
+            update={
+                "status": ProviderRequestStatus.INVALIDATED,
+                "response": None,
+                "response_sha256": None,
+                "usage": None,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self.provider_requests[request_id] = invalidated
+        task = self.get_task(request.task_id)
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id(
+                    "provider.request.invalidated", request_id, request.input_revision
+                ),
+                event_type="provider.request.invalidated",
+                task_id=task.id,
+                data={"request_id": request_id, "input_revision": request.input_revision},
+            )
+        return self._copy(invalidated)
+
+    def _assert_provider_guard(self, task_id: str, lease_guard: LeaseGuard | None) -> Execution:
+        if lease_guard is None or lease_guard.task_id != task_id:
+            raise LeaseLost(task_id)
+        return self._assert_guard(lease_guard)
+
+    def _interrupt_open_provider_attempts(self, request_id: str, now: datetime) -> None:
+        request = self.provider_requests[request_id]
+        for attempt in self.list_provider_attempts(request_id):
+            if attempt.status is not ProviderAttemptStatus.RUNNING:
+                continue
+            interrupted = attempt.model_copy(
+                update={
+                    "status": ProviderAttemptStatus.INTERRUPTED,
+                    "finished_at": now,
+                    "usage_status": ProviderUsageStatus.UNKNOWN,
+                }
+            )
+            self.provider_attempts[attempt.attempt_id] = interrupted
+            self._journal_provider_attempt(
+                request.task_id, interrupted, "provider.attempt.interrupted"
+            )
+
+    def _journal_provider_attempt(
+        self, task_id: str, attempt: ProviderAttemptRecord, event_type: str
+    ) -> None:
+        task = self.get_task(task_id)
+        if task.session_id is None:
+            return
+        self._journal(
+            self.get_session(task.session_id),
+            event_id=journal_event_id(event_type, attempt.attempt_id, attempt.ordinal),
+            event_type=event_type,
+            task_id=task.id,
+            data={
+                "request_id": attempt.request_id,
+                "attempt_id": attempt.attempt_id,
+                "ordinal": attempt.ordinal,
+                "status": attempt.status.value,
+                "usage_status": attempt.usage_status.value,
+            },
+        )
+
+    def _journal_provider_request(self, task_id: str, request: ProviderRequestRecord) -> None:
+        task = self.get_task(task_id)
+        if task.session_id is None:
+            return
+        self._journal(
+            self.get_session(task.session_id),
+            event_id=journal_event_id(
+                "provider.response.saved", request.request_id, request.updated_at.isoformat()
+            ),
+            event_type="provider.response.saved",
+            task_id=task.id,
+            data={"request_id": request.request_id, "status": request.status.value},
+        )
+
+    @staticmethod
+    def _safe_provider_value(value: object) -> object:
+        from patchloop.providers.continuation import ContinuationCodec
+
+        return ContinuationCodec().to_storage(value)
 
     def decide_approval(
         self, approval: Approval, *, expected_version: int | None = None
@@ -2012,6 +2501,25 @@ class FakeStore:
             effect = self.effects.get(effect_id)
             if effect is None or effect.task_id != checkpoint.task_id:
                 raise ValueError("checkpoint references an Effect outside its task")
+        referenced_requests = set(checkpoint.accounted_provider_request_ids)
+        if checkpoint.pending_provider_request_id is not None:
+            referenced_requests.add(checkpoint.pending_provider_request_id)
+        for request_id in referenced_requests:
+            request = self.provider_requests.get(request_id)
+            if request is None or request.task_id != checkpoint.task_id:
+                raise ValueError("checkpoint references a provider request outside its task")
+            if request_id in checkpoint.accounted_provider_request_ids and request.response is None:
+                raise ValueError("checkpoint accounts for a provider request without a response")
+            if (
+                request_id == checkpoint.pending_provider_request_id
+                and request.status is ProviderRequestStatus.INVALIDATED
+            ):
+                raise ValueError("checkpoint references an invalidated provider request")
+        for attempt_id in checkpoint.accounted_provider_attempt_ids:
+            attempt = self.provider_attempts.get(attempt_id)
+            request = None if attempt is None else self.provider_requests.get(attempt.request_id)
+            if request is None or request.task_id != checkpoint.task_id:
+                raise ValueError("checkpoint references a provider attempt outside its task")
         self.checkpoints[checkpoint.task_id] = self._copy(checkpoint)
         self._journal(
             self.get_session(checkpoint.session_id),
@@ -2079,6 +2587,13 @@ __all__ = [
     "LeaseConflict",
     "LeaseGuard",
     "LeaseLost",
+    "ProviderAttemptOutcome",
+    "ProviderAttemptRecord",
+    "ProviderAttemptStatus",
+    "ProviderRequestConflict",
+    "ProviderRequestRecord",
+    "ProviderRequestStatus",
+    "ProviderUsageStatus",
     "RecoveryRequired",
     "RuntimePort",
     "RuntimeStore",
@@ -2088,3 +2603,22 @@ __all__ = [
     "SubmissionConflict",
     "WorkspaceLeaseGuard",
 ]
+
+
+def _provider_request_identity(record: ProviderRequestRecord) -> tuple[object, ...]:
+    return (
+        record.request_id,
+        record.task_id,
+        record.purpose,
+        record.step_index,
+        record.epoch_generation,
+        record.input_revision,
+        record.binding_fingerprint,
+        record.input_digest,
+    )
+
+
+def _provider_usage_status(usage: ModelUsage) -> ProviderUsageStatus:
+    if usage.input_tokens_reported is True or usage.output_tokens_reported is True:
+        return ProviderUsageStatus.REPORTED
+    return ProviderUsageStatus.UNKNOWN

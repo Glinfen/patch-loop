@@ -438,6 +438,20 @@ def _message_payload(message: Any, dialect: ChatDialect) -> dict[str, Any]:
     if message.tool_call_id is not None:
         payload["tool_call_id"] = message.tool_call_id
     continuation = message.continuation
+    if (
+        dialect is ChatDialect.STANDARD
+        and continuation is not None
+        and continuation.responses_items
+    ):
+        raise ProviderError(
+            ProviderErrorKind.CONTINUATION_UNAVAILABLE,
+            "Chat Completions cannot replay Responses continuation items",
+        )
+    if dialect is ChatDialect.DEEPSEEK and continuation is not None and not continuation.replayable:
+        raise ProviderError(
+            ProviderErrorKind.CONTINUATION_UNAVAILABLE,
+            "stored provider continuation was redacted and cannot be replayed",
+        )
     if dialect is ChatDialect.DEEPSEEK and continuation is not None:
         if continuation.deepseek_reasoning_content is not None:
             payload["reasoning_content"] = continuation.deepseek_reasoning_content
@@ -458,6 +472,11 @@ def _validate_deepseek_history(request: ProviderRequest) -> None:
             raise ProviderError(
                 ProviderErrorKind.CONTINUATION_UNAVAILABLE,
                 "assistant history is missing required DeepSeek reasoning continuation",
+            )
+        if not continuation.replayable:
+            raise ProviderError(
+                ProviderErrorKind.CONTINUATION_UNAVAILABLE,
+                "stored DeepSeek continuation was redacted and cannot be replayed",
             )
 
 

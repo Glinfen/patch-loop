@@ -19,6 +19,7 @@ from patchloop.context.models import (
 from patchloop.domain import Plan, StepStatus, ToolResult
 from patchloop.intelligence.search import tokenize
 from patchloop.providers.base import ModelMessage, ToolSpec
+from patchloop.providers.continuation import ContinuationCodec, estimate_continuation_tokens
 from patchloop.security import SecretRedactor, UntrustedContentGuard
 
 PATH_PATTERN = re.compile(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.py(?::\d+)?")
@@ -70,6 +71,7 @@ class ContextEngine:
         self.max_tool_output_chars = max_tool_output_chars
         self.recent_steps = recent_steps
         self.redactor = redactor or SecretRedactor()
+        self.continuation_codec = ContinuationCodec(self.redactor)
         self.content_guard = UntrustedContentGuard(self.redactor)
 
     def compact_tool_result(self, result: ToolResult) -> tuple[str, bool]:
@@ -144,10 +146,7 @@ class ContextEngine:
             raise ValueError("task memory role must be system or user")
         if pinned_tail_message_count < 0:
             raise ValueError("pinned tail message count cannot be negative")
-        messages = [
-            ModelMessage.model_validate(self.redactor.redact(message.model_dump(mode="json")))
-            for message in messages
-        ]
+        messages = [self.continuation_codec.to_storage(message) for message in messages]
         if len(messages) < stable_prefix_message_count:
             raise ValueError("context requires system and user messages")
         normalized, truncated_messages = self._normalize_messages(messages)
@@ -307,13 +306,12 @@ class ContextEngine:
         return normalized, truncated_count
 
     def _normalize_message(self, message: ModelMessage) -> tuple[ModelMessage, bool]:
+        message = self.continuation_codec.to_storage(message)
         if message.role in {"system", "user"}:
             content = self.redactor.redact_text(message.content)
             return message.model_copy(update={"content": content}, deep=True), False
         max_chars = (
-            self.max_tool_output_chars
-            if message.role == "tool"
-            else self.max_tool_output_chars * 2
+            self.max_tool_output_chars if message.role == "tool" else self.max_tool_output_chars * 2
         )
         safe_content = (
             self.content_guard.inspect(message.content).safe_text
@@ -573,7 +571,7 @@ class ContextEngine:
             "tool_calls": [call.model_dump(mode="json") for call in message.tool_calls],
         }
         serialized = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        return math.ceil(len(serialized) / 3) + 4
+        return math.ceil(len(serialized) / 3) + 4 + estimate_continuation_tokens(message)
 
     @classmethod
     def estimate_messages(cls, messages: list[ModelMessage]) -> int:

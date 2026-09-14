@@ -25,6 +25,11 @@ if TYPE_CHECKING:
     )
     from patchloop.providers.chat import ChatCompletionsAdapter, ChatStreamReducer
     from patchloop.providers.config import CredentialResolver, ProfileResolver, provider_endpoint
+    from patchloop.providers.continuation import (
+        ContinuationCodec,
+        ContinuationIntegrityError,
+        ContinuationUnavailable,
+    )
     from patchloop.providers.contracts import (
         ChatDialect,
         ProviderAuth,
@@ -51,6 +56,9 @@ _MODULE_BY_NAME = {
     "ChatCompletionsAdapter": "chat",
     "ChatDialect": "contracts",
     "ChatStreamReducer": "chat",
+    "ContinuationCodec": "continuation",
+    "ContinuationIntegrityError": "continuation",
+    "ContinuationUnavailable": "continuation",
     "ControlAction": "base",
     "CredentialResolver": "config",
     "DeepSeekConfig": "deepseek",
@@ -96,6 +104,9 @@ __all__ = [
     "ChatCompletionsAdapter",
     "ChatDialect",
     "ChatStreamReducer",
+    "ContinuationCodec",
+    "ContinuationIntegrityError",
+    "ContinuationUnavailable",
     "ControlAction",
     "CredentialResolver",
     "DeepSeekConfig",

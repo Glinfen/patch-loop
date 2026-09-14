@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from patchloop.providers.base import ModelMessage, ModelUsage, ToolSpec
+from patchloop.providers.continuation import ContinuationCodec
 from patchloop.security import SecretRedactor
 
 
@@ -388,7 +389,10 @@ def fingerprint_request(
     """
 
     redactor = redactor or SecretRedactor()
-    safe_messages = [redactor.redact(message.model_dump(mode="json")) for message in messages]
+    continuation_codec = ContinuationCodec(redactor)
+    safe_messages = [
+        continuation_codec.to_public(message.model_dump(mode="json")) for message in messages
+    ]
     safe_tools = [redactor.redact(tool.model_dump(mode="json")) for tool in tools]
     safe_tools = sorted(
         safe_tools,

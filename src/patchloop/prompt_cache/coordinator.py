@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 import re
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from patchloop.domain import PromptCacheLayout
+from patchloop.context.engine import ContextBudgetError, ContextEngine
+from patchloop.domain import PromptCacheLayout, TaskBudget
 from patchloop.prompt_cache.diagnostics import (
     CacheDiagnostics,
     CacheDiagnosticsSnapshot,
     CacheLayoutTrace,
 )
 from patchloop.prompt_cache.epoch import (
+    COMPRESSION_INSTRUCTION,
     CacheCompressionRequest,
     CacheEpoch,
     CacheEpochBoundary,
@@ -31,6 +36,7 @@ from patchloop.prompt_cache.usage import (
     CacheUsageReportFields,
 )
 from patchloop.providers.base import ModelMessage, ModelUsage, ToolSpec
+from patchloop.providers.contracts import ProviderBinding
 from patchloop.security import SecretRedactor
 
 _SHA256_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
@@ -41,6 +47,142 @@ _FROZEN_EPOCH_LAYOUTS = frozenset({PromptCacheLayout.STABLE, PromptCacheLayout.A
 
 class PromptCacheCoordinatorError(ValueError):
     """Raised when a prompt-cache lifecycle transition is invalid."""
+
+
+class PromptPrefixViolation(PromptCacheCoordinatorError):
+    """Raised when an append-only request changes an already submitted prefix."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        message_index: int | None = None,
+        expected_fingerprint: str | None = None,
+        actual_fingerprint: str | None = None,
+    ) -> None:
+        self.reason = reason
+        self.message_index = message_index
+        self.expected_fingerprint = expected_fingerprint
+        self.actual_fingerprint = actual_fingerprint
+        detail = f"append-only prompt prefix violation: {reason}"
+        if message_index is not None:
+            detail += f" at message {message_index}"
+        if expected_fingerprint is not None and actual_fingerprint is not None:
+            detail += (
+                f" (expected {expected_fingerprint[:12]}, "
+                f"got {actual_fingerprint[:12]})"
+            )
+        super().__init__(detail)
+
+
+class PrefixBudget(BaseModel):
+    """Token ceilings for append-only requests and their reserved operations."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    input_limit: int = Field(ge=1)
+    ordinary_limit: int = Field(ge=1)
+    soft_limit: int = Field(ge=1)
+    memory_message_limit: int = Field(ge=64)
+    summary_limit: int = Field(ge=128)
+
+
+def compute_prefix_budget(
+    task_budget: TaskBudget,
+    provider_binding: ProviderBinding | None,
+    tools: list[ToolSpec],
+) -> PrefixBudget:
+    """Calculate the append-only input, compression, summary and memory budgets."""
+
+    tool_tokens = ContextEngine.estimate_tools(tools)
+    if provider_binding is None:
+        output_tokens = task_budget.max_output_tokens
+        context_window = task_budget.max_context_tokens + output_tokens + 256
+        for _ in range(8):
+            safety_tokens = min(2048, max(256, math.ceil(context_window * 0.01)))
+            adjusted_window = task_budget.max_context_tokens + output_tokens + safety_tokens
+            if adjusted_window == context_window:
+                break
+            context_window = adjusted_window
+    else:
+        output_tokens = provider_binding.generation.max_output_tokens
+        context_window = provider_binding.capabilities.context_window_tokens
+
+    safety_tokens = min(2048, max(256, math.ceil(context_window * 0.01)))
+    input_limit = min(
+        task_budget.max_context_tokens,
+        context_window - output_tokens - safety_tokens,
+    )
+    if input_limit < tool_tokens:
+        raise ContextBudgetError(
+            f"tool definitions require {tool_tokens} tokens, input budget is {input_limit}"
+        )
+
+    compression_message = ModelMessage(role="user", content=COMPRESSION_INSTRUCTION)
+    compression_reserve = ContextEngine.estimate_message(compression_message) + 64
+    ordinary_limit = input_limit - compression_reserve
+    if ordinary_limit < 1:
+        raise ContextBudgetError(
+            "input budget cannot reserve enough room for an ordinary request and compression"
+        )
+    memory_message_limit = min(2048, math.floor(ordinary_limit * 0.10))
+    if memory_message_limit < 64:
+        raise ContextBudgetError(
+            "ordinary input budget is too small to reserve the minimum memory message limit"
+        )
+    soft_limit = math.floor(ordinary_limit * 0.80)
+    summary_limit = min(2048, max(128, math.floor(ordinary_limit * 0.125)))
+    return PrefixBudget(
+        input_limit=input_limit,
+        ordinary_limit=ordinary_limit,
+        soft_limit=soft_limit,
+        memory_message_limit=memory_message_limit,
+        summary_limit=summary_limit,
+    )
+
+
+def _fingerprint_payload(value: object) -> str:
+    encoded = json.dumps(
+        _json_compatible(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _json_compatible(value: object) -> object:
+    if isinstance(value, BaseModel):
+        return _json_compatible(value.model_dump(mode="json"))
+    if isinstance(value, dict):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_compatible(item) for item in value]
+    if hasattr(value, "value") and isinstance(value.value, str):
+        return value.value
+    return value
+
+
+def _message_fingerprint(message: ModelMessage) -> str:
+    return _fingerprint_payload(message.model_dump(mode="json"))
+
+
+def _binding_fingerprint(
+    provider: str,
+    model: str | None,
+    thinking: object | None,
+    provider_binding: ProviderBinding | None,
+) -> str:
+    return _fingerprint_payload(
+        {
+            "provider": provider,
+            "model": model,
+            "thinking": thinking,
+            "provider_binding": (
+                provider_binding.fingerprint if provider_binding is not None else None
+            ),
+        }
+    )
 
 
 class AppendOnlyPromptState(BaseModel):
@@ -456,6 +598,8 @@ class PromptCacheCoordinator:
         """Materialize an epoch and publish memory without observing a request."""
 
         request_messages = [message.model_copy(deep=True) for message in messages]
+        if self.layout is PromptCacheLayout.APPEND_ONLY:
+            return request_messages
         if self._epoch is None:
             return request_messages
         request_messages = self._epoch.materialize(request_messages)
@@ -484,22 +628,43 @@ class PromptCacheCoordinator:
         provider: str,
         model: str | None = None,
         thinking: object | None = None,
+        tools: list[ToolSpec] | None = None,
+        provider_binding: ProviderBinding | None = None,
         system_instructions: str | None = None,
         task_project_snapshot: object | None = None,
         memory_projection: str | None = None,
     ) -> PromptCachePreparedRequest:
         self._ensure_step_available(step)
-        request_messages = self.materialize_messages(
-            messages,
-            memory_projection=memory_projection,
+        request_tools = (
+            [tool.model_copy(deep=True) for tool in tools]
+            if tools is not None
+            else self.frozen_tools
         )
-        published_memory = memory_projection
-        if self._publication.snapshot is not None:
-            published_memory = self._publication.rendered
+        if self.layout is PromptCacheLayout.APPEND_ONLY:
+            request_messages = [message.model_copy(deep=True) for message in messages]
+            self._validate_append_only_request(
+                request_messages,
+                request_tools,
+                provider=provider,
+                model=model,
+                thinking=thinking,
+                provider_binding=provider_binding,
+            )
+            # V2 publications are transcript messages supplied by the caller. The
+            # coordinator must never move an old publication in front of history.
+            published_memory = None
+        else:
+            request_messages = self.materialize_messages(
+                messages,
+                memory_projection=memory_projection,
+            )
+            published_memory = memory_projection
+            if self._publication.snapshot is not None:
+                published_memory = self._publication.rendered
         cache_layout = self._diagnostics.observe(
             step,
             request_messages,
-            self._frozen_tools,
+            request_tools,
             provider=provider,
             model=model,
             thinking=thinking,
@@ -514,9 +679,18 @@ class PromptCacheCoordinator:
             step=step,
             epoch_id=self.epoch_id,
             messages=request_messages,
-            tools=self.frozen_tools,
+            tools=request_tools,
             cache_layout=cache_layout,
         )
+        if self.layout is PromptCacheLayout.APPEND_ONLY:
+            self._record_append_only_submission(
+                request_messages,
+                request_tools,
+                provider=provider,
+                model=model,
+                thinking=thinking,
+                provider_binding=provider_binding,
+            )
         self._mark_pending("request", cache_layout.request_fingerprint)
         return prepared
 
@@ -667,6 +841,127 @@ class PromptCacheCoordinator:
         self._pending_kind = None
         self._pending_fingerprint = None
 
+    def _validate_append_only_request(
+        self,
+        messages: list[ModelMessage],
+        tools: list[ToolSpec],
+        *,
+        provider: str,
+        model: str | None,
+        thinking: object | None,
+        provider_binding: ProviderBinding | None,
+    ) -> None:
+        state = self._append_only_state
+        if state is None or self._epoch is None:
+            raise PromptPrefixViolation("append-only boundary state is unavailable")
+        if state.root_prefix_message_count > self._epoch.prefix_message_count:
+            raise PromptPrefixViolation("declared root prefix exceeds the frozen epoch")
+        if len(messages) < self._epoch.prefix_message_count:
+            raise PromptPrefixViolation("request is shorter than the frozen epoch prefix")
+        if len(messages) < state.last_submitted_message_count:
+            raise PromptPrefixViolation("request omits messages from the previous request")
+
+        request_prefix_fingerprints = [
+            _message_fingerprint(message)
+            for message in messages[: self._epoch.prefix_message_count]
+        ]
+        frozen_fingerprints = [
+            _message_fingerprint(message)
+            for message in self._epoch.frozen_prefix
+        ]
+        for index, (actual, expected) in enumerate(
+            zip(request_prefix_fingerprints, frozen_fingerprints, strict=True)
+        ):
+            if actual != expected:
+                raise PromptPrefixViolation(
+                    "frozen epoch message changed",
+                    message_index=index,
+                    expected_fingerprint=expected,
+                    actual_fingerprint=actual,
+                )
+
+        current_fingerprints = [_message_fingerprint(message) for message in messages]
+        for index, expected in enumerate(state.last_submitted_message_fingerprints):
+            actual = current_fingerprints[index]
+            if actual != expected:
+                raise PromptPrefixViolation(
+                    "previously submitted message changed",
+                    message_index=index,
+                    expected_fingerprint=expected,
+                    actual_fingerprint=actual,
+                )
+
+        expected_tools = _fingerprint_payload(
+            [tool.model_dump(mode="json") for tool in self._frozen_tools]
+        )
+        actual_tools = _fingerprint_payload([tool.model_dump(mode="json") for tool in tools])
+        if actual_tools != expected_tools:
+            raise PromptPrefixViolation(
+                "tool definitions or order changed",
+                expected_fingerprint=expected_tools,
+                actual_fingerprint=actual_tools,
+            )
+        if (
+            state.last_submitted_tool_fingerprint is not None
+            and actual_tools != state.last_submitted_tool_fingerprint
+        ):
+            raise PromptPrefixViolation(
+                "tool definitions changed since the previous request",
+                expected_fingerprint=state.last_submitted_tool_fingerprint,
+                actual_fingerprint=actual_tools,
+            )
+
+        binding_fingerprint = _binding_fingerprint(
+            provider,
+            model,
+            thinking,
+            provider_binding,
+        )
+        if (
+            state.last_submitted_binding_fingerprint is not None
+            and binding_fingerprint != state.last_submitted_binding_fingerprint
+        ):
+            raise PromptPrefixViolation(
+                "provider binding changed since the previous request",
+                expected_fingerprint=state.last_submitted_binding_fingerprint,
+                actual_fingerprint=binding_fingerprint,
+            )
+
+    def _record_append_only_submission(
+        self,
+        messages: list[ModelMessage],
+        tools: list[ToolSpec],
+        *,
+        provider: str,
+        model: str | None,
+        thinking: object | None,
+        provider_binding: ProviderBinding | None,
+    ) -> None:
+        state = self._append_only_state
+        if state is None:
+            raise PromptPrefixViolation("append-only boundary state is unavailable")
+        self._append_only_state = AppendOnlyPromptState.model_validate(
+            {
+                **state.model_dump(mode="python"),
+                "last_submitted_message_count": len(messages),
+                "last_submitted_message_fingerprints": [
+                    _message_fingerprint(message) for message in messages
+                ],
+                "last_submitted_tool_fingerprint": _fingerprint_payload(
+                    [tool.model_dump(mode="json") for tool in tools]
+                ),
+                "last_submitted_binding_fingerprint": _binding_fingerprint(
+                    provider,
+                    model,
+                    thinking,
+                    provider_binding,
+                ),
+                # prepare_request has no Provider request id; retaining the old
+                # id here would associate it with the wrong immutable transcript.
+                "last_submitted_request_id": None,
+            }
+        )
+
     def abort_pending(self) -> None:
         """Discard an in-flight provider response after an external failure."""
 
@@ -675,6 +970,7 @@ class PromptCacheCoordinator:
 
 __all__ = [
     "AppendOnlyPromptState",
+    "PrefixBudget",
     "PromptCacheCheckpointFields",
     "PromptCacheCompressionPreparation",
     "PromptCacheCoordinator",
@@ -682,4 +978,6 @@ __all__ = [
     "PromptCacheCoordinatorSnapshot",
     "PromptCachePreparedRequest",
     "PromptCacheResponseObservation",
+    "PromptPrefixViolation",
+    "compute_prefix_budget",
 ]

@@ -1,6 +1,6 @@
 # Prompt 前缀稳定性修改方案
 
-调研日期：2026-09-13。状态：PPS-01、PPS-02、PPS-03 已完成；后续任务尚未实施。任务前缀：PPS。
+调研日期：2026-09-13。状态：PPS-01、PPS-02、PPS-03、PPS-04 已完成；PPS-05、PPS-06 尚未实施。任务前缀：PPS。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，基于当前工作区实际代码（含尚未提交的 Provider 契约改动）。不把其他计划中的接口当作已经完成的实现。
 
@@ -499,6 +499,15 @@ tests/unit/test_prompt_prefix_stability.py
 **Acceptance Criteria**
 
 同 epoch 普通请求结构不变量可在 Provider 前强制检查，旧 ContextEngine.build 测试保持通过。
+
+**Implementation Record**
+
+- 从 `ContextEngine._normalize_messages` 提取共享单消息规范化；`normalize_new_messages` 只脱敏/限长 `content`，工具 arguments 与 Provider continuation 保持原样，legacy `build` 的整体脱敏和原历史选择逻辑不变。
+- 新增 `build_append_only`：校验 assistant tool call 与 tool result 完整且顺序匹配，按全量 messages + tools 估算窗口，超预算抛 `ContextBudgetError`，通过时按原序深拷贝返回，不做历史筛选、压缩或失效值替换。
+- 新增纯函数 `compute_prefix_budget` 与 `PrefixBudget`，按任务/Provider 声明窗口、输出预算、安全余量、压缩 reserve 计算 ordinary/soft/memory/summary 上限；过小配置显式报错，离线模式按任务上下文预算计算。
+- append_only 的 `prepare_request` 跳过 epoch materialize 与 V1 publication 注入，逐消息检查冻结 epoch 前缀、上一请求指纹向量、工具定义顺序和 Provider binding；违规在诊断及 Provider 调用前抛 `PromptPrefixViolation`，错误只包含原因、位置和截断摘要，不包含消息正文。已准备请求的边界以 SHA-256 指纹记录。
+- 新增测试覆盖完整历史预算、工具组缺项、opaque continuation、英文/CJK 限长、正常追加、单字符修改、插入消息、工具排序、Provider binding 变更及小窗口预算。
+- 验证：PPS-04 相关集合（context、prefix stability、coordinator、epoch、memory publication）51 项通过；全量 pytest 为 590 passed、1 skipped、3 failed。3 项失败均在 `tests/integration/test_session_cli.py`，隔离重跑可复现：两项 Click 测试访问未单独捕获的 stderr，一项交互中断预期退出码 130 而实际为 2；`ruff check src tests` 与 `mypy src/patchloop` 通过。
 
 ### PPS-05：压缩 source 和有界 epoch
 

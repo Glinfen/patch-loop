@@ -7,6 +7,7 @@ provider I/O, persistence, tracing, or runtime orchestration.
 
 from patchloop.prompt_cache.coordinator import (
     AppendOnlyPromptState,
+    PrefixBudget,
     PromptCacheCheckpointFields,
     PromptCacheCompressionPreparation,
     PromptCacheCoordinator,
@@ -14,6 +15,8 @@ from patchloop.prompt_cache.coordinator import (
     PromptCacheCoordinatorSnapshot,
     PromptCachePreparedRequest,
     PromptCacheResponseObservation,
+    PromptPrefixViolation,
+    compute_prefix_budget,
 )
 from patchloop.prompt_cache.diagnostics import (
     CacheDiagnostics,
@@ -79,6 +82,7 @@ __all__ = [
     "MemoryDeltaTooLarge",
     "MemoryPublicationSnapshot",
     "MemoryPublicationUpdate",
+    "PrefixBudget",
     "PromptCacheCheckpointFields",
     "PromptCacheCompressionPreparation",
     "PromptCacheCoordinator",
@@ -89,6 +93,8 @@ __all__ = [
     "PromptCachePreparedRequest",
     "PromptCacheResponseObservation",
     "PromptLayout",
+    "PromptPrefixViolation",
+    "compute_prefix_budget",
     "fingerprint_json",
     "fingerprint_request",
     "fingerprint_text",

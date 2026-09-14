@@ -4,7 +4,7 @@ import pytest
 
 from patchloop.context import ContextBudgetError, ContextEngine
 from patchloop.domain import Plan, PlanItem, StepStatus, ToolCall, ToolResult
-from patchloop.providers import ModelMessage
+from patchloop.providers import ModelMessage, ProviderContinuation, ToolSpec, ValidatedResponseItem
 
 
 def tool_group(step: int, output: str) -> list[ModelMessage]:
@@ -217,3 +217,87 @@ def test_layered_context_masks_superseded_values_only_from_audit_history() -> No
     history = "\n".join(message.content for message in window.messages[2:])
     assert old_value not in history
     assert "[SUPERSEDED_MEMORY_OMITTED]" in history
+
+
+def test_normalize_new_messages_preserves_tool_arguments_and_opaque_continuation() -> None:
+    engine = ContextEngine(max_tokens=1_000, max_tool_output_chars=128, recent_steps=1)
+    message = ModelMessage(
+        role="assistant",
+        content="api_key=sk-abcdefghijklmnopqrstuvwxyz123456 " + "x" * 400,
+        tool_calls=[
+            ToolCall(
+                id="call-1",
+                name="write_file",
+                arguments={"path": "file.py", "payload": "secret unchanged"},
+            )
+        ],
+        continuation=ProviderContinuation(
+            responses_items=(
+                ValidatedResponseItem(
+                    type="reasoning",
+                    item={"opaque": {"api_key": "raw-provider-value", "text": "x"}},
+                ),
+            )
+        ),
+    )
+
+    normalized = engine.normalize_new_messages([message])[0]
+
+    assert normalized.content != message.content
+    assert "[REDACTED]" in normalized.content
+    assert normalized.tool_calls == message.tool_calls
+    assert normalized.continuation == message.continuation
+    assert message.content.startswith("api_key=sk-")
+
+
+def test_append_only_context_keeps_full_history_without_recent_history_pruning() -> None:
+    engine = ContextEngine(max_tokens=256, max_tool_output_chars=128, recent_steps=1)
+    tools = [ToolSpec(name="read_file", description="read", parameters={"type": "object"})]
+    messages = [
+        ModelMessage(role="system", content="system"),
+        ModelMessage(role="user", content="inspect both files"),
+        *tool_group(0, "first evidence " + "a" * 700),
+        *tool_group(1, "second evidence " + "b" * 700),
+    ]
+    max_tokens = ContextEngine.estimate_messages(messages) + ContextEngine.estimate_tools(tools)
+
+    window = engine.build_append_only(messages, tools, max_input_tokens=max_tokens)
+
+    assert window.messages == messages
+    assert window.memory is None
+    assert window.debug.dropped_steps == []
+    assert window.debug.estimated_tokens == max_tokens
+
+
+def test_append_only_context_rejects_over_budget_and_incomplete_tool_groups() -> None:
+    engine = ContextEngine(max_tokens=256, max_tool_output_chars=128, recent_steps=1)
+    root = [
+        ModelMessage(role="system", content="system"),
+        ModelMessage(role="user", content="goal"),
+    ]
+    call = ToolCall(id="call-1", name="read_file", arguments={"path": "file.py"})
+
+    with pytest.raises(ContextBudgetError, match="mandatory context requires"):
+        engine.build_append_only(root, [], max_input_tokens=1)
+    with pytest.raises(ContextBudgetError, match="incomplete"):
+        engine.build_append_only(
+            [*root, ModelMessage(role="assistant", content="", tool_calls=[call])],
+            [],
+            max_input_tokens=2_000,
+        )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["English output " + "x" * 500, "中文输出内容" * 100],
+)
+def test_new_tool_output_normalization_is_stable_for_english_and_cjk(text: str) -> None:
+    engine = ContextEngine(max_tokens=1_000, max_tool_output_chars=128, recent_steps=1)
+    message = ModelMessage(role="tool", content=text, tool_call_id="call-1")
+
+    first = engine.normalize_new_messages([message])
+    second = engine.normalize_new_messages([message])
+
+    assert first == second
+    assert len(first[0].content) <= 128
+    assert message.content == text

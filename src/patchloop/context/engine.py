@@ -81,6 +81,48 @@ class ContextEngine:
         payload["original_output_chars"] = len(result.output)
         return json.dumps(payload, ensure_ascii=False), truncated
 
+    def normalize_new_messages(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        """Normalize only incoming messages while preserving opaque provider data."""
+
+        return [self._normalize_message(message)[0] for message in messages]
+
+    def build_append_only(
+        self,
+        messages: list[ModelMessage],
+        tools: list[ToolSpec],
+        *,
+        max_input_tokens: int,
+    ) -> ContextWindow:
+        """Return the full transcript in order or fail if it does not fit."""
+
+        if max_input_tokens < 1:
+            raise ValueError("input token budget must be positive")
+        self._validate_tool_groups(messages)
+        message_tokens = self.estimate_messages(messages)
+        tool_tokens = self.estimate_tools(tools)
+        estimated_tokens = message_tokens + tool_tokens
+        if estimated_tokens > max_input_tokens:
+            raise ContextBudgetError(
+                f"mandatory context requires {estimated_tokens} tokens, "
+                f"budget is {max_input_tokens}"
+            )
+        return ContextWindow(
+            messages=[message.model_copy(deep=True) for message in messages],
+            memory=None,
+            debug=ContextDebug(
+                budget_tokens=max_input_tokens,
+                estimated_tokens=estimated_tokens,
+                message_tokens=message_tokens,
+                tool_spec_tokens=tool_tokens,
+                original_message_tokens=message_tokens,
+                memory_budget_tokens=0,
+                memory_tokens=0,
+                truncated_messages=0,
+                history_budget_tokens=max_input_tokens - tool_tokens,
+                history_tokens=message_tokens,
+            ),
+        )
+
     def build(
         self,
         messages: list[ModelMessage],
@@ -259,23 +301,59 @@ class ContextEngine:
         normalized: list[ModelMessage] = []
         truncated_count = 0
         for message in messages:
-            max_chars = (
-                self.max_tool_output_chars
-                if message.role == "tool"
-                else self.max_tool_output_chars * 2
-            )
-            if message.role in {"system", "user"}:
-                normalized.append(message.model_copy(deep=True))
-                continue
-            safe_content = (
-                self.content_guard.inspect(message.content).safe_text
-                if message.role == "tool"
-                else message.content
-            )
-            content, truncated = self._compact_message_content(safe_content, max_chars)
+            normalized_message, truncated = self._normalize_message(message)
+            normalized.append(normalized_message)
             truncated_count += int(truncated)
-            normalized.append(message.model_copy(update={"content": content}, deep=True))
         return normalized, truncated_count
+
+    def _normalize_message(self, message: ModelMessage) -> tuple[ModelMessage, bool]:
+        if message.role in {"system", "user"}:
+            content = self.redactor.redact_text(message.content)
+            return message.model_copy(update={"content": content}, deep=True), False
+        max_chars = (
+            self.max_tool_output_chars
+            if message.role == "tool"
+            else self.max_tool_output_chars * 2
+        )
+        safe_content = (
+            self.content_guard.inspect(message.content).safe_text
+            if message.role == "tool"
+            else self.redactor.redact_text(message.content)
+        )
+        content, truncated = self._compact_message_content(safe_content, max_chars)
+        return message.model_copy(update={"content": content}, deep=True), truncated
+
+    @staticmethod
+    def _validate_tool_groups(messages: list[ModelMessage]) -> None:
+        index = 0
+        while index < len(messages):
+            message = messages[index]
+            if message.role == "tool":
+                raise ContextBudgetError(
+                    f"tool result at message {index} has no matching assistant tool call"
+                )
+            if message.role != "assistant" or not message.tool_calls:
+                index += 1
+                continue
+
+            call_ids = [call.id for call in message.tool_calls]
+            if len(call_ids) != len(set(call_ids)):
+                raise ContextBudgetError(
+                    f"assistant tool call group at message {index} has duplicate call ids"
+                )
+            call_index = index
+            index += 1
+            for call_id in call_ids:
+                if (
+                    index >= len(messages)
+                    or messages[index].role != "tool"
+                    or messages[index].tool_call_id != call_id
+                ):
+                    raise ContextBudgetError(
+                        f"assistant tool call group at message {call_index} is incomplete "
+                        f"or out of order"
+                    )
+                index += 1
 
     @staticmethod
     def _exclude_history_values(

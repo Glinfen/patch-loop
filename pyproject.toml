@@ -11,6 +11,8 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "PatchLoop contributors" }]
 dependencies = [
+    "httpx>=0.28,<1",
+    "jsonschema>=4.23,<5",
     "pydantic>=2.10,<3",
     "typer>=0.9,<1",
 ]

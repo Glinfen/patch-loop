@@ -90,6 +90,8 @@ class ProviderTransportConfig(BaseModel):
     idle_timeout_seconds: float = Field(default=60.0, gt=0)
     total_timeout_seconds: float = Field(default=120.0, gt=0)
     max_retries: int = Field(default=2, ge=0, le=10)
+    max_sse_frame_bytes: int = Field(default=1_048_576, ge=1, le=16_777_216)
+    max_response_bytes: int = Field(default=16_777_216, ge=1, le=134_217_728)
     proxy_url: str | None = None
     ca_bundle: str | None = None
 
@@ -211,6 +213,7 @@ class ProviderErrorKind(StrEnum):
     TRANSPORT_CLEANUP_FAILED = "transport_cleanup_failed"
     OBSERVER = "observer_error"
     STRUCTURED_OUTPUT_INVALID = "structured_output_invalid"
+    RESPONSE_TOO_LARGE = "response_too_large"
 
 
 class ProviderError(Exception):

@@ -2,7 +2,7 @@
 
 ## 1. Problem
 
-**状态：** PGW-01、PGW-02 已完成，下一任务为 **PGW-03**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
+**状态：** PGW-01～PGW-03 已完成，下一任务为 **PGW-04**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
 
 **Current Problem：** SRF 已交付 Session、审批、所有权和恢复主线，但 CLI 仍固定创建 DeepSeek Provider，构造器只接受一个模型；请求非流式，Runtime 直接读取供应商配置，Task 未绑定模型配置，协议续接信息也未完整保存。这是 [第二阶段目标](PHASE_2_PROJECT_GOALS.md) S2-G2 的直接缺口。
 
@@ -216,6 +216,8 @@ TaskExecutionConfig.provider: ProviderBinding | None = None
 - 提供 DeepSeek、Responses、local 测试配置；能力/价格显式，配置存在不算真实连通验收。
 
 ### PGW-03：可取消传输与 SSE 解码
+
+**实施状态：已完成（2026-09-14）。** 可取消 HTTPX 传输、分帧限额 SSE 解码、本地可控 HTTP fixture 和对应测试已实现；13 项 PGW-03 测试、Provider 定向测试、mypy 与 lint 通过。全仓测试 613 通过、3 项既有 Session CLI 失败、1 项因 Windows 符号链接不可用跳过；全仓格式检查报告 9 个未改动文件需要格式化。
 
 **Goal**
 

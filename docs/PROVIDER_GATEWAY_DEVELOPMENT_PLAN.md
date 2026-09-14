@@ -2,7 +2,7 @@
 
 ## 1. Problem
 
-**状态：** PGW-01～PGW-03 已完成，下一任务为 **PGW-04**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
+**状态：** PGW-01～PGW-04 已完成，下一任务为 **PGW-05**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
 
 **Current Problem：** SRF 已交付 Session、审批、所有权和恢复主线，但 CLI 仍固定创建 DeepSeek Provider，构造器只接受一个模型；请求非流式，Runtime 直接读取供应商配置，Task 未绑定模型配置，协议续接信息也未完整保存。这是 [第二阶段目标](PHASE_2_PROJECT_GOALS.md) S2-G2 的直接缺口。
 
@@ -217,7 +217,7 @@ TaskExecutionConfig.provider: ProviderBinding | None = None
 
 ### PGW-03：可取消传输与 SSE 解码
 
-**实施状态：已完成（2026-09-14）。** 可取消 HTTPX 传输、分帧限额 SSE 解码、本地可控 HTTP fixture 和对应测试已实现；13 项 PGW-03 测试、Provider 定向测试、mypy 与 lint 通过。全仓测试 613 通过、3 项既有 Session CLI 失败、1 项因 Windows 符号链接不可用跳过；全仓格式检查报告 9 个未改动文件需要格式化。
+**实施状态：已完成（2026-09-14）。** 可取消 HTTPX 传输、分帧限额 SSE 解码、本地可控 HTTP fixture 和对应测试已实现；13 项 PGW-03 测试、Provider 定向测试、mypy 与 lint 通过。PGW-03 当时的全仓测试记录为 613 通过、3 项既有 Session CLI 失败、1 项因 Windows 符号链接不可用跳过；PGW-04 完成后的全仓回归中，先前 3 项 CLI 失败未复现，647 通过、1 项因同一符号链接限制跳过。PGW-03 当时的全仓格式检查报告 9 个未改动文件需要格式化。
 
 **Goal**
 
@@ -261,6 +261,8 @@ SSEFrame: event, data, id
 - 传输无工具/Store/协议专属依赖，无原始响应或 Authorization 日志。
 
 ### PGW-04：Gateway 生命周期、能力检查与重试
+
+**实施状态：已完成（2026-09-14）。** 新增 ProviderGateway 与 LegacyProviderAdapter，统一能力预检、JSON/SSE 完整响应校验、请求级重试/取消、全局 deadline 和生命周期事件；StreamReducer 契约明确要求拒绝未终止或未结算的流。Provider 定向回归 78 通过，mypy 与改动文件 Ruff/格式检查通过；全仓回归 647 通过、1 项因 Windows 符号链接不可用跳过。ProviderFactory 继续对尚未实现的 Adapter 路径 fail-closed，具体协议路由由 PGW-05/06 注册。
 
 **Goal**
 

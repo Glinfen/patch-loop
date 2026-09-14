@@ -178,6 +178,12 @@ class EncodedRequest(BaseModel):
 
 
 class StreamReducer(Protocol):
+    """Accumulate one stream attempt and refuse to finish before protocol completion.
+
+    ``finish`` must reject missing/repeated terminal markers and unsettled output
+    fragments. A reducer instance is created separately for each network attempt.
+    """
+
     def feed(self, frame: object) -> list[ProviderEvent]: ...
 
     def finish(self) -> ModelResponse: ...
@@ -198,6 +204,12 @@ class ProviderGateway(Protocol):
         *,
         control: ProviderControl | None = None,
         on_event: ProviderEventObserver | None = None,
+    ) -> ModelResponse: ...
+
+    def complete(
+        self,
+        messages: list[ModelMessage],
+        tools: list[ToolSpec],
     ) -> ModelResponse: ...
 
 

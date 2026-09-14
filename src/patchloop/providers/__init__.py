@@ -18,7 +18,6 @@ if TYPE_CHECKING:
         ProviderEvent,
         ProviderEventObserver,
         ProviderEventType,
-        ProviderGateway,
         ProviderRequest,
         ProviderRequestPurpose,
         StreamReducer,
@@ -44,6 +43,7 @@ if TYPE_CHECKING:
     from patchloop.providers.deepseek import DeepSeekConfig, DeepSeekProvider
     from patchloop.providers.factory import ProviderFactory
     from patchloop.providers.fake import FakeProvider
+    from patchloop.providers.gateway import LegacyProviderAdapter, ProviderGateway
 
 _MODULE_BY_NAME = {
     "ChatDialect": "contracts",
@@ -70,7 +70,8 @@ _MODULE_BY_NAME = {
     "ProviderEventObserver": "base",
     "ProviderEventType": "base",
     "ProviderFactory": "factory",
-    "ProviderGateway": "base",
+    "LegacyProviderAdapter": "gateway",
+    "ProviderGateway": "gateway",
     "ProviderGeneration": "contracts",
     "ProviderPricing": "contracts",
     "ProviderProtocol": "contracts",
@@ -93,6 +94,7 @@ __all__ = [
     "DeepSeekProvider",
     "EncodedRequest",
     "FakeProvider",
+    "LegacyProviderAdapter",
     "ModelMessage",
     "ModelProvider",
     "ModelResponse",

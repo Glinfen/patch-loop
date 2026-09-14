@@ -47,6 +47,8 @@ class TransportControlError(ProviderError):
 class AsyncTransport(Protocol):
     """Structural interface used by protocol-independent gateway code."""
 
+    def client_scope(self) -> AbstractAsyncContextManager[None]: ...
+
     def open(
         self,
         encoded: EncodedRequest,

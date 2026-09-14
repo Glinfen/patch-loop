@@ -2,7 +2,7 @@
 
 ## 1. Problem
 
-**状态：** PGW-01～PGW-05 已完成，下一任务为 **PGW-06**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
+**状态：** PGW-01～PGW-06 已完成，下一任务为 **PGW-07**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
 
 **Current Problem：** SRF 已交付 Session、审批、所有权和恢复主线，但 CLI 仍固定创建 DeepSeek Provider，构造器只接受一个模型；请求非流式，Runtime 直接读取供应商配置，Task 未绑定模型配置，协议续接信息也未完整保存。这是 [第二阶段目标](PHASE_2_PROJECT_GOALS.md) S2-G2 的直接缺口。
 
@@ -377,7 +377,7 @@ tests/fixtures/providers/responses/（新增）
 **Interface Changes**
 
 ```text
-ProviderContinuation.responses_items: list[ValidatedResponseItem]
+ProviderContinuation.responses_items: tuple[ValidatedResponseItem, ...]
 ValidatedResponseItem: message | function_call | reasoning（白名单字段模型）
 Responses call_id ↔ ToolCall.id；response.id 仅诊断，不代替 Effect ID
 ```
@@ -392,6 +392,8 @@ Responses call_id ↔ ToolCall.id；response.id 仅诊断，不代替 Effect ID
 
 - 与 Chat 共用规范化工具/错误契约测试，无 Chat 代理冒充 Responses。
 - 不以服务端 response ID 或进程内缓存作为恢复前提。
+
+**实施状态：已完成（2026-09-14）。** 新增独立 Responses Adapter/reducer 并注册 Factory 路由，按 call_id 配对函数调用与工具结果；store=false 下保存并重放通过白名单校验的 message/function_call/reasoning 项，encrypted reasoning 内容原样保留。JSON 与 SSE 共用规范化响应和错误契约，流结束必须收到 response.completed 且状态为 completed，增量与完成快照交叉校验；Gateway 继续负责工具权限、能力检查及结构化输出本地 Schema 校验。Responses 专属 fixture 与测试覆盖 Chat/Responses wire 差异、多个工具调用、续接、拒绝/截断/托管工具输出和结构化输出错误。全仓 pytest **676 通过、1 跳过**（Windows 主机不支持符号链接）；mypy、Ruff 全仓检查和改动文件格式检查通过。未调用真实外部模型服务。
 
 ### PGW-07：请求、Attempt 与续接持久化
 

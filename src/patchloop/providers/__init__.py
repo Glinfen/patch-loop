@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from patchloop.providers.factory import ProviderFactory
     from patchloop.providers.fake import FakeProvider
     from patchloop.providers.gateway import LegacyProviderAdapter, ProviderGateway
+    from patchloop.providers.responses import ResponsesAdapter, ResponsesStreamReducer
 
 _MODULE_BY_NAME = {
     "ChatCompletionsAdapter": "chat",
@@ -81,6 +82,8 @@ _MODULE_BY_NAME = {
     "ProviderRequest": "base",
     "ProviderRequestPurpose": "base",
     "ProviderTransportConfig": "contracts",
+    "ResponsesAdapter": "responses",
+    "ResponsesStreamReducer": "responses",
     "ReasoningTransport": "contracts",
     "StreamReducer": "base",
     "ToolSpec": "base",
@@ -125,6 +128,8 @@ __all__ = [
     "ProviderRequestPurpose",
     "ProviderTransportConfig",
     "ReasoningTransport",
+    "ResponsesAdapter",
+    "ResponsesStreamReducer",
     "StreamReducer",
     "ToolSpec",
     "ValidatedResponseItem",

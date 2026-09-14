@@ -13,6 +13,7 @@ from patchloop.providers import (
     ProviderError,
     ProviderFactory,
     ProviderProtocol,
+    ResponsesAdapter,
     provider_endpoint,
 )
 from patchloop.providers.transport import HttpxTransport
@@ -161,7 +162,7 @@ def test_legacy_task_execution_config_has_no_binding() -> None:
     assert execution.provider is None
 
 
-def test_factory_registers_chat_dialects_and_keeps_responses_fail_closed(
+def test_factory_registers_chat_dialects_and_responses(
     tmp_path: Path,
 ) -> None:
     resolver = ProfileResolver()
@@ -176,8 +177,8 @@ def test_factory_registers_chat_dialects_and_keeps_responses_fail_closed(
     assert deepseek_gateway.binding.dialect is ChatDialect.DEEPSEEK
 
     responses = resolver.resolve("responses", config_path=write_config(tmp_path))
-    with pytest.raises(ProviderError, match="not implemented yet"):
-        ProviderFactory().create(responses, HttpxTransport(responses.base_url))
+    responses_gateway = ProviderFactory().create(responses, HttpxTransport(responses.base_url))
+    assert isinstance(responses_gateway.adapter, ResponsesAdapter)
 
 
 def test_binding_still_rejects_auth_none_with_a_credential_reference(tmp_path: Path) -> None:

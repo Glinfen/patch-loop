@@ -15,6 +15,7 @@ from patchloop.providers.contracts import (
     ProviderProtocol,
 )
 from patchloop.providers.gateway import ProviderGateway
+from patchloop.providers.responses import ResponsesAdapter
 from patchloop.providers.transport import AsyncTransport, HttpxTransport
 
 type GatewayBuilder = Callable[[ProviderBinding, AsyncTransport | None], ProviderGatewayPort]
@@ -35,6 +36,20 @@ def _build_chat_gateway(
     return ProviderGateway(binding, ChatCompletionsAdapter(binding.dialect), transport)
 
 
+def _build_responses_gateway(
+    binding: ProviderBinding,
+    transport: AsyncTransport | None,
+) -> ProviderGatewayPort:
+    if transport is None:
+        credential = CredentialResolver().resolve(binding)
+        transport = HttpxTransport(
+            binding.base_url,
+            credential=credential,
+            config=binding.transport,
+        )
+    return ProviderGateway(binding, ResponsesAdapter(), transport)
+
+
 class ProviderFactory:
     """Create gateways only for explicitly registered protocol/dialect routes."""
 
@@ -50,6 +65,7 @@ class ProviderFactory:
         self._builders: dict[ProviderRoute, GatewayBuilder] = {
             (ProviderProtocol.CHAT_COMPLETIONS, ChatDialect.STANDARD): _build_chat_gateway,
             (ProviderProtocol.CHAT_COMPLETIONS, ChatDialect.DEEPSEEK): _build_chat_gateway,
+            (ProviderProtocol.RESPONSES, ChatDialect.STANDARD): _build_responses_gateway,
         }
         self._builders.update(builders or {})
 

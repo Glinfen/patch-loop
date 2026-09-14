@@ -235,7 +235,12 @@ def test_normalize_new_messages_preserves_tool_arguments_and_opaque_continuation
             responses_items=(
                 ValidatedResponseItem(
                     type="reasoning",
-                    item={"opaque": {"api_key": "raw-provider-value", "text": "x"}},
+                    item={
+                        "id": "rs_context",
+                        "type": "reasoning",
+                        "summary": [],
+                        "encrypted_content": "api_key=raw-provider-value",
+                    },
                 ),
             )
         ),

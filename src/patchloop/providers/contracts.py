@@ -114,15 +114,77 @@ class ProviderPricing(BaseModel):
 class ValidatedResponseItem(BaseModel):
     """A bounded, provider-native Responses continuation item.
 
-    PGW-06 will perform protocol-specific validation before creating these items.
-    Keeping the envelope strict here prevents arbitrary response bodies from being
-    persisted as continuation state.
+    The type-specific field whitelist is checked by this model and again when the
+    adapter replays it, so restored state cannot smuggle arbitrary response data.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: str = Field(pattern=r"^(message|function_call|reasoning)$")
     item: dict[str, Any]
+
+    @model_validator(mode="after")
+    def validate_native_item(self) -> Self:
+        fields_by_type = {
+            "message": {"id", "type", "status", "role", "content"},
+            "function_call": {"id", "type", "status", "call_id", "name", "arguments"},
+            "reasoning": {"id", "type", "status", "summary", "encrypted_content"},
+        }
+        allowed = fields_by_type[self.type]
+        if self.item.get("type") != self.type or set(self.item) - allowed:
+            raise ValueError("Responses continuation item contains unsupported fields")
+        if not isinstance(self.item.get("id"), str) or not self.item["id"]:
+            raise ValueError("Responses continuation item requires an item ID")
+        status = self.item.get("status")
+        if status is not None and status != "completed":
+            raise ValueError("Responses continuation item is not complete")
+        if self.type == "message":
+            content = self.item.get("content")
+            if self.item.get("role") != "assistant" or not isinstance(content, list):
+                raise ValueError("Responses continuation message is invalid")
+            for part in content:
+                if not isinstance(part, dict) or set(part) - {
+                    "type",
+                    "text",
+                    "refusal",
+                    "annotations",
+                    "logprobs",
+                }:
+                    raise ValueError("Responses continuation message content is invalid")
+                part_type = part.get("type")
+                if part_type == "output_text" and not isinstance(part.get("text"), str):
+                    raise ValueError("Responses continuation text is invalid")
+                if part_type == "output_text" and "refusal" in part:
+                    raise ValueError("Responses continuation text has refusal data")
+                if part_type == "refusal" and not isinstance(part.get("refusal"), str):
+                    raise ValueError("Responses continuation refusal is invalid")
+                if part_type == "refusal" and "text" in part:
+                    raise ValueError("Responses continuation refusal has text data")
+                if not isinstance(part_type, str) or part_type not in {
+                    "output_text",
+                    "refusal",
+                }:
+                    raise ValueError("Responses continuation message type is unsupported")
+        elif self.type == "function_call":
+            for field_name in ("call_id", "name", "arguments"):
+                if not isinstance(self.item.get(field_name), str):
+                    raise ValueError("Responses continuation function call is invalid")
+            if not self.item["call_id"] or not self.item["name"]:
+                raise ValueError("Responses continuation function call is incomplete")
+        else:
+            encrypted_content = self.item.get("encrypted_content")
+            if not isinstance(encrypted_content, str) or not encrypted_content:
+                raise ValueError("Responses continuation reasoning is not replayable")
+            summary = self.item.get("summary", [])
+            if not isinstance(summary, list) or any(
+                not isinstance(part, dict)
+                or part.get("type") != "summary_text"
+                or not isinstance(part.get("text"), str)
+                or set(part) - {"type", "text"}
+                for part in summary
+            ):
+                raise ValueError("Responses continuation reasoning summary is invalid")
+        return self
 
 
 class ProviderContinuation(BaseModel):
@@ -216,6 +278,7 @@ class ProviderErrorKind(StrEnum):
     RESPONSE_TOO_LARGE = "response_too_large"
     CONTINUATION_UNAVAILABLE = "continuation_unavailable"
     REFUSAL = "refusal"
+    UNSUPPORTED_OUTPUT = "unsupported_output"
 
 
 class ProviderError(Exception):

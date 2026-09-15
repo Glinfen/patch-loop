@@ -26,7 +26,9 @@ multiple_tool_calls = true
 streaming = false
 reasoning_transport = "chat_internal"
 structured_output = false
-context_window_tokens = 32000
+# Gateway uses a conservative byte upper bound. Runtime trials separately cap
+# estimated input at 24k tokens; this declaration remains proxy-unverified.
+context_window_tokens = 128000
 max_output_tokens = 8192
 usage_supported = true
 cache_usage_supported = false

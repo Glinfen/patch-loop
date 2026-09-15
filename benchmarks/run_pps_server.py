@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 
+from patchloop.persistence import SQLiteStore
 from patchloop.providers.config import _load_env_file
 
 
@@ -138,6 +139,8 @@ def main() -> None:
                 traces = list((repo / ".patchloop/traces").glob("*.jsonl"))
                 resume_code = None
                 if pause_requested and traces:
+                    task = SQLiteStore(repo / ".patchloop/patchloop.db").get_task(traces[0].stem)
+                    assert task.session_id is not None
                     with (
                         (trial / "resume.stdout").open("w") as stdout,
                         (trial / "resume.stderr").open("w") as stderr,
@@ -147,10 +150,12 @@ def main() -> None:
                                 sys.executable,
                                 "-m",
                                 "patchloop",
-                                "resume",
-                                traces[0].stem,
+                                "session",
                                 "--repo",
                                 str(repo),
+                                "--json",
+                                "resume",
+                                task.session_id,
                             ],
                             cwd=repo,
                             env=env,

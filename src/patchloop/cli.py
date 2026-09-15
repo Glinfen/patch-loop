@@ -22,6 +22,7 @@ from patchloop.domain import (
     Task,
     TaskBudget,
     TaskExecutionConfig,
+    TaskOutcome,
     TaskStatus,
 )
 from patchloop.evaluation import (
@@ -2440,7 +2441,7 @@ def run_task(
         ValueError,
     ) as exc:
         _command_error(exc)
-    if result.report is not None:
+    if result.report is not None and result.outcome is not TaskOutcome.ACTIVE:
         paths = ArtifactStore(_state_dir(repository) / "artifacts").save_report(result)
         for path in paths:
             services.store.record_artifact(task.id, path)
@@ -2518,7 +2519,7 @@ def resume_task(
         ValueError,
     ) as exc:
         _command_error(exc)
-    if result.report is not None:
+    if result.report is not None and result.outcome is not TaskOutcome.ACTIVE:
         paths = ArtifactStore(_state_dir(repository) / "artifacts").save_report(result)
         for path in paths:
             services.store.record_artifact(task.id, path)

@@ -12,6 +12,7 @@ from patchloop.providers import (
     ModelMessage,
     ProviderContinuation,
     ProviderRequest,
+    ProviderRequestPurpose,
     ResponsesAdapter,
     ToolSpec,
     ValidatedResponseItem,
@@ -20,6 +21,37 @@ from patchloop.providers.gateway import ProviderGateway
 from tests.unit.test_provider_chat import make_binding as chat_binding
 from tests.unit.test_provider_responses import _JsonResponse
 from tests.unit.test_provider_responses import make_binding as responses_binding
+
+
+@pytest.mark.parametrize("responses", [False, True])
+def test_compression_keeps_tools_but_disables_calls(responses):
+    binding = responses_binding(streaming=False) if responses else chat_binding(streaming=False)
+    adapter = ResponsesAdapter() if responses else ChatCompletionsAdapter()
+    request = ProviderRequest(
+        request_id="source",
+        task_id="task",
+        step_index=0,
+        purpose="agent_step",
+        messages=(ModelMessage(role="user", content="Keep this exact prefix."),),
+        tools=(ToolSpec(name="read_file", description="read", parameters={"type": "object"}),),
+    )
+    source = adapter.encode(request, binding).body
+    compressed = request.model_copy(
+        update={
+            "request_id": "compression",
+            "purpose": ProviderRequestPurpose.EPOCH_COMPRESSION,
+            "messages": (
+                *request.messages,
+                ModelMessage(role="user", content="Return summary JSON."),
+            ),
+        }
+    )
+    body = adapter.encode(compressed, binding).body
+    assert body["tools"] == source["tools"]
+    key = "input" if responses else "messages"
+    assert body[key][: len(source[key])] == source[key]
+    assert body["tool_choice"] == "none"
+    assert source.get("tool_choice", "auto") == "auto"
 
 
 class _CaptureTransport:

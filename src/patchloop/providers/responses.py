@@ -15,6 +15,7 @@ from patchloop.providers.base import (
     ProviderEvent,
     ProviderEventType,
     ProviderRequest,
+    ProviderRequestPurpose,
     StreamReducer,
 )
 from patchloop.providers.contracts import (
@@ -83,6 +84,8 @@ class ResponsesAdapter(ProviderAdapter):
                 }
                 for tool in request.tools
             ]
+            if request.purpose is ProviderRequestPurpose.EPOCH_COMPRESSION:
+                payload["tool_choice"] = "none"
         if not binding.capabilities.multiple_tool_calls:
             payload["parallel_tool_calls"] = False
         if request.output_schema is not None:

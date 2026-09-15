@@ -61,3 +61,45 @@ def test_pps_gate_cli_writes_unverified_report_and_cannot_enable_simulated_rollo
     assert saved["schema_version"] == "pps.v1"
     assert saved["rollout"]["enabled"] is False
     assert any(c["status"] == "unverified" for c in saved["checks"])
+
+
+def test_paused_compression_report_does_not_write_artifacts_after_lease_release(
+    tmp_path, monkeypatch
+):
+    from tests.integration.test_prompt_prefix_recovery import _CompressingProvider, _Observe
+
+    class InvalidSummaryProvider(_CompressingProvider):
+        def complete(self, messages, tools):
+            response = super().complete(messages, tools)
+            if "PATCHLOOP_EPOCH_COMPRESSION_V1" in messages[-1].content:
+                return response.model_copy(update={"content": "invalid JSON"})
+            return response
+
+    provider = InvalidSummaryProvider()
+    monkeypatch.setattr("patchloop.cli._provider_from_env", lambda: provider)
+    monkeypatch.setattr("patchloop.cli._all_tools", lambda: [_Observe([], long=True)])
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "Read observations.",
+            "--repo",
+            str(tmp_path),
+            "--prompt-cache-layout",
+            "append_only",
+            "--max-context-tokens",
+            "4500",
+            "--max-tool-output-chars",
+            "3000",
+            "--max-steps",
+            "20",
+        ],
+    )
+    assert result.exit_code == 11, result.output
+    task = json.loads(result.stdout)
+    assert task["runtime_condition"] == "paused"
+    assert "invalid_summary" in task["report"]["summary"]
+    resumed = runner.invoke(app, ["resume", task["id"], "--repo", str(tmp_path)])
+    assert resumed.exit_code == 11, resumed.output
+    assert json.loads(resumed.stdout)["runtime_condition"] == "paused"

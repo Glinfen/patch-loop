@@ -164,6 +164,86 @@ def main() -> None:
                             timeout=900,
                         )
                         resume_code = resumed.returncode
+                # Act as the operator only for the explicitly scoped fixture change
+                # and its standard test command. Keep all normal approval records.
+                approved_ids = []
+                if traces:
+                    store = SQLiteStore(repo / ".patchloop/patchloop.db")
+                    for approval_round in range(4):
+                        task = store.get_task(traces[0].stem)
+                        pending = [
+                            a for a in store.list_approvals(task.id) if a.status.value == "pending"
+                        ]
+                        if not pending:
+                            break
+                        permitted = True
+                        for approval in pending:
+                            effect = store.get_effect(approval.effect_id)
+                            permitted = permitted and (
+                                (
+                                    effect.tool_name == "apply_patch"
+                                    and approval.resource_summary
+                                    == f"workspace={repo}; paths=order_service.py"
+                                )
+                                or (
+                                    effect.tool_name == "run_tests"
+                                    and approval.resource_summary == f"workspace={repo}"
+                                    and effect.arguments_summary.get("command")
+                                    in (
+                                        ["python", "-m", "pytest"],
+                                        ["python", "-m", "pytest", "-q"],
+                                        ["pytest"],
+                                        ["pytest", "-q"],
+                                    )
+                                )
+                            )
+                        if not permitted:
+                            break
+                        for approval in pending:
+                            with (trial / f"approval-{approval.id}.json").open("w") as stdout:
+                                subprocess.run(
+                                    [
+                                        sys.executable,
+                                        "-m",
+                                        "patchloop",
+                                        "approval",
+                                        "--repo",
+                                        str(repo),
+                                        "decide",
+                                        approval.id,
+                                        "--approve",
+                                        "--source",
+                                        "pps-fixture-operator",
+                                    ],
+                                    cwd=repo,
+                                    env=env,
+                                    stdout=stdout,
+                                    check=True,
+                                )
+                            approved_ids.append(approval.id)
+                        with (
+                            (trial / f"approved-{approval_round}.stdout").open("w") as stdout,
+                            (trial / f"approved-{approval_round}.stderr").open("w") as stderr,
+                        ):
+                            resumed = subprocess.run(
+                                [
+                                    sys.executable,
+                                    "-m",
+                                    "patchloop",
+                                    "session",
+                                    "--repo",
+                                    str(repo),
+                                    "--json",
+                                    "resume",
+                                    task.session_id,
+                                ],
+                                cwd=repo,
+                                env=env,
+                                stdout=stdout,
+                                stderr=stderr,
+                                timeout=900,
+                            )
+                        resume_code = resumed.returncode
                 validation = {}
                 for name, test in (
                     ("public", str(repo)),
@@ -186,6 +266,7 @@ def main() -> None:
                     subprocess.check_output(["git", "diff"], cwd=repo, text=True)
                 )
                 result = {
+                    "approved_ids": approved_ids,
                     "trial": trial.name,
                     "exit_code": process.returncode,
                     "resume_code": resume_code,

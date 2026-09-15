@@ -15,6 +15,7 @@ from patchloop.providers.base import (
     ProviderEvent,
     ProviderEventType,
     ProviderRequest,
+    ProviderRequestPurpose,
     StreamReducer,
 )
 from patchloop.providers.contracts import (
@@ -53,7 +54,9 @@ class ChatCompletionsAdapter(ProviderAdapter):
 
         if request.tools:
             payload["tools"] = [_tool_payload(tool) for tool in request.tools]
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = (
+                "none" if request.purpose is ProviderRequestPurpose.EPOCH_COMPRESSION else "auto"
+            )
 
         if self.dialect is ChatDialect.DEEPSEEK:
             payload["thinking"] = {

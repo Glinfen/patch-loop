@@ -1,0 +1,200 @@
+{
+  "schema_version": "1.0",
+  "task_id": "aop-baseline-task",
+  "token_budget": 6000,
+  "revision": 37,
+  "items": [
+    {
+      "key": "goal",
+      "kind": "goal",
+      "text": "Migrate the sample service contract while preserving observable behavior.",
+      "pinned": true,
+      "step_index": 0,
+      "source_id": null
+    },
+    {
+      "key": "constraint:public-api",
+      "kind": "constraint",
+      "text": "Keep the public function names and exact validation messages unchanged.",
+      "pinned": true,
+      "step_index": 0,
+      "source_id": null
+    },
+    {
+      "key": "prohibition:no-generated-files",
+      "kind": "prohibition",
+      "text": "Do not edit generated files or copy local configuration into the result.",
+      "pinned": true,
+      "step_index": 0,
+      "source_id": null
+    },
+    {
+      "key": "plan:inspect-contract",
+      "kind": "plan",
+      "text": "running: compare the request model, service adapter, persistence boundary, and tests; preserve whitespace handling, identifier validation, negative-attempt rejection, transaction ordering, and the existing public return shape before making the smallest implementation change",
+      "pinned": true,
+      "step_index": 11,
+      "source_id": "source-plan"
+    },
+    {
+      "key": "plan:verify-contract",
+      "kind": "plan",
+      "text": "pending: run focused public and hidden-style contract checks, verify unchanged callers, and record the exact behavioral evidence without repeating raw command output",
+      "pinned": false,
+      "step_index": 11,
+      "source_id": "source-plan"
+    },
+    {
+      "key": "result:focused-tests",
+      "kind": "recent_result",
+      "text": "run_tests passed: focused contract tests covered whitespace normalization, malformed identifiers, negative retry attempts, and compatibility of the returned record",
+      "pinned": false,
+      "step_index": 10,
+      "source_id": "source-tests-10"
+    },
+    {
+      "key": "result:static-check",
+      "kind": "recent_result",
+      "text": "run_command failed: the static check still reports one deliberately anonymized adapter mismatch that must be resolved before the final verification",
+      "pinned": false,
+      "step_index": 11,
+      "source_id": "source-check-11"
+    },
+    {
+      "key": "error:static-check",
+      "kind": "active_error",
+      "text": "run_command [validation]: sample_adapter.py returns the legacy field name at the persistence boundary",
+      "pinned": true,
+      "step_index": 11,
+      "source_id": "source-check-11"
+    },
+    {
+      "key": "evidence:contract",
+      "kind": "key_evidence",
+      "text": "The focused tests establish that whitespace is normalized once and invalid identifiers retain their exact error text.",
+      "pinned": false,
+      "step_index": 10,
+      "source_id": "source-tests-10"
+    },
+    {
+      "key": "read:01",
+      "kind": "accessed_file",
+      "text": "src/sample_api.py",
+      "pinned": false,
+      "step_index": 1,
+      "source_id": "source-read-01"
+    },
+    {
+      "key": "read:02",
+      "kind": "accessed_file",
+      "text": "src/sample_models.py",
+      "pinned": false,
+      "step_index": 2,
+      "source_id": "source-read-02"
+    },
+    {
+      "key": "read:03",
+      "kind": "accessed_file",
+      "text": "src/sample_service.py",
+      "pinned": false,
+      "step_index": 3,
+      "source_id": "source-read-03"
+    },
+    {
+      "key": "read:04",
+      "kind": "accessed_file",
+      "text": "src/sample_adapter.py",
+      "pinned": false,
+      "step_index": 4,
+      "source_id": "source-read-04"
+    },
+    {
+      "key": "read:05",
+      "kind": "accessed_file",
+      "text": "src/sample_store.py",
+      "pinned": false,
+      "step_index": 5,
+      "source_id": "source-read-05"
+    },
+    {
+      "key": "read:06",
+      "kind": "accessed_file",
+      "text": "src/sample_validation.py",
+      "pinned": false,
+      "step_index": 6,
+      "source_id": "source-read-06"
+    },
+    {
+      "key": "read:07",
+      "kind": "accessed_file",
+      "text": "tests/test_sample_api.py",
+      "pinned": false,
+      "step_index": 7,
+      "source_id": "source-read-07"
+    },
+    {
+      "key": "read:08",
+      "kind": "accessed_file",
+      "text": "tests/test_sample_service.py",
+      "pinned": false,
+      "step_index": 8,
+      "source_id": "source-read-08"
+    },
+    {
+      "key": "read:09",
+      "kind": "accessed_file",
+      "text": "tests/test_sample_adapter.py",
+      "pinned": false,
+      "step_index": 9,
+      "source_id": "source-read-09"
+    },
+    {
+      "key": "read:10",
+      "kind": "accessed_file",
+      "text": "tests/test_sample_store.py",
+      "pinned": false,
+      "step_index": 10,
+      "source_id": "source-read-10"
+    },
+    {
+      "key": "read:11",
+      "kind": "accessed_file",
+      "text": "tests/fixtures/sample_request.json",
+      "pinned": false,
+      "step_index": 10,
+      "source_id": "source-read-11"
+    },
+    {
+      "key": "read:12",
+      "kind": "accessed_file",
+      "text": "tests/fixtures/sample_response.json",
+      "pinned": false,
+      "step_index": 10,
+      "source_id": "source-read-12"
+    }
+  ],
+  "phase_events": [
+    {
+      "call_id": "call-tests-10",
+      "step_index": 10,
+      "tool_name": "run_tests",
+      "success": true,
+      "summary": "focused contract checks passed",
+      "changed_paths": ["src/sample_service.py"]
+    },
+    {
+      "call_id": "call-check-11",
+      "step_index": 11,
+      "tool_name": "run_command",
+      "success": false,
+      "summary": "one adapter mismatch remains",
+      "changed_paths": ["src/sample_service.py", "src/sample_adapter.py"]
+    }
+  ],
+  "read_signatures": {},
+  "promoted_keys": [],
+  "estimated_tokens": 603,
+  "max_estimated_tokens": 603,
+  "evicted_count": 0,
+  "promoted_count": 0
+}

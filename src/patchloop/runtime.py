@@ -92,7 +92,11 @@ from patchloop.prompt_cache.coordinator import (
     PromptCompressionRejected,
     compute_prefix_budget,
 )
-from patchloop.prompt_cache.publication import MemoryDeltaPublisher, MemoryDeltaTooLarge
+from patchloop.prompt_cache.publication import (
+    MemoryDeltaPublisher,
+    MemoryDeltaTooLarge,
+    MemoryPublicationSnapshot,
+)
 from patchloop.providers.base import (
     ControlAction,
     EncodedRequest,
@@ -2507,10 +2511,13 @@ class AgentRuntime:
 
         publication = cache.publication_snapshot
         memory_messages: list[ModelMessage] = []
+        projection_format: str | None = None
+        projection_fallback_reason: str | None = None
         if recovering_compression:
             # The checkpoint holds the complete candidate. Separate only its newly
             # published tail; old publications remain part of the exact source.
             if publication is not None:
+                projection_format = "legacy_v1"
                 for item in reversed(publication.messages):
                     position = len(messages) - len(memory_messages) - 1
                     if position < prefix.last_submitted_message_count or messages[position] != item:
@@ -2529,9 +2536,12 @@ class AgentRuntime:
             )
             if retrieval.fallback_reason is not None:
                 self._emit_memory_fallback(task, retrieval.fallback_reason, phase="retrieval")
+            projection_fallback_reason = retrieval.fallback_reason
             projection = (
                 None if retrieval.context is None else retrieval.context.provider_projection
             )
+            if projection is not None:
+                projection_format = "legacy_v1"
             if projection is not None:
                 projection = engine.redactor.redact_text(projection)
             invalidations = (
@@ -2575,6 +2585,31 @@ class AgentRuntime:
         )
         estimated = engine.estimate_messages(messages) + engine.estimate_tools(specifications)
         can_compress = prefix.last_submitted_message_count > cache.prefix_message_count
+        decision_reason = (
+            "recovering_compression"
+            if recovering_compression
+            else "oversized_memory_delta"
+            if oversized_delta
+            else "soft_limit_exceeded"
+            if estimated > budget.soft_limit and can_compress
+            else "no_submitted_compression_source"
+            if estimated > budget.soft_limit
+            else "below_soft_limit"
+        )
+        memory_diagnostics = _append_only_memory_diagnostics(publication)
+        cache_diagnostics: dict[str, object] = {
+            "optimization_version": "baseline_v1",
+            "projection_format": projection_format,
+            "projection_fallback_reason": projection_fallback_reason,
+            "new_memory_tokens": sum(
+                engine.estimate_message(item) for item in memory_messages
+            ),
+            "working_item_count": memory_diagnostics["working_item_count"],
+            "opaque_working_blob_count": memory_diagnostics["opaque_working_blob_count"],
+            "decision_reason": decision_reason,
+            "mandatory_rebase_tokens": None,
+            "summary_target_tokens": None,
+        }
         if recovering_compression or (
             (estimated > budget.soft_limit or oversized_delta) and can_compress
         ):
@@ -2639,6 +2674,7 @@ class AgentRuntime:
                         "memory_message_tokens": [
                             engine.estimate_message(item) for item in memory_messages
                         ],
+                        **cache_diagnostics,
                     },
                 )
                 try:
@@ -2698,6 +2734,17 @@ class AgentRuntime:
                             "generation": completion.epoch.generation,
                             "candidate_input_tokens": completion.candidate_input_tokens,
                             "rebased_input_tokens": completion.rebased_input_tokens,
+                            "summary_estimated_tokens": engine.estimate_message(
+                                ModelMessage(role="system", content=response.content)
+                            ),
+                            "freed_input_tokens": (
+                                completion.candidate_input_tokens
+                                - completion.rebased_input_tokens
+                            ),
+                            "headroom_after_rebase": (
+                                budget.ordinary_limit - completion.rebased_input_tokens
+                            ),
+                            **cache_diagnostics,
                         },
                     )
                 except (LeaseLost, TransportControlError):
@@ -2705,6 +2752,17 @@ class AgentRuntime:
                     raise
                 except ProviderError as exc:
                     cache.abort_pending()
+                    self._emit(
+                        "cache.compression.failed",
+                        task,
+                        {
+                            "request_id": request_id,
+                            "source_request_id": prepared.source_request_id,
+                            "reason": "provider_error",
+                            "usage_unknown": exc.usage_unknown,
+                            **cache_diagnostics,
+                        },
+                    )
                     # An ambiguous sent attempt belongs to PGW recovery. Never
                     # proceed to a new ordinary request with unknown input usage.
                     if exc.kind in {ProviderErrorKind.CONNECTION, ProviderErrorKind.TIMEOUT} or (
@@ -2717,6 +2775,17 @@ class AgentRuntime:
                     if oversized_delta or action is CompressionFailureAction.PAUSE_CONTEXT_BUDGET:
                         raise ContextBudgetError("compression failed above context budget") from exc
                 except PromptCompressionRejected as exc:
+                    self._emit(
+                        "cache.compression.failed",
+                        task,
+                        {
+                            "request_id": request_id,
+                            "source_request_id": prepared.source_request_id,
+                            "reason": str(exc),
+                            "action": exc.action.value,
+                            **cache_diagnostics,
+                        },
+                    )
                     cache.set_compression_request_id(None)
                     state = checkpoint(messages)
                     if (
@@ -3733,3 +3802,19 @@ class AgentRuntime:
     def _emit(self, event_type: str, task: Task, data: dict[str, object]) -> None:
         if self.event_logger is not None:
             self.event_logger.emit(Event(type=event_type, task_id=task.id, data=data))
+
+
+def _append_only_memory_diagnostics(
+    publication: MemoryPublicationSnapshot | None,
+) -> dict[str, int]:
+    if publication is None:
+        return {"working_item_count": 0, "opaque_working_blob_count": 0}
+    working_items = publication.current_payload.get("working_state", [])
+    opaque = sum(
+        item.get("type") != "working_memory" or not isinstance(item.get("field"), str)
+        for item in working_items
+    )
+    return {
+        "working_item_count": len(working_items),
+        "opaque_working_blob_count": opaque,
+    }

@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from patchloop.context import ContextEngine
 from patchloop.domain import Plan, PlanItem, StepStatus
 from patchloop.memory import (
     CrossLayerMemoryRetriever,
@@ -18,9 +19,11 @@ from patchloop.memory import (
     WorkingMemoryEvent,
     WorkingMemoryItem,
     WorkingMemoryItemKind,
+    WorkingMemoryManager,
     WorkingMemorySnapshot,
     evaluate_retrieval,
 )
+from patchloop.prompt_cache.publication import MemoryDeltaPublisher
 
 NOW = datetime(2026, 8, 30, tzinfo=UTC)
 
@@ -122,6 +125,85 @@ def _working(task_id: str) -> WorkingMemorySnapshot:
             )
         ],
     )
+
+
+def test_aop01_fixture_reproduces_opaque_truncated_working_blob() -> None:
+    fixture_root = Path(__file__).parents[1] / "fixtures" / "prompt_cache" / "optimization"
+    fixture_text = (fixture_root / "baseline_working_snapshot.json").read_text(
+        encoding="utf-8"
+    )
+    assert ".env" not in fixture_text
+    assert "C:\\Users" not in fixture_text
+    assert "sk-" not in fixture_text
+    snapshot = WorkingMemorySnapshot.model_validate_json(
+        fixture_text
+    )
+    expected = json.loads(
+        (fixture_root / "baseline_v1_reports.json").read_text(encoding="utf-8")
+    )
+    actions = expected["actions"]
+    assert sum(
+        item.kind is WorkingMemoryItemKind.ACCESSED_FILE for item in snapshot.items
+    ) == 12
+    assert any(item.kind is WorkingMemoryItemKind.PLAN for item in snapshot.items)
+    assert sum(
+        item.kind is WorkingMemoryItemKind.RECENT_RESULT for item in snapshot.items
+    ) == 2
+
+    observed = []
+    for repeat in range(1, 4):
+        working = WorkingMemoryManager(
+            snapshot.task_id,
+            actions["goal"],
+            token_budget=snapshot.token_budget,
+            snapshot=snapshot,
+        )
+        current = working.snapshot()
+        context = CrossLayerMemoryRetriever().retrieve(
+            task_id=snapshot.task_id,
+            repository_scope_id=actions["repository_scope_id"],
+            goal=actions["goal"],
+            plan=None,
+            working=current,
+            working_render=working.render(),
+            episodic_render=None,
+            changed_paths=actions["changed_paths"],
+            records=[],
+            sources=[],
+            total_context_tokens=actions["total_context_tokens"],
+        )
+        update = MemoryDeltaPublisher().preview(
+            actions["publication_epoch_id"],
+            context.provider_projection,
+            invalidated_values=[],
+            max_message_tokens=actions["publication_message_limit"],
+        )
+        working_state = update.next_state.current_payload["working_state"]
+        assert "[layer budget truncated]" in context.provider_projection
+        assert len(working_state) == 1
+        assert set(working_state[0]) == {"text"}
+        observed.append(
+            {
+                "repeat": repeat,
+                "working_snapshot_tokens": current.estimated_tokens,
+                "selected_working_tokens": next(
+                    item.estimated_tokens
+                    for item in context.selections
+                    if item.id == "working-snapshot"
+                ),
+                "new_memory_tokens": ContextEngine.estimate_message(update.messages[0]),
+                "working_item_count": len(working_state),
+                "opaque_working_blob_count": sum(
+                    item.get("type") != "working_memory" for item in working_state
+                ),
+                "projection_sha256": hashlib.sha256(
+                    context.provider_projection.encode("utf-8")
+                ).hexdigest(),
+                "publication_fingerprint": update.next_state.current_fingerprint,
+            }
+        )
+
+    assert observed == expected["runs"]
 
 
 def test_query_combines_goal_plan_error_path_and_recent_action() -> None:

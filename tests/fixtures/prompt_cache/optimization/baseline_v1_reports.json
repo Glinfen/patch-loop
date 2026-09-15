@@ -1,0 +1,48 @@
+{
+  "schema_version": "aop-baseline.v1",
+  "optimization_version": "baseline_v1",
+  "fixture": "baseline_working_snapshot.json",
+  "actions": {
+    "repository_scope_id": "sample-repository",
+    "goal": "Migrate the sample service contract while preserving observable behavior.",
+    "changed_paths": [
+      "src/sample_service.py",
+      "src/sample_adapter.py"
+    ],
+    "total_context_tokens": 2000,
+    "publication_epoch_id": "initial",
+    "publication_message_limit": 2048
+  },
+  "runs": [
+    {
+      "repeat": 1,
+      "working_snapshot_tokens": 603,
+      "selected_working_tokens": 398,
+      "new_memory_tokens": 591,
+      "working_item_count": 1,
+      "opaque_working_blob_count": 1,
+      "projection_sha256": "97ddd45cd938b7e781575459a7932773667763a84c294451016a376c0e3b4afd",
+      "publication_fingerprint": "72c3d1a6156bd1b16ebcb4e45b2cb7e9f79ba63484beea738998ef6f79020700"
+    },
+    {
+      "repeat": 2,
+      "working_snapshot_tokens": 603,
+      "selected_working_tokens": 398,
+      "new_memory_tokens": 591,
+      "working_item_count": 1,
+      "opaque_working_blob_count": 1,
+      "projection_sha256": "97ddd45cd938b7e781575459a7932773667763a84c294451016a376c0e3b4afd",
+      "publication_fingerprint": "72c3d1a6156bd1b16ebcb4e45b2cb7e9f79ba63484beea738998ef6f79020700"
+    },
+    {
+      "repeat": 3,
+      "working_snapshot_tokens": 603,
+      "selected_working_tokens": 398,
+      "new_memory_tokens": 591,
+      "working_item_count": 1,
+      "opaque_working_blob_count": 1,
+      "projection_sha256": "97ddd45cd938b7e781575459a7932773667763a84c294451016a376c0e3b4afd",
+      "publication_fingerprint": "72c3d1a6156bd1b16ebcb4e45b2cb7e9f79ba63484beea738998ef6f79020700"
+    }
+  ]
+}

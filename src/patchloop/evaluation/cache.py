@@ -11,6 +11,7 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Iterable, Sequence
+from datetime import datetime
 from enum import StrEnum
 from itertools import pairwise
 from pathlib import Path
@@ -118,6 +119,36 @@ class CacheSimulationStep(BaseModel):
     restored: bool = False
 
 
+class CacheKnownTotals(BaseModel):
+    """Provider values that are known even when a run has an unknown attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    input_tokens: int = Field(default=0, ge=0)
+    cache_hit_tokens: int | None = Field(default=None, ge=0)
+    cache_miss_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    latency_ms: float | None = Field(default=None, ge=0.0)
+    cost_usd: float | None = Field(default=None, ge=0.0)
+
+
+class CachePurposeSummary(BaseModel):
+    """Request, attempt, usage and duration totals for one Provider purpose."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_count: int = Field(default=0, ge=0)
+    completed_request_count: int = Field(default=0, ge=0)
+    attempt_count: int = Field(default=0, ge=0)
+    unknown_usage_attempts: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    cache_hit_tokens: int | None = Field(default=None, ge=0)
+    cache_miss_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    latency_ms: float | None = Field(default=None, ge=0.0)
+    cost_usd: float | None = Field(default=None, ge=0.0)
+
+
 class CacheRunReport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -130,6 +161,7 @@ class CacheRunReport(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     cache_hit_tokens: int | None = Field(default=None, ge=0)
     cache_miss_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
     cache_hit_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     steady_state_cache_hit_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     latency_ms: float | None = Field(default=None, ge=0.0)
@@ -158,6 +190,23 @@ class CacheRunReport(BaseModel):
     recovery_verified: bool | None = None
     max_summary_messages: int | None = None
     ordinary_budget_respected: bool | None = None
+    purpose_summaries: dict[str, CachePurposeSummary] = Field(default_factory=dict)
+    known_totals: CacheKnownTotals | None = None
+    compression_request_count: int | None = Field(default=None, ge=0)
+    successful_rollover_count: int | None = Field(default=None, ge=0)
+    failed_compression_count: int | None = Field(default=None, ge=0)
+    optimization_version: str | None = None
+    projection_format: str | None = None
+    projection_fallback_reason: str | None = None
+    new_memory_tokens: int | None = Field(default=None, ge=0)
+    working_item_count: int | None = Field(default=None, ge=0)
+    opaque_working_blob_count: int | None = Field(default=None, ge=0)
+    decision_reason: str | None = None
+    mandatory_rebase_tokens: int | None = Field(default=None, ge=0)
+    summary_target_tokens: int | None = Field(default=None, ge=0)
+    summary_estimated_tokens: int | None = Field(default=None, ge=0)
+    freed_input_tokens: int | None = Field(default=None, ge=0)
+    headroom_after_rebase: int | None = None
 
 
 class CacheVariantSummary(BaseModel):
@@ -638,14 +687,20 @@ class RealProviderCacheCollector:
         pair_id: str | None = None,
         task_id: str | None = None,
     ) -> CacheRunReport:
-        selected = [event for event in events if task_id is None or event.task_id == task_id]
+        selected_by_id: dict[str, Event] = {}
+        for event in events:
+            if task_id is None or event.task_id == task_id:
+                selected_by_id.setdefault(event.id, event)
+        selected = list(selected_by_id.values())
         if len({e.task_id for e in selected if e.type == "cache.layout"}) > 1:
             raise ValueError("select one task_id when a trace contains multiple tasks")
         traces: dict[str, CacheLayoutTrace] = {}
         usages: dict[str, ModelUsage] = {}
         legacy_usages: dict[int, ModelUsage] = {}
         requests: dict[str, Event] = {}
-        attempts: dict[str, bool | None] = {}
+        attempts: dict[str, dict[str, Any]] = {}
+        rollovers: dict[str, Event] = {}
+        diagnostic_events: list[Event] = []
         restored_ids: set[str] = set()
         after_restore = False
         for event in selected:
@@ -656,9 +711,32 @@ class RealProviderCacheCollector:
             if event.type == "provider.request.started" and isinstance(request_id, str):
                 requests.setdefault(request_id, event)
             if event.type == "provider.attempt.started" and isinstance(attempt_id, str):
-                attempts.setdefault(attempt_id, None)
+                attempts.setdefault(
+                    attempt_id,
+                    {
+                        "request_id": request_id if isinstance(request_id, str) else None,
+                        "started_at": event.timestamp,
+                        "finished_at": None,
+                        "usage_unknown": None,
+                    },
+                )
             if event.type == "provider.attempt.finished" and isinstance(attempt_id, str):
-                attempts[attempt_id] = event.data.get("usage_unknown") is not False
+                attempt = attempts.setdefault(
+                    attempt_id,
+                    {
+                        "request_id": request_id if isinstance(request_id, str) else None,
+                        "started_at": None,
+                        "finished_at": None,
+                        "usage_unknown": None,
+                    },
+                )
+                attempt["finished_at"] = event.timestamp
+                attempt["usage_unknown"] = event.data.get("usage_unknown") is not False
+            if event.type == "cache.epoch.rolled_over" and isinstance(request_id, str):
+                rollovers.setdefault(request_id, event)
+                diagnostic_events.append(event)
+            elif event.type in {"cache.compression.failed", "cache.compression.requested"}:
+                diagnostic_events.append(event)
             if event.type == "cache.layout":
                 trace = CacheLayoutTrace.model_validate(event.data)
                 key = trace.request_id or f"legacy-{len(traces)}"
@@ -678,7 +756,19 @@ class RealProviderCacheCollector:
                 elif isinstance(event.data.get("step"), int):
                     legacy_usages[event.data["step"]] = usage
                 if event.type == "provider.request.completed" and isinstance(attempt_id, str):
-                    attempts[attempt_id] = usage.cost_status == "unknown"
+                    attempt = attempts.setdefault(
+                        attempt_id,
+                        {
+                            "request_id": request_id if isinstance(request_id, str) else None,
+                            "started_at": None,
+                            "finished_at": None,
+                            "usage_unknown": None,
+                        },
+                    )
+                    attempt["finished_at"] = event.timestamp
+                    # A completed request carries its usage. Unknown pricing is
+                    # distinct from an attempt whose token usage is unknown.
+                    attempt["usage_unknown"] = False
         steps = [
             _reported_step(
                 trace, usages.get(key) if trace.request_id else legacy_usages.get(trace.step)
@@ -697,10 +787,39 @@ class RealProviderCacheCollector:
             provider=next(iter(traces.values())).provider,
         )
         metadata = next(iter(requests.values()), None)
-        unknown_attempts = sum(unknown is not False for unknown in attempts.values())
+        unknown_attempts = sum(
+            attempt["usage_unknown"] is not False for attempt in attempts.values()
+        )
         # The report includes every started request and every attempt. Missing
         # completion/usage stays unknown; no positional joins or zero-cost guesses.
         linked = bool(requests) and set(requests) == set(traces) == set(usages)
+        purpose_by_request = {
+            request_id: str(
+                event.data.get("purpose")
+                or (
+                    "epoch_compression"
+                    if request_id in traces
+                    and traces[request_id].comparison_kind == "compression"
+                    else "agent_step"
+                    if request_id in traces
+                    else "unknown"
+                )
+            )
+            for request_id, event in requests.items()
+        }
+        purpose_summaries = _purpose_summaries(
+            requests, attempts, usages, purpose_by_request
+        )
+        known_totals = _known_totals(usages, attempts)
+        compression_request_ids = {
+            request_id
+            for request_id in requests
+            if purpose_by_request[request_id] == "epoch_compression"
+        }
+        compression_request_count = len(compression_request_ids)
+        successful_rollover_count = len(compression_request_ids & set(rollovers))
+        unsuccessful_compressions = compression_request_ids - set(rollovers)
+        diagnostics = _cache_diagnostics(diagnostic_events)
         fields: dict[str, Any] = {
             "task_correctness": None,
             "batch_id": batch_id,
@@ -709,7 +828,24 @@ class RealProviderCacheCollector:
             "request_linkage_complete": linked,
             "unknown_usage_attempts": unknown_attempts if attempts else None,
             "cost_usd": run.cost_usd if linked and attempts and unknown_attempts == 0 else None,
+            "purpose_summaries": purpose_summaries,
+            "known_totals": known_totals,
+            "compression_count": compression_request_count if requests else run.compression_count,
+            "compression_request_count": compression_request_count if requests else None,
+            "successful_rollover_count": successful_rollover_count if requests else None,
+            "failed_compression_count": len(unsuccessful_compressions) if requests else None,
+            **diagnostics,
         }
+        if requests and (not linked or unknown_attempts > 0):
+            fields.update(
+                {
+                    "input_tokens": None,
+                    "cache_hit_tokens": None,
+                    "cache_miss_tokens": None,
+                    "cache_hit_rate": None,
+                    "output_tokens": None,
+                }
+            )
         if metadata is not None:
             fields.update(
                 {
@@ -737,6 +873,131 @@ class RealProviderCacheCollector:
                 ):
                     fields["request_linkage_complete"] = False
         return run.model_copy(update=fields)
+
+
+def _purpose_summaries(
+    requests: dict[str, Event],
+    attempts: dict[str, dict[str, Any]],
+    usages: dict[str, ModelUsage],
+    purpose_by_request: dict[str, str],
+) -> dict[str, CachePurposeSummary]:
+    purposes = set(purpose_by_request.values())
+    summaries: dict[str, CachePurposeSummary] = {}
+    for purpose in sorted(purposes):
+        request_ids = {
+            request_id
+            for request_id in requests
+            if purpose_by_request[request_id] == purpose
+        }
+        purpose_attempts = [
+            attempt for attempt in attempts.values() if attempt["request_id"] in request_ids
+        ]
+        purpose_usages = [
+            usage for request_id, usage in usages.items() if request_id in request_ids
+        ]
+        cache_hits = [usage.cache_hit_tokens for usage in purpose_usages]
+        cache_misses = [usage.cache_miss_tokens for usage in purpose_usages]
+        complete_cost = (
+            len(purpose_usages) == len(request_ids)
+            and all(attempt["usage_unknown"] is False for attempt in purpose_attempts)
+            and all(usage.cost_status != "unknown" for usage in purpose_usages)
+        )
+        summaries[purpose] = CachePurposeSummary(
+            request_count=len(request_ids),
+            completed_request_count=len(request_ids & set(usages)),
+            attempt_count=len(purpose_attempts),
+            unknown_usage_attempts=sum(
+                attempt["usage_unknown"] is not False for attempt in purpose_attempts
+            ),
+            input_tokens=sum(usage.input_tokens for usage in purpose_usages),
+            cache_hit_tokens=(
+                sum(value for value in cache_hits if value is not None)
+                if cache_hits and all(value is not None for value in cache_hits)
+                else None
+            ),
+            cache_miss_tokens=(
+                sum(value for value in cache_misses if value is not None)
+                if cache_misses and all(value is not None for value in cache_misses)
+                else None
+            ),
+            output_tokens=sum(usage.output_tokens for usage in purpose_usages),
+            latency_ms=_attempt_latency_ms(purpose_attempts),
+            cost_usd=(
+                sum(usage.cost_usd for usage in purpose_usages) if complete_cost else None
+            ),
+        )
+    return summaries
+
+
+def _known_totals(
+    usages: dict[str, ModelUsage],
+    attempts: dict[str, dict[str, Any]],
+) -> CacheKnownTotals | None:
+    if not usages and not attempts:
+        return None
+    known_usages = list(usages.values())
+    cache_hits = [usage.cache_hit_tokens for usage in known_usages]
+    cache_misses = [usage.cache_miss_tokens for usage in known_usages]
+    known_costs = [usage.cost_usd for usage in known_usages if usage.cost_status != "unknown"]
+    return CacheKnownTotals(
+        input_tokens=sum(usage.input_tokens for usage in known_usages),
+        cache_hit_tokens=(
+            sum(value for value in cache_hits if value is not None)
+            if cache_hits and all(value is not None for value in cache_hits)
+            else None
+        ),
+        cache_miss_tokens=(
+            sum(value for value in cache_misses if value is not None)
+            if cache_misses and all(value is not None for value in cache_misses)
+            else None
+        ),
+        output_tokens=sum(usage.output_tokens for usage in known_usages),
+        latency_ms=_attempt_latency_ms(list(attempts.values())),
+        cost_usd=sum(known_costs) if known_costs else None,
+    )
+
+
+def _attempt_latency_ms(attempts: list[dict[str, Any]]) -> float | None:
+    if not attempts:
+        return None
+    total = 0.0
+    for attempt in attempts:
+        started_at = attempt["started_at"]
+        finished_at = attempt["finished_at"]
+        if not isinstance(started_at, datetime) or not isinstance(finished_at, datetime):
+            return None
+        total += max(0.0, (finished_at - started_at).total_seconds() * 1_000)
+    return total
+
+
+def _cache_diagnostics(events: list[Event]) -> dict[str, Any]:
+    fields = (
+        "optimization_version",
+        "projection_format",
+        "projection_fallback_reason",
+        "working_item_count",
+        "opaque_working_blob_count",
+        "decision_reason",
+        "mandatory_rebase_tokens",
+        "summary_target_tokens",
+        "headroom_after_rebase",
+    )
+    diagnostics: dict[str, Any] = {}
+    for field in fields:
+        values = [event.data.get(field) for event in events if event.data.get(field) is not None]
+        diagnostics[field] = values[-1] if values else None
+    for field, event_type in (
+        ("new_memory_tokens", "cache.compression.requested"),
+        ("summary_estimated_tokens", "cache.epoch.rolled_over"),
+        ("freed_input_tokens", "cache.epoch.rolled_over"),
+    ):
+        values = [
+            event.data.get(field)
+            for event in events
+            if event.type == event_type and isinstance(event.data.get(field), int)
+        ]
+        diagnostics[field] = sum(values) if values else None
+    return diagnostics
 
 
 def build_cache_fixture(variant: CacheEvaluationVariant) -> list[CacheSimulationRequest]:
@@ -1044,6 +1305,11 @@ def _run_report(
         input_tokens=sum(input_values) if len(input_values) == len(steps) else None,
         cache_hit_tokens=sum(hit_values) if len(hit_values) == len(steps) else None,
         cache_miss_tokens=sum(miss_values) if len(miss_values) == len(steps) else None,
+        output_tokens=(
+            sum(step.output_tokens for step in steps if step.output_tokens is not None)
+            if all(step.output_tokens is not None for step in steps)
+            else None
+        ),
         cache_hit_rate=_hit_rate(sum(hit_values), sum(miss_values))
         if len(hit_values) == len(steps) and len(miss_values) == len(steps)
         else None,

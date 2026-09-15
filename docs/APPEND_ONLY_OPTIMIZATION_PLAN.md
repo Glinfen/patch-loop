@@ -1,6 +1,6 @@
 # append_only 开销优化开发方案
 
-调研日期：2026-09-15。代码基线：`69738d2`；真实证据执行修订：`8fecd4f`。状态：方案已完成，AOP-01～08 待开发。本轮仅调研和规划，不执行真实模型评测。
+调研日期：2026-09-15。代码基线：`69738d2`；真实证据执行修订：`8fecd4f`。状态：方案已完成；AOP-01 已完成，AOP-02～08 待开发。离线优化阶段不执行真实模型评测。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，承接 [PPS 方案](PROMPT_PREFIX_STABILITY_PLAN.md)，服务于 [第二阶段总路线](PHASE_2_DEVELOPMENT_PLAN.md)。用户已明确：真实评测等 append_only 优化后再进行。
 
@@ -217,6 +217,8 @@ L0 开销对照固定同一组工具动作、工具结果、预算和 scripted P
 ## 6. Implementation Tasks
 
 ### AOP-01：建立可复现的记忆增长与压缩诊断
+
+**状态：已完成（2026-09-15）。** 已加入匿名化 working snapshot、三次固定 baseline_v1 报告、真实截断链路回归、按 purpose 的 Provider 汇总，以及压缩请求、成功 rollover、失败压缩和未知用量的独立诊断。
 
 **Goal**：在离线测试中复现截断整段发布，并准确区分压缩请求、成功重建和未知用量。
 

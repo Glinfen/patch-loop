@@ -8,11 +8,18 @@ PatchLoop 第一阶段建立了单 Agent 执行闭环、工具协议、持久化
 
 阶段完成后，PatchLoop 应从“研究型 Agent Runtime 原型”进入“具备日常试用价值的本地单 Agent”。
 
-当前进展（2026-09-08）：持久化 Session、Effect 恢复、执行所有权、持久化审批和 Session CLI
-已完成实现，SRF-07 的故障矩阵、8 进程竞争、安全审计及本机质量门禁通过。真实 Docker 后端
-和真实 Provider 三次独立试用因当前环境不具备条件而保持 `unverified`，因此 Session Runtime
-Foundation 和第二阶段均未宣告整体完成。SRF-07 证据与未完成项记录在
-[Session Runtime Foundation 计划](SESSION_RUNTIME_FOUNDATION_PLAN.md)第 13 节。
+当前进展（2026-09-15）：持久化 Session、Effect 恢复、执行所有权、持久化审批和 Session CLI
+已完成基础实现，SRF-07 故障矩阵、8 进程竞争、安全审计及本机质量门禁通过。Provider Gateway
+两协议和兼容路径已实现，最新离线验收通过，当前 Luna Chat profile 三次基础真实试用通过；
+完整多 Provider 真实矩阵仍未通过。SRF 的真实仓库三次试用已执行但失败，真实 Docker 未验收。
+PPS 最新两场景四任务均完成、隐藏测试 20/20 通过，但它们是小型 fixture，不能计作本阶段
+30 项真实开发任务；append_only 的压缩开销、完整用量和收益仍待验证。
+
+根据用户最新顺序要求，先完成 [append_only 优化](APPEND_ONLY_OPTIMIZATION_PLAN.md)及离线前置
+检查，再恢复有限真实模型验收与后续规模评测；其他第二阶段模块的设计和离线开发继续推进。
+这项顺序调整不改变下文阶段量化目标。完整 SRF 与第二阶段均未宣告完成，证据见
+[SRF 计划](SESSION_RUNTIME_FOUNDATION_PLAN.md)第 13 节、[PGW 计划](PROVIDER_GATEWAY_DEVELOPMENT_PLAN.md)
+和 [PPS 计划](PROMPT_PREFIX_STABILITY_PLAN.md)。
 
 ## 2. 目标用户与核心场景
 
@@ -134,8 +141,9 @@ CLI/TUI 应围绕 Session 工作流组织，而不是要求用户手工拼接任
 - 失败按照定位、规划、工具、Provider、权限、Sandbox、上下文和验证分类，并驱动后续优化。
 
 SRF-07 已提供一个锁定真实 Python 仓库、revision、依赖、Issue、公开测试和独立断言的三次试用
-入口，但当前没有真实 Provider 凭据，三个样本均为 `unverified`。该入口只是第二阶段完整
-“30 个任务、5 个仓库”评测的基础设施和首个清单，不计为已完成的真实试用样本。
+入口。2026-09-13 三次真实试用均因 20 step 预算耗尽失败且无代码变更，必须保留失败结果。
+该入口只是第二阶段完整“30 个任务、5 个仓库”评测的基础设施和首个清单，不计为已通过样本。
+当前 Luna 的 PGW 基础工具往返与 PPS 单文件 fixture 通过，也不能替代这一真实仓库验收。
 
 ## 4. 阶段量化目标
 

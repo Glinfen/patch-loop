@@ -6,7 +6,9 @@
 
 第一阶段的 [提示缓存架构重构计划](PROMPT_CACHE_ARCHITECTURE_REFACTOR_PLAN.md) 是本计划的入口工作。PCR-00 至 PCR-05 已有交付与 [验收记录](milestones/PCR_05_ACCEPTANCE.md)；真实 DeepSeek stable smoke 的未验证项按该记录保留。缓存和记忆进入维护状态，研发重心转向真实用户工作流。
 
-截至 2026-09-08，[持久化 Session 与恢复闭环](SESSION_RUNTIME_FOUNDATION_PLAN.md) 的 SRF-00～06 已完成，SRF-07 的实现和本机质量门禁已通过；真实 Docker 与真实 Provider 试用仍未验收，完整 SRF 出口保持未通过。下一开发模块是 [Provider Gateway](PROVIDER_GATEWAY_DEVELOPMENT_PLAN.md)，从 **PGW-01：请求、能力与兼容模型** 开始，完成 Chat Completions、DeepSeek、OpenAI Responses 及本地兼容路径的统一接入。SRF 的未验收项继续使用原清单收尾，不阻塞 Provider 离线开发，也不由协议测试替代。
+截至 2026-09-15，[SRF](SESSION_RUNTIME_FOUNDATION_PLAN.md) 基础实现与本机门禁通过，但真实仓库三次试用失败、真实 Docker 未验收；[PGW](PROVIDER_GATEWAY_DEVELOPMENT_PLAN.md) 两协议与兼容路径已实现，最新离线矩阵与当前 Luna Chat profile 三次基础试用通过，完整多 Provider 真实矩阵仍未通过。[PPS](PROMPT_PREFIX_STABILITY_PLAN.md) 最新四个小型任务均完成、隐藏测试 20/20 通过，但收益门禁未通过，默认继续 legacy。
+
+下一项可直接开发的专项为 [append_only 开销优化 AOP-01～08](APPEND_ONLY_OPTIMIZATION_PLAN.md)。本轮更新总路线并完成 AOP 详细设计；其他模块仅确定边界和顺序，各自启动前再编写专项方案。用户明确要求真实评测等 append_only 优化后再进行：AOP 的离线前置检查通过前，不新增真实 Provider、PPS、SRF 或第二阶段模型试跑。既有失败结果保留，真实 Docker 安全验证和不调用模型的开发测试可以继续。
 
 ## 2. 开发原则
 
@@ -215,9 +217,43 @@ Workspace / Git ── Repository Intelligence / Context
                      Packaging / 文档 / 发布
 ```
 
-优先级判断以“是否阻塞真实 Session 闭环”为准。缓存命中率、记忆算法、多 Agent 和 Web UI 不得抢占关键路径，除非真实评测证明它们是当前最高频失败原因。
+优先级判断以“是否阻塞真实 Session 闭环”为准。pilot-04 已暴露压缩开销，并在本轮代码调研中确认工作记忆截断导致字段增量失效；用户因此将 append_only 优化指定为真实模型评测的前置任务。该专项有明确离线出口，不扩展为无限期算法研究；模块设计和离线开发继续推进。多 Agent 和 Web UI 仍不进入本阶段关键路径。
 
-首个交付切片 SRF 已实现领域契约、版本化存储、执行所有权、副作用/审批恢复、多轮 Session 和 CLI，真实环境验收继续收尾。下一切片按 PGW-01～11 推进：Provider 契约/配置 → 可取消传输 → Gateway → 两协议 Adapter → 请求/续接持久化 → Runtime/用量 → CLI → 跨协议与真实试用验收。Observability 和故障评测贯穿每一步；上图表示模块依赖，不表示将它们全部推迟到 CLI 之后。后续模块必须复用 SRF 的 single writer、fencing 和审批路径。
+SRF 和 PGW 已有实现继续作为公共基础，不重新开发同名状态机、request journal 或存储。Observability 和故障评测贯穿每一步；后续模块必须复用 single writer、fencing 和审批路径。
+
+### 5.1 当前开发批次与模块顺序
+
+下表是模块级路线，不作为低成本执行模型的完整开发指令；只有 AOP 已在本轮给出详细任务、接口和验收。其余模块启动前按 PLANNING_GUIDE 形成专项计划。
+
+| 顺序 / 模块 | 当前基础与缺口 | 下一交付范围 | 依赖与出口 |
+| --- | --- | --- | --- |
+| 1. AOP 开销优化 | 前缀稳定已实现；结构化记忆在真实截断链路失效，压缩频繁 | AOP-01～08：版本化策略、完整条目投影、集中调度、摘要目标、恢复、离线门禁、真实入口预检 | L0 完成后才可进入有限真实验收；默认布局不自动切换 |
+| 2. Approval / Policy 扩展 | 已有持久化批准/拒绝和精确动作绑定 | 限时/Session/资源范围授权、修改参数后重新审批、网络与依赖动作统一入口 | 复用 ApprovalService 与 Effect；任何新授权都需可撤销、可审计，先离线绕过测试 |
+| 3. Sandbox 隔离验收与补齐 | 已有 Docker/local 后端和清理；真实 Docker 未通过 | 威胁模型、真实后端攻击性验证、网络/安装策略、跨平台路径及进程清理 | 可与 AOP/Policy 的独立部分并行；模型可替身，不冒充真实 Docker 隔离证据 |
+| 4. Workspace / Git 工作流 | FileChangeTracker 保存初始内容并输出 diff，尚无完整 Workspace Manager | dirty 基线、Session worktree、用户/Agent 变更归属、局部审查撤销、验证版本绑定提交 | 依赖 SRF 所有权与 Policy；必须先证明不会覆盖或误提交用户修改 |
+| 5. Skills Runtime | 无完整发现/安装/加载模块 | 元数据/版本/信任来源、按需加载、受控脚本与资源、选择和执行审计 | 依赖 Policy 与 Sandbox 契约；资源加载追加到当前会话，权限不来自 Skill 文本 |
+| 6. CLI/TUI 集成 | 已有 Session CLI、审批和恢复展示 | Provider/权限/Sandbox/Skill/工作区可见，统一中途输入、diff、审批与错误恢复 | 集成上列模块；陌生开发者 10 分钟启动首会话的可用性验收 |
+| 7. 真实评测与发布 | 已有 runner、首个真实仓库任务和小 fixture | 固定至少 5 仓库/30 任务、每项至少 3 次，独立测试与状态判分、费用/时延/安全统计 | append_only 前置优化与产品工作流就绪；全场景和量化目标同时通过 |
+
+Tool 扩展、索引/Context、持久化和 Trace 随各模块的实际需求配套演进，不独立开展与当前工作流无关的重构。Workspace 与 Skills 的专项设计可在 Policy 契约明确后并行，实施顺序优先保护真实仓库变更。
+
+### 5.2 真实模型评测恢复条件
+
+```text
+AOP 实现与离线 L0 → 有预算的两场景各一对 L1 → 达标后 PPS 三对 L2
+                                        │
+Policy + Sandbox + Workspace + Skills + CLI 集成
+                                        ↓
+                         SRF 真实流程 / Provider 完整矩阵
+                                        ↓
+                         第二阶段 ≥30 项 × ≥3 次 L3
+```
+
+- 本规划轮只读取已有试跑证据，不执行 L1/L2/L3。
+- L0 只能证明代码结构和固定动作开销改善，不能证明真实 warm 命中或模型质量。详细门槛见 AOP 第 4.7 节。
+- L1/L2 未达标则不扩量；新的失败、取消请求与未知费用必须记录，不能选择性补跑最佳结果。
+- 当前零价格只能支持 token 预算约束，不能证明费用下降；批次总预算需在启动前固定，源码/fixture/策略漂移需重验。
+- AOP 的 70% warm 目标属于专项收益门禁；第二阶段量化目标保持原文。有限真实验证的启动条件、PPS 默认发布条件和第二阶段结束条件分别记录，避免互相替代。
 
 ## 6. 阶段出口
 

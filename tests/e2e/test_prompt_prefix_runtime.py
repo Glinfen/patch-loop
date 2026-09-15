@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from pydantic import Field
 
 from patchloop.domain import (
@@ -211,8 +212,10 @@ def test_runtime_compression_request_is_recorded_with_its_source_history(tmp_pat
     assert any(message.role == "tool" for message in compression[0])
 
 
+@pytest.mark.parametrize("layout", [PromptCacheLayout.STABLE, PromptCacheLayout.APPEND_ONLY])
 def test_runtime_appends_a_pending_session_turn_after_the_completed_tool_group(
     tmp_path: Path,
+    layout: PromptCacheLayout,
 ) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -223,7 +226,7 @@ def test_runtime_appends_a_pending_session_turn_after_the_completed_tool_group(
         session.id,
         "Inspect a repository and honor new user input.",
         task_id="prefix-pending-input",
-        execution=TaskExecutionConfig(prompt_cache_layout=PromptCacheLayout.STABLE),
+        execution=TaskExecutionConfig(prompt_cache_layout=layout),
     )
 
     class InputSubmittingProvider(FakeProvider):
@@ -275,3 +278,24 @@ def test_runtime_appends_a_pending_session_turn_after_the_completed_tool_group(
     tool_call = next(message for message in second_request if message.tool_calls)
     tool_result = next(message for message in second_request if message.role == "tool")
     assert tool_result.tool_call_id == tool_call.tool_calls[0].id
+
+
+def test_append_only_runtime_preserves_six_rounds_and_cyclic_memory(tmp_path: Path) -> None:
+    provider, _, _, runtime = _run_runtime(
+        tmp_path,
+        PromptCacheLayout.APPEND_ONLY,
+        runtime_type=_ProjectionSequenceRuntime,
+        runtime_kwargs={"projections": ["A", "B", "A", "B", "C", "C", "C"]},
+    )
+    assert len(provider.requests) == 7
+    for (previous, tools), (current, current_tools) in zip(
+        provider.requests,
+        provider.requests[1:],
+        strict=False,
+    ):
+        assert _messages_are_prefix(previous, current)
+        assert tools == current_tools
+    snapshot = runtime._prompt_cache.publication_snapshot
+    assert snapshot.schema_version == "2.0"
+    assert snapshot.delta_count == 4
+    assert MemoryDeltaPublisher.replay(snapshot)["working_state"][0]["text"] == "C"

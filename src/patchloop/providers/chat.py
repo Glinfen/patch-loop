@@ -59,8 +59,8 @@ class ChatCompletionsAdapter(ProviderAdapter):
             payload["thinking"] = {
                 "type": "enabled" if binding.generation.reasoning_enabled else "disabled"
             }
-            if binding.generation.reasoning_effort is not None:
-                payload["reasoning_effort"] = binding.generation.reasoning_effort
+        if binding.generation.reasoning_effort is not None:
+            payload["reasoning_effort"] = binding.generation.reasoning_effort
 
         if request.output_schema is not None:
             payload["response_format"] = {

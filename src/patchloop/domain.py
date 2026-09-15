@@ -59,6 +59,10 @@ class PromptCacheLayout(StrEnum):
     APPEND_ONLY = "append_only"
 
 
+# PPS-09 changes this only after the real-provider acceptance profile passes.
+DEFAULT_PROMPT_CACHE_LAYOUT = PromptCacheLayout.LEGACY
+
+
 class StepStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
@@ -202,7 +206,7 @@ class TaskExecutionConfig(BaseModel):
         default="patchloop-sandbox:py313",
         pattern=r"^[A-Za-z0-9._/:@-]+$",
     )
-    prompt_cache_layout: PromptCacheLayout = PromptCacheLayout.LEGACY
+    prompt_cache_layout: PromptCacheLayout = DEFAULT_PROMPT_CACHE_LAYOUT
     project_instructions: str = ""
     cache_epoch: str = Field(default="initial", min_length=1, max_length=128)
     provider: ProviderBinding | None = None

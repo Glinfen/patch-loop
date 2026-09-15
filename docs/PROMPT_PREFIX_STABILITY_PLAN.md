@@ -1,6 +1,6 @@
 # Prompt 前缀稳定性修改方案
 
-调研日期：2026-09-13。状态：PPS-01、PPS-02、PPS-03、PPS-04、PPS-05 已完成；PPS-06 尚未实施。任务前缀：PPS。
+调研日期：2026-09-13。状态：PPS-01～07 已完成；PPS-08 验收工具与离线套件已实现；PPS-09 入口及回退已准备，默认切换等待真实验收。用户于 2026-09-15 明确暂不进行真实验收，待配置后执行。任务前缀：PPS。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，基于当前工作区实际代码（含尚未提交的 Provider 契约改动）。不把其他计划中的接口当作已经完成的实现。
 
@@ -585,6 +585,15 @@ Runtime 新增内部 `_append_prompt_messages(...)`、`_prepare_append_only_wind
 
 连续运行与故障恢复的对应普通请求前缀一致；不重复工具副作用；PGW/SRF 相关测试无回归。
 
+**Implementation Record**
+
+- Runtime 的 append_only 入口使用完整已规范化 transcript；根前缀、继承历史、assistant/continuation、工具观察和新 Turn 在入流时处理，普通请求不再经过旧布局的历史重建与裁剪路径。
+- 记忆 V2 preview 与实际请求消息、已提交消息边界一起保存；恢复先识别已准备请求并复用输入，不重新检索或重复发布。checkpoint 已写但 request 尚未创建也能恢复，不将尚未创建的请求误计为未知用量。
+- 请求前通过 PPS-05 接口压缩，source 精确来自最近一次普通请求，未发 suffix 与本轮候选记忆分别处理。压缩身份使用现有 Provider journal，响应先落库，再提交 root + 最新 summary + suffix + snapshot；没有新增请求表或第二份 transcript。
+- 压缩期间到达的 Turn 在 epoch 提交后消费一次，并同步当前 Step 的 input revision；无效摘要按 soft/hard 预算继续或暂停，相同 source 的失败不会重复自动压缩；lease 丢失与 PGW 中断立即传播。
+- Coordinator 支持按已记账 request 跳过 usage 累加，普通 usage 与 cache usage 共用 checkpoint 边界；压缩 usage 也使用既有 request/attempt 幂等键。工具恢复继续沿用 Effect/call ID，审批、拒绝和新输入取消路径补齐工具组后才追加 user 消息。
+- 开发时检查确认 PGW-07/08 所需的 `_request_model`、`begin_provider_request`、`commit_provider_response` 和 Effect batch 接口已存在，本任务直接复用。
+
 ### PPS-07：前缀诊断和最终 payload 验证
 
 **Goal**
@@ -709,6 +718,14 @@ PPS-03 与 PPS-07 的 diagnostics 部分可以在 PPS-02 后并行；PPS-04 与 
 
 ## 8. Verification
 
+### PPS-06 实施验证（2026-09-15）
+
+- 新增 `tests/integration/test_prompt_prefix_recovery.py`，覆盖请求创建前、响应落库后、usage checkpoint 后、首个工具提交后的故障恢复，continuation 保留、未知 attempt、无效摘要 soft/hard 分支及 same-source defer，以及压缩响应落库后的崩溃/lease 丢失与压缩期间新输入。
+- 实际 Runtime 连续六个工具轮次覆盖 A→B→A→B→C 检索变化，逐条验证前序请求及工具定义保持相同；扩展 Session 新输入和审批/拒绝测试至 append_only。
+- 最终定向集合：PPS Runtime/recovery、PGW runtime/persistence、Session migration/runtime、Effect/approval/security、coordinator/epoch/prefix/dependency，共 110 项通过。`ruff check src tests`、`mypy src/patchloop`、`git diff --check` 通过。
+- 本轮全量 pytest 在追加最后几个定向案例前执行，结果 712 passed、2 skipped、1 failed。失败为未修改的 `tests/integration/test_provider_transport.py::test_transport_settings_are_explicit_and_http_urls_are_restricted`；单独重跑复现。本机 `ssl.get_default_verify_paths().cafile` 为 `None`，transport 使用 `verify=True`，该测试断言必须为 `SSLContext`。跳过项为未配置真实 Provider 验收和 Windows 符号链接不可用。
+- 未调用真实付费 Provider；默认布局和 PPS-07～09 门禁保持原状态。
+
 ### PPS-05 实施验证（2026-09-14）
 
 - 新增 append-only 压缩路径：压缩 source 精确复用最近一次已提交请求（含当时 memory snapshot/delta），未发工具组和用户输入作为 suffix 原序保留；候选 memory 状态不进入 source，并在新 epoch 中生成单条 V2 snapshot。
@@ -797,6 +814,17 @@ PGW adapter 契约测试随其文件落地加入 targeted 集合，不用尚不�
 
 **设计未决问题：None。** 请求排列、状态归属、预算、压缩失败行为、兼容与验收已在本方案确定。
 
-**实施前置依赖：** 当前工作区有 ProviderRequest/Binding/Continuation 契约，但 Runtime 仍直接 `provider.complete`；PGW-07/08 请求持久化和 Runtime 接入尚不能由当前已读代码确认完成。因此 PPS-06 完整恢复集成及 PPS-09 默认切换等待这两项完成；PPS-01～05 和 PPS-07 纯诊断部分不受阻。执行模型不要自行另造一套 request journal。
+**实施前置依赖（2026-09-15 更新）：** PGW-07/08 的请求持久化与 Runtime 恢复整合、PPS-07 诊断以及 PPS-08 验收工具已完成。PPS-09 默认切换仍等待真实 A/B 门禁；不另建 request journal。
 
-**发布待验证：** 尚无本次 append_only 的真实 A/B 数据，不能把历史基线或 FakeProvider 结果当作缓存收益验收。付费试验预算和执行属于后续实施阶段，不阻塞本方案交付。
+**发布待验证：** 用户明确暂不进行真实验收，待其配置完成后执行。没有本次 append_only 的真实 A/B 数据，不能把历史基线或 FakeProvider 结果当作缓存收益验收；保留 legacy 默认和 append_only opt-in。
+
+### PPS-07～09 开发记录（2026-09-15）
+
+- PPS-07：Snapshot 保存规范化消息摘要向量，Trace 区分普通请求、压缩和 epoch 边界，记录完整消息前缀、有序工具及 binding 比较、请求/source 关联。旧 JSON LCP 及 canonical 指纹保持原语义，旧字段缺失时不伪造新指标。Chat/Responses transport 测试覆盖 continuation、原始参数字符串及 checkpoint round trip，并检出故意改写旧输入的 adapter。
+- PPS-08：新增 `benchmark-cache --suite prefix-runtime` 和 `validate-cache-gates --profile pps`。离线套件运行实际 Runtime、三次重复及普通/长期压缩/恢复场景，禁止模拟缓存 usage。真实 collector 按 request/attempt 关联，检查缺失用量、未知费用与配对批次；按加权命中率、总费用、质量和恢复分别给出门禁结果。
+- PPS-09：Task 和两个 CLI 入口共用默认常量，支持显式 append_only/stable/legacy；PPS rollout candidate 为 append_only、fallback 为 legacy。README 提供离线命令、后续真实 Trace manifest、质量证据及回退说明。默认常量仍为 legacy；缺少真实证据时，即使显式请求启用也不能通过发布门禁。
+- 非 reasoning 压缩的输出上限使用 summary budget，并随压缩 request ID 持久化，保证恢复请求参数一致；reasoning 和旧 checkpoint 保持原输出参数。
+- 离线报告由 CLI 生成于 `benchmarks/results/pps_prefix_runtime.json` 和 `benchmarks/results/pps_prefix_acceptance.json`；真实收益、费用及真实恢复证据保留 unverified，不执行付费调用。
+- 最终验证：全量 pytest 为 746 passed、2 skipped、1 failed；失败为既有 transport CA 测试，本机 `ssl.get_default_verify_paths().cafile` 为 None。仅在该测试进程中用 certifi 设置 `SSL_CERT_FILE` 后复验 1 passed，未修改 transport 或系统配置。跳过项是真实 Provider 验收未配置和 Windows 符号链接不可用。`ruff check src tests`、`mypy src/patchloop` 及 `git diff --check` 通过。
+- 离线三轮各包含 6 个工具轮次、3 种检索状态；每轮长期场景完成 17 次压缩，最多一条摘要，三轮 checkpoint 恢复均通过。验收报告的普通前缀、压缩 source、场景覆盖和摘要预算门禁通过；缺少独立质量/完整故障矩阵证据文件的汇总项与真实门禁仍保留 unverified，具体恢复测试由上述 pytest 覆盖。
+- 收尾核对补充 `restored_request_count`，分别从实际 Runtime 恢复标记和真实 Trace 的恢复后请求统计，重复事件不重复计数。相关评估、PPS 门禁、旧基线和 CLI 回归 37 项通过，ruff/mypy 通过；离线报告已重新生成。

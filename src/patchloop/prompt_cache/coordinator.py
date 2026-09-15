@@ -222,6 +222,7 @@ class AppendOnlyPromptState(BaseModel):
     compression_source_message_count: int | None = Field(default=None, ge=0)
     compression_source_epoch_generation: int | None = Field(default=None, ge=0, le=1_000_000_000)
     compression_request_id: str | None = Field(default=None, min_length=1, max_length=128)
+    compression_max_output_tokens: int | None = Field(default=None, gt=0)
     deferred_compression_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -743,6 +744,8 @@ class PromptCacheCoordinator:
             system_instructions=system_instructions,
             task_project_snapshot=task_project_snapshot,
             memory_projection=published_memory,
+            request_id=request_id,
+            binding_fingerprint=(provider_binding.fingerprint if provider_binding else None),
         )
         prepared = PromptCachePreparedRequest(
             step=step,
@@ -768,10 +771,13 @@ class PromptCacheCoordinator:
         self,
         prepared: PromptCachePreparedRequest,
         usage: ModelUsage,
+        *,
+        account_usage: bool = True,
     ) -> PromptCacheResponseObservation:
         self._ensure_pending("request", prepared.cache_layout.request_fingerprint)
         cache_layout = self._diagnostics.finalize(prepared.cache_layout, usage)
-        self._usage.record(usage)
+        if account_usage:
+            self._usage.record(usage)
         self._clear_pending()
         return PromptCacheResponseObservation(
             cache_layout=cache_layout,
@@ -831,6 +837,8 @@ class PromptCacheCoordinator:
             step,
             request.messages,
             request.tools,
+            request_kind="compression",
+            binding_fingerprint=(provider_binding.fingerprint if provider_binding else None),
             provider=provider,
             model=model,
             thinking=thinking,
@@ -987,6 +995,8 @@ class PromptCacheCoordinator:
             step,
             request.messages,
             request.tools,
+            request_kind="compression",
+            binding_fingerprint=(provider_binding.fingerprint if provider_binding else None),
             provider=provider,
             model=model,
             thinking=thinking,
@@ -1018,12 +1028,15 @@ class PromptCacheCoordinator:
         self,
         prepared: PromptCacheCompressionPreparation,
         usage: ModelUsage,
+        *,
+        account_usage: bool = True,
     ) -> PromptCacheResponseObservation:
         self._ensure_pending("compression", prepared.cache_layout.request_fingerprint)
         if prepared.epoch_id != self.epoch_id:
             raise PromptCacheCoordinatorError("compression response belongs to a different epoch")
         cache_layout = self._diagnostics.finalize(prepared.cache_layout, usage)
-        self._usage.record(usage)
+        if account_usage:
+            self._usage.record(usage)
         self._clear_pending()
         self._compression_ready_epoch = prepared.epoch_id
         return PromptCacheResponseObservation(
@@ -1450,6 +1463,31 @@ class PromptCacheCoordinator:
         """Discard an in-flight provider response after an external failure."""
 
         self._clear_pending()
+
+    def commit_publication(self, snapshot: MemoryPublicationSnapshot) -> None:
+        """Install a validated transcript publication with its checkpoint candidate."""
+        if self.layout is not PromptCacheLayout.APPEND_ONLY or (
+            snapshot.schema_version != "2.0" or snapshot.epoch_id != self.epoch_id
+        ):
+            raise PromptCacheCoordinatorError("publication does not match append-only epoch")
+        self._publication = MemoryDeltaPublisher(snapshot, max_delta_tokens=self._max_delta_tokens)
+
+    def set_compression_request_id(
+        self,
+        request_id: str | None,
+        *,
+        max_output_tokens: int | None = None,
+    ) -> None:
+        """Associate the pending compression with the existing Provider journal."""
+        if self._append_only_state is None:
+            raise PromptCacheCoordinatorError("append-only state is unavailable")
+        self._append_only_state = AppendOnlyPromptState.model_validate(
+            {
+                **self._append_only_state.model_dump(),
+                "compression_request_id": request_id,
+                "compression_max_output_tokens": max_output_tokens if request_id else None,
+            }
+        )
 
 
 __all__ = [

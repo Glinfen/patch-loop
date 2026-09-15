@@ -51,6 +51,7 @@ def test_request_fingerprints_are_canonical_and_secret_safe() -> None:
     )
 
     assert first.tool_schema_fingerprint == second.tool_schema_fingerprint
+    assert first.ordered_tools_fingerprint != second.ordered_tools_fingerprint
     assert first.project_fingerprint == second.project_fingerprint
     assert first.request_wire_fingerprint == second.request_wire_fingerprint
     assert fingerprint_text("Authorization: Bearer very-secret-token") == fingerprint_text(
@@ -172,3 +173,110 @@ def test_runtime_emits_safe_layout_trace_consumable_by_metrics_and_replay(tmp_pa
     assert metrics.cache_layout_events == 1
     assert metrics.cache_layout_primary_reasons == {"cold_start": 1}
     assert replay.cache_layouts[0].cache_hit_tokens == 80
+
+
+def test_message_diagnostics_survive_restore_and_keep_compression_separate():
+    from patchloop.prompt_cache.diagnostics import CacheDiagnosticsSnapshot
+
+    diagnostics = CacheDiagnostics()
+    source = _messages(history=[ModelMessage(role="assistant", content="old answer")])
+    diagnostics.observe(0, source, _tools(), provider="fake", epoch_snapshot="e0")
+    restored = CacheDiagnostics()
+    restored.restore(
+        CacheDiagnosticsSnapshot.model_validate_json(diagnostics.snapshot().model_dump_json())
+    )
+    extended = [*source, ModelMessage(role="user", content="next")]
+    trace = restored.observe(1, extended, _tools(), provider="fake", epoch_snapshot="e0")
+    assert trace.metric_basis == "normalized_messages_v1"
+    assert trace.previous_request_is_prefix is True
+    assert trace.previous_message_count == trace.common_prefix_message_count == len(source)
+    assert trace.tools_unchanged is trace.binding_unchanged is True
+    assert trace.legacy_lcp_basis == "section_estimate"
+    compression = restored.observe(
+        2,
+        [*extended, ModelMessage(role="user", content="summarize")],
+        _tools(),
+        provider="fake",
+        epoch_snapshot="e0",
+        request_kind="compression",
+    )
+    assert compression.comparison_kind == "compression"
+    assert compression.previous_request_is_prefix is True
+    restored_again = CacheDiagnostics()
+    restored_again.restore(restored.snapshot())
+    ordinary = restored_again.observe(2, extended, _tools(), provider="fake", epoch_snapshot="e0")
+    assert ordinary.previous_request_is_prefix is True
+    epoch = restored_again.observe(3, _messages(), _tools(), provider="fake", epoch_snapshot="e1")
+    assert epoch.comparison_kind == "epoch_boundary"
+    assert epoch.prefix_break_reason is None
+
+
+def test_message_diagnostics_detect_raw_changes_tools_order_and_old_schema():
+    from patchloop.prompt_cache.diagnostics import CacheDiagnosticsSnapshot
+
+    diagnostics = CacheDiagnostics()
+    source = _messages(
+        history=[ModelMessage(role="user", content="Authorization: Bearer secret-one")]
+    )
+    diagnostics.observe(0, source, _tools(), provider="fake")
+    changed = [*source[:2], ModelMessage(role="user", content="Authorization: Bearer secret-two")]
+    trace = diagnostics.observe(1, changed, _tools(), provider="fake")
+    assert trace.previous_request_is_prefix is False
+    assert trace.first_changed_message_index == 2
+    assert "secret-one" not in diagnostics.snapshot().model_dump_json()
+    tools = diagnostics.observe(2, changed, list(reversed(_tools())), provider="fake")
+    assert tools.tools_unchanged is False
+    assert tools.prefix_break_reason == "tools_change"
+    binding = diagnostics.observe(3, changed, list(reversed(_tools())), provider="other")
+    assert binding.binding_unchanged is False
+    old = diagnostics.snapshot().model_dump(mode="json")
+    old.pop("previous_ordinary_request")
+    for field in (
+        "message_fingerprints",
+        "message_estimated_tokens",
+        "ordered_tools_fingerprint",
+        "binding_fingerprint",
+    ):
+        old["previous_request"].pop(field)
+    diagnostics.restore(CacheDiagnosticsSnapshot.model_validate(old))
+    unavailable = diagnostics.observe(4, changed, _tools(), provider="fake")
+    assert unavailable.metric_basis is None
+    assert unavailable.previous_request_is_prefix is None
+
+
+def test_prefix_comparison_in_a_new_process_and_replayed_request_keeps_cold_classification():
+    import json
+    import subprocess
+    import sys
+
+    diagnostics = CacheDiagnostics()
+    first = diagnostics.observe(0, _messages(), _tools(), provider="fake", request_id="first")
+    payload = diagnostics.snapshot().model_dump_json()
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; from patchloop.prompt_cache import CacheDiagnostics; "
+                "from patchloop.prompt_cache.diagnostics import CacheDiagnosticsSnapshot; "
+                "from tests.unit.test_cache import _messages, _tools; "
+                "d=CacheDiagnostics(); "
+                "d.restore(CacheDiagnosticsSnapshot.model_validate_json(sys.stdin.read())); "
+                "r=d.observe(1, _messages(), _tools(), provider='fake', request_id='next'); "
+                "print(r.model_dump_json())"
+            ),
+        ],
+        input=payload,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    )
+    trace = json.loads(child.stdout)
+    assert trace["previous_request_is_prefix"] is True
+    assert trace["common_prefix_message_count"] == 2
+    from patchloop.prompt_cache.diagnostics import CacheDiagnosticsSnapshot
+
+    diagnostics.restore(CacheDiagnosticsSnapshot.model_validate_json(payload))
+    replayed = diagnostics.observe(0, _messages(), _tools(), provider="fake", request_id="first")
+    assert replayed == first
+    assert replayed.comparison_kind == "cold_start"

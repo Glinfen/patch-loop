@@ -102,6 +102,20 @@ class CacheSimulationStep(BaseModel):
     expected_full_invalidation: bool = False
     latency_ms: float | None = Field(default=None, ge=0.0)
     cost_usd: float | None = Field(default=None, ge=0.0)
+    request_id: str | None = None
+    source_request_id: str | None = None
+    comparison_kind: str | None = None
+    previous_request_is_prefix: bool | None = None
+    tools_unchanged: bool | None = None
+    binding_unchanged: bool | None = None
+    first_changed_message_index: int | None = None
+    metric_basis: str | None = None
+    common_prefix_message_count: int | None = None
+    common_prefix_estimated_tokens: int | None = None
+    output_tokens: int | None = Field(default=None, ge=0)
+    usage_complete: bool | None = None
+    cost_status: str | None = None
+    restored: bool = False
 
 
 class CacheRunReport(BaseModel):
@@ -111,7 +125,7 @@ class CacheRunReport(BaseModel):
     repeat: int = Field(ge=1)
     source: str = "deterministic_simulation"
     provider: str = "fake"
-    task_correctness: float = Field(ge=0.0, le=1.0)
+    task_correctness: float | None = Field(default=None, ge=0.0, le=1.0)
     steps: list[CacheSimulationStep] = Field(min_length=1)
     input_tokens: int | None = Field(default=None, ge=0)
     cache_hit_tokens: int | None = Field(default=None, ge=0)
@@ -125,6 +139,25 @@ class CacheRunReport(BaseModel):
     fingerprint_changes: int = Field(default=0, ge=0)
     large_miss_attributions: int = Field(default=0, ge=0)
     reason_counts: dict[str, int] = Field(default_factory=dict)
+    prefix_schema_version: str | None = None
+    comparison_counts: dict[str, int] = Field(default_factory=dict)
+    restored_request_count: int = Field(default=0, ge=0)
+    model: str | None = None
+    endpoint_fingerprint: str | None = None
+    binding_fingerprint: str | None = None
+    input_budget: int | None = None
+    pricing_version: str | None = None
+    started_at: str | None = None
+    batch_id: str | None = None
+    task_case: str | None = None
+    pair_id: str | None = None
+    request_linkage_complete: bool = False
+    unknown_usage_attempts: int | None = None
+    tool_rounds: int | None = None
+    retrieval_state_count: int | None = None
+    recovery_verified: bool | None = None
+    max_summary_messages: int | None = None
+    ordinary_budget_respected: bool | None = None
 
 
 class CacheVariantSummary(BaseModel):
@@ -132,7 +165,7 @@ class CacheVariantSummary(BaseModel):
 
     variant: CacheEvaluationVariant
     run_count: int = Field(ge=1)
-    task_correctness_mean: float = Field(ge=0.0, le=1.0)
+    task_correctness_mean: float | None = Field(default=None, ge=0.0, le=1.0)
     input_tokens_mean: float | None = Field(default=None, ge=0.0)
     input_tokens_min: float | None = Field(default=None, ge=0.0)
     input_tokens_max: float | None = Field(default=None, ge=0.0)
@@ -230,7 +263,9 @@ class CacheEvaluationReport(BaseModel):
 
     def human_summary(self) -> str:
         lines = [
-            "PCO-06 cache matrix",
+            "PPS prompt-prefix evaluation"
+            if self.schema_version.startswith("pps")
+            else "PCO-06 cache matrix",
             f"source={'deterministic' if self.deterministic_fingerprint else 'provider-reported'} "
             f"repeats={self.repeats} fixture={self.fixture_fingerprint[:12]}",
             "variant | correctness | input tokens (mean/min/max) | "
@@ -248,7 +283,7 @@ class CacheEvaluationReport(BaseModel):
                 summary.cache_hit_rate_max,
             )
             lines.append(
-                f"{summary.variant.value} | {summary.task_correctness_mean:.3f} | "
+                f"{summary.variant.value} | {_format_number(summary.task_correctness_mean)} | "
                 f"{input_stats} "
                 "| "
                 f"{hit_stats} "
@@ -297,6 +332,9 @@ class CacheBenchmarkRunner:
         *,
         layout: PromptCacheLayout = PromptCacheLayout.LEGACY,
         repeat: int = 1,
+        prefix_suite: bool = False,
+        restore: bool = False,
+        compress: bool = False,
     ) -> CacheRunReport:
         """Run six real Runtime tool rounds and report the recorded provider requests.
 
@@ -305,19 +343,25 @@ class CacheBenchmarkRunner:
         by AgentRuntime, MemoryManager, and ToolGateway.
         """
 
-        if layout not in {PromptCacheLayout.LEGACY, PromptCacheLayout.STABLE}:
-            raise ValueError(f"unsupported runtime fixture layout: {layout}")
         if repeat < 1:
             raise ValueError("runtime fixture repeat must be positive")
 
+        from dataclasses import replace
+
         from patchloop.events import EventLogger
+        from patchloop.memory.manager import ManagedMemoryRetrieval
+        from patchloop.memory.retrieval import RetrievalLayer, RetrievalSelection
+        from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
         from patchloop.providers import FakeProvider, ModelResponse
         from patchloop.runtime import AgentRuntime
         from patchloop.tools.base import Tool, ToolContext, ToolInputModel
         from patchloop.tools.gateway import ToolGateway
 
+        count = 36 if compress else 6
+        observations: list[int] = []
+
         class FixtureInput(ToolInputModel):
-            index: int = Field(ge=0, le=5)
+            index: int = Field(ge=0, le=35)
 
         class FixtureTool(Tool):
             name = "cache_fixture_observe"
@@ -327,8 +371,11 @@ class CacheBenchmarkRunner:
             def run(self, arguments: BaseModel, context: ToolContext) -> str:
                 del context
                 index = FixtureInput.model_validate(arguments).index
+                observations.append(index)
                 body = f"observation-{index}: "
-                if index == 2:
+                if compress:
+                    body += "evidence " * 250
+                elif index == 2:
                     body += "long-tool-output;" * 1_200
                 else:
                     body += f"stable repository observation {index}"
@@ -337,6 +384,8 @@ class CacheBenchmarkRunner:
         variant = (
             CacheEvaluationVariant.CURRENT_LAYOUT
             if layout is PromptCacheLayout.LEGACY
+            else CacheEvaluationVariant.APPEND_ONLY
+            if layout is PromptCacheLayout.APPEND_ONLY
             else CacheEvaluationVariant.STABLE_PREFIX
         )
         with TemporaryDirectory(prefix="patchloop-cache-runtime-") as temporary:
@@ -351,30 +400,112 @@ class CacheBenchmarkRunner:
                         )
                     ]
                 )
-                for index in range(6)
+                for index in range(count)
             ]
             responses.append(ModelResponse(content="Completed six fixture observations."))
-            provider = FakeProvider(
+
+            class FixtureProvider(FakeProvider):
+                index = 0
+
+                def complete(
+                    self, messages: list[ModelMessage], tools: list[ToolSpec]
+                ) -> ModelResponse:
+                    if messages[-1].content.startswith("PATCHLOOP_EPOCH_COMPRESSION_V1"):
+                        self.requests.append((list(messages), list(tools)))
+                        return ModelResponse(
+                            content=json.dumps(
+                                {
+                                    "constraints": ["Inspect observations"],
+                                    "paths": [],
+                                    "decisions": [],
+                                    "failures": [],
+                                    "tests": [],
+                                    "unfinished": ["Continue observations"],
+                                    "next_step": "Read next observation",
+                                }
+                            )
+                        )
+                    self.index += 1
+                    return super().complete(messages, tools)
+
+            provider = FixtureProvider(
                 responses,
-                cache_simulator=DeterministicPrefixCacheSimulator(
+                cache_simulator=None
+                if prefix_suite
+                else DeterministicPrefixCacheSimulator(
                     miss_threshold_tokens=self.miss_threshold_tokens
                 ),
             )
+
+            class FixtureRuntime(AgentRuntime):
+                def _retrieve_memory(
+                    self,
+                    task: Task,
+                    total_context_tokens: int,
+                    retrieval_token_cap: int | None = None,
+                ) -> ManagedMemoryRetrieval:
+                    retrieved = super()._retrieve_memory(
+                        task, total_context_tokens, retrieval_token_cap
+                    )
+                    if not prefix_suite or retrieved.context is None:
+                        return retrieved
+                    marker = ("A", "B", "A", "B", "C")[min(provider.index, 4)]
+                    selection = RetrievalSelection(
+                        id="prefix-stimulus",
+                        layer=RetrievalLayer.WORKING,
+                        text=marker,
+                        provider_text=marker,
+                        score=1.0,
+                        estimated_tokens=1,
+                        reason="deterministic fixture",
+                        diversity_key="prefix-stimulus",
+                    )
+                    return replace(
+                        retrieved,
+                        context=retrieved.context.model_copy(
+                            update={"selections": [selection]},
+                        ),
+                    )
+
+                def _persist_checkpoint(self, checkpoint: RuntimeCheckpoint) -> None:
+                    super()._persist_checkpoint(checkpoint)
+                    if restore and checkpoint.next_step_index == 3 and not restored[0]:
+                        restored[0] = True
+                        raise KeyboardInterrupt("fixture checkpoint restore boundary")
+
+            restored = [False]
+            store = SQLiteStore(Path(temporary) / "runtime.db") if restore else None
             root = Path(repository).resolve(strict=True)
             gateway = ToolGateway(ToolContext(root), [FixtureTool()], trace)
             task = Task(
-                id=f"cache-runtime-{layout.value}-{repeat}",
+                id=f"cache-runtime-{layout.value.replace('_', '-')}-{repeat}",
                 goal="Inspect six deterministic repository observations.",
                 repository=str(root),
-                budget=TaskBudget(max_steps=8, max_context_tokens=32_000),
+                budget=TaskBudget(
+                    max_steps=count + 2,
+                    max_context_tokens=4_500 if compress else 32_000,
+                    max_tool_output_chars=3_000 if compress else 8_000,
+                ),
                 execution=TaskExecutionConfig(prompt_cache_layout=layout),
             )
-            result = AgentRuntime(provider, gateway, trace).run(task)
+            runtime = FixtureRuntime(provider, gateway, trace, state_store=store)
+            try:
+                result = runtime.run(task)
+            except KeyboardInterrupt:
+                if store is None or not restored[0]:
+                    raise
+                runtime = FixtureRuntime(
+                    provider,
+                    ToolGateway(ToolContext(root), [FixtureTool()], trace),
+                    trace,
+                    state_store=store,
+                )
+                result = runtime.resume(store.get_task(task.id), store.get_checkpoint(task.id))
             if result.status is not TaskStatus.COMPLETED:
                 raise RuntimeError(f"Runtime cache fixture failed: {result.error}")
-            if result.report is None or result.report.tool_calls != 6:
+            if result.report is None or result.report.tool_calls != count:
                 raise RuntimeError("Runtime cache fixture did not execute six tool rounds")
-            if len(provider.requests) < 7:
+            if len(provider.requests) < count + 1:
                 raise RuntimeError("Runtime cache fixture did not complete six tool rounds")
             traces = [
                 CacheLayoutTrace.model_validate(event.data)
@@ -386,18 +517,88 @@ class CacheBenchmarkRunner:
             steps = [
                 _reported_step(
                     trace_item,
-                    ModelUsage(
+                    None
+                    if prefix_suite
+                    else ModelUsage(
                         input_tokens=(trace_item.cache_hit_tokens or 0)
                         + (trace_item.cache_miss_tokens or 0)
                     ),
                 )
                 for trace_item in traces
             ]
-        return _run_report(
-            variant,
-            repeat,
-            steps,
-            source="deterministic",
+        if prefix_suite and restore:
+            steps = [item.model_copy(update={"restored": item.step == 3}) for item in steps]
+        run = _run_report(variant, repeat, steps, source="deterministic")
+        if prefix_suite:
+            from patchloop.context import ContextEngine
+            from patchloop.prompt_cache.coordinator import compute_prefix_budget
+            from patchloop.prompt_cache.epoch import SUMMARY_PREFIX
+
+            if observations != list(range(count)):
+                raise RuntimeError("fixture repeated or lost a tool effect")
+            run = run.model_copy(
+                update={
+                    "steps": steps,
+                    "task_case": "compression"
+                    if compress
+                    else "restore"
+                    if restore
+                    else "ordinary",
+                    "tool_rounds": count,
+                    "retrieval_state_count": 3,
+                    "recovery_verified": restored[0] if restore else None,
+                    "input_budget": task.budget.max_context_tokens,
+                    "unknown_usage_attempts": 0,
+                    "max_summary_messages": max(
+                        sum(m.content.startswith(SUMMARY_PREFIX) for m in messages)
+                        for messages, _ in provider.requests
+                    ),
+                    "ordinary_budget_respected": all(
+                        ContextEngine.estimate_messages(messages)
+                        + ContextEngine.estimate_tools(tools)
+                        <= compute_prefix_budget(
+                            task.budget, runtime.provider_binding, tools
+                        ).ordinary_limit
+                        for messages, tools in provider.requests
+                        if not messages[-1].content.startswith("PATCHLOOP_EPOCH_COMPRESSION_V1")
+                    ),
+                }
+            )
+        return run
+
+    def run_prefix_suite(self, repository: str | Path) -> CacheEvaluationReport:
+        """Record the production Runtime through ordinary, compression and recovery cases."""
+        runs = [
+            self.run_runtime_fixture(
+                repository,
+                layout=layout,
+                repeat=repeat,
+                prefix_suite=True,
+                restore=case == "restore",
+                compress=case == "compression",
+            )
+            for layout in (PromptCacheLayout.LEGACY, PromptCacheLayout.APPEND_ONLY)
+            for repeat in range(1, self.repeats + 1)
+            for case in ("ordinary", "compression", "restore")
+        ]
+        variants = (CacheEvaluationVariant.CURRENT_LAYOUT, CacheEvaluationVariant.APPEND_ONLY)
+        fingerprint = _sha256_json({"suite": "pps-prefix-runtime.v1", "rounds": [6, 36, 6]})
+        return CacheEvaluationReport(
+            schema_version="pps.v1",
+            suite_id="pps-prefix-runtime",
+            repeats=self.repeats,
+            variants=variants,
+            fixture_fingerprint=fingerprint,
+            deterministic_fingerprint=_sha256_json([run.model_dump(mode="json") for run in runs]),
+            compression_prefix_reusable=all(
+                step.previous_request_is_prefix is True
+                for run in runs
+                if run.variant is CacheEvaluationVariant.APPEND_ONLY
+                for step in run.steps
+                if step.comparison_kind == "compression"
+            ),
+            runs=runs,
+            summaries=[_summarize(v, [r for r in runs if r.variant is v]) for v in variants],
         )
 
     def _run_variant(self, variant: CacheEvaluationVariant, repeat: int) -> CacheRunReport:
@@ -432,31 +633,110 @@ class RealProviderCacheCollector:
         *,
         variant: CacheEvaluationVariant = CacheEvaluationVariant.FULL_OPTIMIZATION,
         repeat: int = 1,
+        batch_id: str | None = None,
+        task_case: str | None = None,
+        pair_id: str | None = None,
+        task_id: str | None = None,
     ) -> CacheRunReport:
-        traces: list[CacheLayoutTrace] = []
-        usages: dict[int, ModelUsage] = {}
-        for event in events:
+        selected = [event for event in events if task_id is None or event.task_id == task_id]
+        if len({e.task_id for e in selected if e.type == "cache.layout"}) > 1:
+            raise ValueError("select one task_id when a trace contains multiple tasks")
+        traces: dict[str, CacheLayoutTrace] = {}
+        usages: dict[str, ModelUsage] = {}
+        legacy_usages: dict[int, ModelUsage] = {}
+        requests: dict[str, Event] = {}
+        attempts: dict[str, bool | None] = {}
+        restored_ids: set[str] = set()
+        after_restore = False
+        for event in selected:
+            request_id = event.data.get("request_id")
+            attempt_id = event.data.get("attempt_id")
+            if event.type == "task.resumed":
+                after_restore = True
+            if event.type == "provider.request.started" and isinstance(request_id, str):
+                requests.setdefault(request_id, event)
+            if event.type == "provider.attempt.started" and isinstance(attempt_id, str):
+                attempts.setdefault(attempt_id, None)
+            if event.type == "provider.attempt.finished" and isinstance(attempt_id, str):
+                attempts[attempt_id] = event.data.get("usage_unknown") is not False
             if event.type == "cache.layout":
-                traces.append(CacheLayoutTrace.model_validate(event.data))
-            elif event.type in {"model.completed", "model.step"}:
-                raw_step = event.data.get("step")
+                trace = CacheLayoutTrace.model_validate(event.data)
+                key = trace.request_id or f"legacy-{len(traces)}"
+                traces.setdefault(key, trace)
+                if after_restore:
+                    restored_ids.add(key)
+                    after_restore = False
+            elif event.type in {"model.completed", "model.step", "provider.request.completed"}:
                 raw_usage = event.data.get("usage")
-                if isinstance(raw_step, int) and isinstance(raw_usage, dict):
-                    usages[raw_step] = ModelUsage.model_validate(raw_usage)
+                if not isinstance(raw_usage, dict):
+                    continue
+                usage = ModelUsage.model_validate(raw_usage)
+                if isinstance(request_id, str):
+                    if request_id in usages and usages[request_id] != usage:
+                        raise ValueError("conflicting usage for the same Provider request")
+                    usages[request_id] = usage
+                elif isinstance(event.data.get("step"), int):
+                    legacy_usages[event.data["step"]] = usage
+                if event.type == "provider.request.completed" and isinstance(attempt_id, str):
+                    attempts[attempt_id] = usage.cost_status == "unknown"
         steps = [
-            _reported_step(trace, usages.get(trace.step))
-            for trace in sorted(traces, key=lambda item: item.step)
+            _reported_step(
+                trace, usages.get(key) if trace.request_id else legacy_usages.get(trace.step)
+            ).model_copy(update={"restored": key in restored_ids})
+            for key, trace in traces.items()
         ]
         if not steps:
             raise ValueError("provider trace contains no cache.layout events")
-        provider = traces[0].provider
-        return _run_report(
+        run = _run_report(
             variant,
             repeat,
             steps,
-            source="provider_reported",
-            provider=provider,
+            source="deterministic"
+            if next(iter(traces.values())).provider == "fake"
+            else "provider_reported",
+            provider=next(iter(traces.values())).provider,
         )
+        metadata = next(iter(requests.values()), None)
+        unknown_attempts = sum(unknown is not False for unknown in attempts.values())
+        # The report includes every started request and every attempt. Missing
+        # completion/usage stays unknown; no positional joins or zero-cost guesses.
+        linked = bool(requests) and set(requests) == set(traces) == set(usages)
+        fields: dict[str, Any] = {
+            "task_correctness": None,
+            "batch_id": batch_id,
+            "task_case": task_case,
+            "pair_id": pair_id,
+            "request_linkage_complete": linked,
+            "unknown_usage_attempts": unknown_attempts if attempts else None,
+            "cost_usd": run.cost_usd if linked and attempts and unknown_attempts == 0 else None,
+        }
+        if metadata is not None:
+            fields.update(
+                {
+                    key: metadata.data.get(key)
+                    for key in (
+                        "model",
+                        "endpoint_fingerprint",
+                        "binding_fingerprint",
+                        "input_budget",
+                        "pricing_version",
+                    )
+                }
+            )
+            fields["started_at"] = metadata.timestamp.isoformat()
+            for event in requests.values():
+                if any(
+                    event.data.get(key) != fields[key]
+                    for key in (
+                        "model",
+                        "endpoint_fingerprint",
+                        "binding_fingerprint",
+                        "input_budget",
+                        "pricing_version",
+                    )
+                ):
+                    fields["request_linkage_complete"] = False
+        return run.model_copy(update=fields)
 
 
 def build_cache_fixture(variant: CacheEvaluationVariant) -> list[CacheSimulationRequest]:
@@ -679,7 +959,15 @@ def _simulation_step(
 def _reported_step(trace: CacheLayoutTrace, usage: ModelUsage | None) -> CacheSimulationStep:
     return CacheSimulationStep(
         step=trace.step,
-        scenario=_scenario_for_trace(trace.step),
+        scenario=(
+            CacheEvaluationScenario.EXPLICIT_COMPRESSION
+            if trace.comparison_kind == "compression"
+            else CacheEvaluationScenario.COLD_START
+            if trace.comparison_kind in {"cold_start", "epoch_boundary"}
+            else CacheEvaluationScenario.WARM_CONTINUATION
+            if trace.comparison_kind == "ordinary"
+            else _scenario_for_trace(trace.step)
+        ),
         input_tokens=usage.input_tokens if usage is not None else None,
         cache_hit_tokens=trace.cache_hit_tokens,
         cache_miss_tokens=trace.cache_miss_tokens,
@@ -694,7 +982,25 @@ def _reported_step(trace: CacheLayoutTrace, usage: ModelUsage | None) -> CacheSi
         expected_full_invalidation=trace.primary_reason
         is CacheLayoutReason.MODEL_OR_THINKING_CHANGE,
         latency_ms=None,
-        cost_usd=usage.cost_usd if usage is not None else None,
+        cost_usd=usage.cost_usd if usage is not None and usage.cost_status == "estimated" else None,
+        request_id=trace.request_id,
+        source_request_id=trace.source_request_id,
+        comparison_kind=trace.comparison_kind,
+        previous_request_is_prefix=trace.previous_request_is_prefix,
+        tools_unchanged=trace.tools_unchanged,
+        binding_unchanged=trace.binding_unchanged,
+        first_changed_message_index=trace.first_changed_message_index,
+        metric_basis=trace.metric_basis,
+        common_prefix_message_count=trace.common_prefix_message_count,
+        common_prefix_estimated_tokens=trace.common_prefix_estimated_tokens,
+        output_tokens=usage.output_tokens if usage is not None else None,
+        usage_complete=(
+            usage is not None
+            and usage.input_tokens_reported is not False
+            and usage.output_tokens_reported is not False
+            and trace.cache_usage_consistent is True
+        ),
+        cost_status=usage.cost_status if usage is not None else None,
     )
 
 
@@ -735,17 +1041,17 @@ def _run_report(
         provider=provider,
         task_correctness=1.0,
         steps=steps,
-        input_tokens=sum(input_values) if input_values else None,
-        cache_hit_tokens=sum(hit_values) if hit_values else None,
-        cache_miss_tokens=sum(miss_values) if miss_values else None,
+        input_tokens=sum(input_values) if len(input_values) == len(steps) else None,
+        cache_hit_tokens=sum(hit_values) if len(hit_values) == len(steps) else None,
+        cache_miss_tokens=sum(miss_values) if len(miss_values) == len(steps) else None,
         cache_hit_rate=_hit_rate(sum(hit_values), sum(miss_values))
-        if hit_values and miss_values
+        if len(hit_values) == len(steps) and len(miss_values) == len(steps)
         else None,
         steady_state_cache_hit_rate=_hit_rate(sum(steady_hits), sum(steady_misses))
         if steady_hits and steady_misses
         else None,
         latency_ms=sum(latencies) if latencies else None,
-        cost_usd=sum(costs) if costs else None,
+        cost_usd=sum(costs) if len(costs) == len(steps) else None,
         compression_count=sum(
             step.scenario is CacheEvaluationScenario.EXPLICIT_COMPRESSION for step in steps
         ),
@@ -764,6 +1070,9 @@ def _run_report(
             for step in steps
         ),
         reason_counts=dict(reasons),
+        comparison_counts=dict(Counter(step.comparison_kind or "unavailable" for step in steps)),
+        restored_request_count=sum(step.restored for step in steps),
+        prefix_schema_version="pps.v1" if all(step.metric_basis for step in steps) else None,
     )
 
 
@@ -773,7 +1082,9 @@ def _summarize(variant: CacheEvaluationVariant, runs: list[CacheRunReport]) -> C
     return CacheVariantSummary(
         variant=variant,
         run_count=len(runs),
-        task_correctness_mean=sum(run.task_correctness for run in runs) / len(runs),
+        task_correctness_mean=_mean(run.task_correctness for run in runs)
+        if all(run.task_correctness is not None for run in runs)
+        else None,
         input_tokens_mean=_mean(run.input_tokens for run in runs),
         input_tokens_min=_minimum(run.input_tokens for run in runs),
         input_tokens_max=_maximum(run.input_tokens for run in runs),

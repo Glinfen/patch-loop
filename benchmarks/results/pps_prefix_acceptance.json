@@ -1,0 +1,134 @@
+{
+  "schema_version": "pps.v1",
+  "candidate_variant": "append_only",
+  "passed": false,
+  "rollout": {
+    "enabled": false,
+    "candidate_layout": "append_only",
+    "fallback_layout": "legacy",
+    "previous_release_retained": true,
+    "persistence_migration_required": false
+  },
+  "checks": [
+    {
+      "name": "ordinary_prefix",
+      "status": "pass",
+      "actual": {
+        "samples": 93,
+        "missing": 0
+      },
+      "target": "100% ordinary message prefixes, tools and binding; zero missing samples",
+      "detail": "requirement satisfied"
+    },
+    {
+      "name": "compression_source",
+      "status": "pass",
+      "actual": 51,
+      "target": "every compression reuses its complete declared ordinary source",
+      "detail": "requirement satisfied"
+    },
+    {
+      "name": "runtime_fixture_coverage",
+      "status": "pass",
+      "actual": 3,
+      "target": "6 tool rounds and 3 retrieval states",
+      "detail": "requirement satisfied"
+    },
+    {
+      "name": "bounded_epochs",
+      "status": "pass",
+      "actual": [
+        17,
+        17,
+        17
+      ],
+      "target": "10 compressions, one current summary and all ordinary inputs within budget",
+      "detail": "requirement satisfied"
+    },
+    {
+      "name": "offline_recovery",
+      "status": "unverified",
+      "actual": 3,
+      "target": "Runtime checkpoint restore and full fault matrix passed",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "provider_reported_cache_usage",
+      "status": "unverified",
+      "actual": false,
+      "target": "complete request-associated Provider usage; simulations cannot pass",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "paired_batch",
+      "status": "unverified",
+      "actual": {
+        "candidate_runs": 9,
+        "baseline_runs": 9,
+        "cases": [
+          "compression",
+          "ordinary",
+          "restore"
+        ]
+      },
+      "target": "two task cases, three interleaved pairs each; same batch/model/endpoint/budget/pricing",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "warm_cache_hit_rate",
+      "status": "unverified",
+      "actual": null,
+      "target": "weighted warm hit rate >= 70%, excluding epoch first requests",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "cache_hit_rate_gain",
+      "status": "unverified",
+      "actual": {
+        "candidate": null,
+        "baseline": null
+      },
+      "target": "all-request hit rate gain >= 20 percentage points",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "total_cost_reduction",
+      "status": "unverified",
+      "actual": {},
+      "target": "each task's median total known cost decreases >= 20%, including compression/attempts",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "real_resume",
+      "status": "unverified",
+      "actual": 3,
+      "target": "at least one real pause/resume with a verified prefix",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "quality_and_safety",
+      "status": "unverified",
+      "actual": null,
+      "target": "complete quality and safety evidence for both tasks",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "rollout_candidate",
+      "status": "pass",
+      "actual": "append_only",
+      "target": "append_only candidate with legacy fallback",
+      "detail": "requirement satisfied"
+    }
+  ],
+  "blocking_checks": [
+    "offline_recovery",
+    "provider_reported_cache_usage",
+    "paired_batch",
+    "warm_cache_hit_rate",
+    "cache_hit_rate_gain",
+    "total_cost_reduction",
+    "real_resume",
+    "quality_and_safety"
+  ],
+  "provider_reported": false
+}

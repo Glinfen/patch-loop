@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from patchloop.cli import app
@@ -150,3 +151,103 @@ def test_benchmark_cache_cli_writes_machine_report_and_prints_summary(tmp_path: 
     assert "PCO-06 cache matrix" in result.output
     assert output.is_file()
     assert '"schema_version": "pco-06.v1"' in output.read_text(encoding="utf-8")
+
+
+def test_provider_collector_joins_compression_usage_by_request_and_deduplicates_attempts():
+    events = []
+    for index, kind in enumerate(("ordinary", "compression")):
+        request_id = f"request-{index}"
+        usage = ModelUsage(
+            input_tokens=100 * (index + 1),
+            output_tokens=10,
+            cache_hit_tokens=80 * (index + 1),
+            cache_miss_tokens=20 * (index + 1),
+            cost_usd=0.1 * (index + 1),
+            cost_status="estimated",
+            input_tokens_reported=True,
+            output_tokens_reported=True,
+        )
+        trace = CacheLayoutTrace(
+            step=1,
+            request_id=request_id,
+            provider="real-test",
+            request_fingerprint="a" * 64,
+            comparison_kind=kind,
+            metric_basis="normalized_messages_v1",
+            previous_request_is_prefix=True,
+            tools_unchanged=True,
+            binding_unchanged=True,
+            cache_hit_tokens=usage.cache_hit_tokens,
+            cache_miss_tokens=usage.cache_miss_tokens,
+            cache_usage_consistent=True,
+        )
+        events.extend(
+            [
+                Event(
+                    type="provider.request.started",
+                    task_id="task",
+                    data={
+                        "request_id": request_id,
+                        "model": "m",
+                        "binding_fingerprint": "b" * 64,
+                        "endpoint_fingerprint": "c" * 64,
+                        "input_budget": 8000,
+                        "pricing_version": "v1",
+                    },
+                ),
+                Event(
+                    type="provider.attempt.started",
+                    task_id="task",
+                    data={
+                        "request_id": request_id,
+                        "attempt_id": f"attempt-{index}",
+                    },
+                ),
+                Event(
+                    type="provider.request.completed",
+                    task_id="task",
+                    data={
+                        "request_id": request_id,
+                        "attempt_id": f"attempt-{index}",
+                        "usage": usage.model_dump(mode="json"),
+                    },
+                ),
+                Event(type="cache.layout", task_id="task", data=trace.model_dump(mode="json")),
+            ]
+        )
+    events.extend(events[-2:])
+    run = RealProviderCacheCollector.run_from_events(events)
+    assert [s.input_tokens for s in run.steps] == [100, 200]
+    assert run.input_tokens == 300
+    assert run.cache_hit_tokens == 240
+    assert run.compression_count == 1
+    assert run.cost_usd == pytest.approx(0.3)
+    assert run.request_linkage_complete
+    assert run.unknown_usage_attempts == 0
+    resumed = RealProviderCacheCollector.run_from_events(
+        [Event(type="task.resumed", task_id="task", data={}), *events]
+    )
+    assert resumed.restored_request_count == 1
+    assert resumed.steps[0].restored
+    events.append(
+        Event(
+            type="provider.attempt.started",
+            task_id="task",
+            data={
+                "request_id": "request-0",
+                "attempt_id": "unknown-attempt",
+            },
+        )
+    )
+    unknown = RealProviderCacheCollector.run_from_events(events)
+    assert unknown.unknown_usage_attempts == 1
+    assert unknown.cost_usd is None
+    incomplete = RealProviderCacheCollector.run_from_events(
+        [
+            e
+            for e in events
+            if not (e.type == "provider.request.completed" and e.data["request_id"] == "request-1")
+        ]
+    )
+    assert incomplete.input_tokens is None
+    assert not incomplete.request_linkage_complete

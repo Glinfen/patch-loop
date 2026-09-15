@@ -17,6 +17,7 @@ import typer
 
 from patchloop.context import ContextDebug
 from patchloop.domain import (
+    DEFAULT_PROMPT_CACHE_LAYOUT,
     PromptCacheLayout,
     Task,
     TaskBudget,
@@ -327,7 +328,7 @@ def _provider_binding(provider: RuntimeProvider) -> ProviderBinding | None:
 
 
 def _configured_provider(
-    profile: str,
+    profile: str | None,
     *,
     model: str | None = None,
     config_path: Path | None = None,
@@ -353,9 +354,8 @@ def _selected_provider(
     if profile is None and model is None and config_path is None and env_file is None:
         provider = _provider_from_env()
         return provider, _provider_binding(provider)
-    selected_profile = profile or "deepseek"
     return _configured_provider(
-        selected_profile,
+        profile,
         model=model,
         config_path=config_path,
         env_file=env_file,
@@ -997,6 +997,9 @@ def start_session_task(
     context: typer.Context,
     session_id: Annotated[str, typer.Argument()],
     goal: Annotated[str, typer.Argument(help="Natural-language development goal.")],
+    prompt_cache_layout: Annotated[
+        str, typer.Option(help="Prompt layout: legacy, stable or append_only.")
+    ] = DEFAULT_PROMPT_CACHE_LAYOUT.value,
     allow_write: Annotated[bool, typer.Option()] = False,
     allow_execute: Annotated[bool, typer.Option()] = False,
     sandbox: Annotated[
@@ -1030,6 +1033,7 @@ def start_session_task(
             session_id,
             goal,
             execution=TaskExecutionConfig(
+                prompt_cache_layout=PromptCacheLayout(prompt_cache_layout),
                 allowed_permissions=permissions,
                 non_interactive=True,
                 sandbox_backend=sandbox,
@@ -1817,6 +1821,11 @@ def benchmark_memory(
 @app.command("benchmark-cache")
 def benchmark_cache(
     mode: Annotated[str, typer.Option(help="deterministic or provider.")] = "deterministic",
+    suite: Annotated[str, typer.Option(help="cache-matrix or prefix-runtime.")] = "cache-matrix",
+    trace_manifest: Annotated[
+        str, typer.Option(help="JSON manifest of paired Provider trace runs.")
+    ] = "",
+    repository: Annotated[Path, typer.Option(exists=True, file_okay=False)] = Path("."),
     trace: Annotated[str, typer.Option(help="JSONL provider trace when mode=provider.")] = "",
     output: Annotated[
         Path,
@@ -1825,12 +1834,24 @@ def benchmark_cache(
     repeats: Annotated[int, typer.Option(min=3, max=20)] = 3,
 ) -> None:
     try:
+        if suite not in {"cache-matrix", "prefix-runtime"}:
+            raise ValueError("suite must be cache-matrix or prefix-runtime")
         if mode == "deterministic":
-            report = CacheBenchmarkRunner(repeats=repeats).run()
+            runner = CacheBenchmarkRunner(repeats=repeats)
+            report = (
+                runner.run_prefix_suite(repository) if suite == "prefix-runtime" else runner.run()
+            )
         elif mode == "provider":
-            if not trace:
+            if suite == "prefix-runtime" and not trace_manifest:
+                raise ValueError(
+                    "PPS provider evaluation requires --trace-manifest with paired runs"
+                )
+            if trace_manifest:
+                report = _provider_prefix_manifest(Path(trace_manifest))
+            elif not trace:
                 raise ValueError("--trace is required when mode=provider")
-            report = _provider_cache_report(Path(trace))
+            else:
+                report = _provider_cache_report(Path(trace))
         else:
             raise ValueError("mode must be deterministic or provider")
     except (OSError, ValueError) as exc:
@@ -1857,8 +1878,66 @@ def _provider_cache_report(trace: Path) -> CacheEvaluationReport:
     )
 
 
+def _provider_prefix_manifest(path: Path) -> CacheEvaluationReport:
+    """Import explicitly identified runs; never infer experiment pairs from event positions."""
+    from patchloop.evaluation.cache import CacheRunReport
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("runs"), list):
+        raise ValueError("trace manifest must contain a runs array")
+    runs: list[CacheRunReport] = []
+    for entry in data["runs"]:
+        if not isinstance(entry, dict) or not all(
+            k in entry
+            for k in (
+                "trace",
+                "variant",
+                "repeat",
+                "batch_id",
+                "task_case",
+                "pair_id",
+            )
+        ):
+            raise ValueError(
+                "each trace run requires trace/variant/repeat/batch_id/task_case/pair_id"
+            )
+        variant = CacheEvaluationVariant(entry["variant"])
+        if variant not in {
+            CacheEvaluationVariant.CURRENT_LAYOUT,
+            CacheEvaluationVariant.APPEND_ONLY,
+        }:
+            raise ValueError("PPS trace variants must be current_layout or append_only")
+        runs.append(
+            RealProviderCacheCollector.run_from_events(
+                EventLogger(path.parent / entry["trace"]).read(),
+                variant=variant,
+                repeat=entry["repeat"],
+                batch_id=entry["batch_id"],
+                task_case=entry["task_case"],
+                pair_id=entry["pair_id"],
+                task_id=entry.get("task_id"),
+            )
+        )
+    return CacheEvaluationReport(
+        schema_version="pps.v1",
+        suite_id="pps-provider-pairs",
+        repeats=max((r.repeat for r in runs), default=1),
+        variants=tuple(dict.fromkeys(r.variant for r in runs)),
+        fixture_fingerprint="0" * 64,
+        runs=runs,
+        summaries=[summarize_cache_run(run) for run in runs],
+    )
+
+
 @app.command("validate-cache-gates")
 def validate_cache_gates(
+    profile: Annotated[str, typer.Option(help="pco or pps acceptance profile.")] = "pco",
+    baseline_report: Annotated[
+        str, typer.Option(help="Same-batch legacy baseline report for PPS.")
+    ] = "",
+    enable_append_only: Annotated[
+        bool, typer.Option(help="Request PPS rollout after all gates pass.")
+    ] = False,
     report: Annotated[
         Path,
         typer.Option(exists=True, dir_okay=False, resolve_path=True),
@@ -1904,7 +1983,20 @@ def validate_cache_gates(
             cache_report,
             quality=quality_evidence,
             local_report=deterministic_report,
-            rollout=CacheRolloutPolicy(enabled=enable_stable),
+            profile=profile,
+            baseline_report=(
+                CacheEvaluationReport.model_validate_json(
+                    Path(baseline_report).read_text(encoding="utf-8")
+                )
+                if baseline_report
+                else None
+            ),
+            rollout=CacheRolloutPolicy(
+                enabled=enable_append_only if profile == "pps" else enable_stable,
+                candidate_layout=PromptCacheLayout.APPEND_ONLY
+                if profile == "pps"
+                else PromptCacheLayout.STABLE,
+            ),
         )
     except (OSError, ValueError) as exc:
         typer.echo(str(exc), err=True)
@@ -2265,8 +2357,8 @@ def run_task(
     ] = "patchloop-sandbox:py313",
     prompt_cache_layout: Annotated[
         str,
-        typer.Option(help="Prompt layout: legacy (rollback) or stable (PCO-02)."),
-    ] = "legacy",
+        typer.Option(help="Prompt layout: legacy (rollback), stable, or append_only (PPS)."),
+    ] = DEFAULT_PROMPT_CACHE_LAYOUT.value,
     provider_profile: Annotated[str | None, typer.Option("--provider")] = None,
     model: Annotated[str | None, typer.Option("--model")] = None,
     provider_config: Annotated[Path | None, typer.Option("--provider-config")] = None,
@@ -2283,10 +2375,8 @@ def run_task(
         permissions.add(PermissionLevel.EXECUTE)
     try:
         cache_layout = PromptCacheLayout(prompt_cache_layout)
-        if cache_layout not in {PromptCacheLayout.LEGACY, PromptCacheLayout.STABLE}:
-            raise ValueError(prompt_cache_layout)
     except ValueError:
-        typer.echo("prompt_cache_layout must be legacy or stable", err=True)
+        typer.echo("prompt_cache_layout must be legacy, stable or append_only", err=True)
         raise typer.Exit(code=2) from None
     services = _workspace_services(repository)
     try:

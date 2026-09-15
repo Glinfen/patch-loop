@@ -42,6 +42,9 @@ class _ProfileDefinition(BaseModel):
     protocol: ProviderProtocol
     dialect: ChatDialect = ChatDialect.STANDARD
     base_url: str
+    base_url_env: str | None = Field(default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    model_env: str | None = Field(default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    reasoning_effort_env: str | None = Field(default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     auth: ProviderAuth = ProviderAuth.BEARER
     credential_env: str | None = Field(
         default=None,
@@ -125,7 +128,6 @@ class ProfileResolver:
         config_path: Path | None = None,
         env_file: Path | None = None,
     ) -> ProviderBinding:
-        del env_file  # Credentials are deliberately resolved in a separate phase.
         selected_path = config_path if config_path is not None else DEFAULT_PROVIDER_CONFIG
         configured = self._load(selected_path, required=config_path is not None)
         profiles = {"deepseek": _builtin_deepseek(), **configured.profiles}
@@ -137,7 +139,14 @@ class ProfileResolver:
                 f"unknown provider profile {selected_profile!r}; available profiles: {available}",
             )
         profile = profiles[selected_profile]
-        selected_model = model or profile.default_model
+        file_values = _load_env_file(env_file) if env_file is not None else {}
+
+        def configured_value(name: str | None, fallback: str) -> str:
+            if name is None:
+                return fallback
+            return os.environ.get(name) or file_values.get(name) or fallback
+
+        selected_model = model or configured_value(profile.model_env, profile.default_model)
         if selected_model not in profile.models:
             available = ", ".join(sorted(profile.models))
             raise ProviderError(
@@ -145,7 +154,8 @@ class ProfileResolver:
                 f"model {selected_model!r} is not configured for profile "
                 f"{selected_profile!r}; available models: {available}",
             )
-        _validate_url(profile.base_url, field="base_url", allow_http_loopback=True)
+        base_url = configured_value(profile.base_url_env, profile.base_url)
+        _validate_url(base_url, field="base_url", allow_http_loopback=True)
         if profile.transport.proxy_url is not None:
             _validate_url(
                 profile.transport.proxy_url,
@@ -153,16 +163,31 @@ class ProfileResolver:
                 allow_http_loopback=True,
             )
         selected = profile.models[selected_model]
+        generation = selected.generation
+        if profile.reasoning_effort_env is not None:
+            effort = configured_value(
+                profile.reasoning_effort_env, generation.reasoning_effort or ""
+            )
+            if effort:
+                payload = generation.model_dump()
+                payload["reasoning_effort"] = effort
+                try:
+                    generation = ProviderGeneration.model_validate(payload)
+                except ValueError:
+                    raise ProviderError(
+                        ProviderErrorKind.CONFIGURATION,
+                        "invalid reasoning effort for the selected model",
+                    ) from None
         return ProviderBinding(
             profile_id=selected_profile,
             protocol=profile.protocol,
             dialect=profile.dialect,
             model=selected_model,
-            base_url=profile.base_url.rstrip("/"),
+            base_url=base_url.rstrip("/"),
             auth=profile.auth,
             credential_env=profile.credential_env,
             capabilities=selected.capabilities,
-            generation=selected.generation,
+            generation=generation,
             transport=profile.transport,
             pricing=selected.pricing,
         )

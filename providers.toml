@@ -1,0 +1,46 @@
+# Deployment values and credentials live in the single root .env.
+# Select explicitly with --provider-config providers.toml --env-file .env.
+schema_version = 1
+default_profile = "local-openai"
+
+[profiles.local-openai]
+protocol = "chat_completions"
+dialect = "standard"
+auth = "bearer"
+credential_env = "OPENAI_API_KEY"
+base_url = "http://localhost:49314/v1"
+base_url_env = "OPENAI_BASE_URL"
+default_model = "gpt-5.6-luna"
+model_env = "OPENAI_MODEL"
+reasoning_effort_env = "OPENAI_REASONING_EFFORT"
+
+[profiles.local-openai.transport]
+streaming = false
+max_retries = 0
+
+# Conservative local operating limits, not verified upstream model specifications.
+# Tools/usage support must be confirmed against this proxy before real PPS acceptance.
+[profiles.local-openai.models."gpt-5.6-luna".capabilities]
+tools = true
+multiple_tool_calls = true
+streaming = false
+reasoning_transport = "none"
+structured_output = false
+context_window_tokens = 32000
+max_output_tokens = 8192
+usage_supported = true
+cache_usage_supported = false
+
+[profiles.local-openai.models."gpt-5.6-luna".generation]
+max_output_tokens = 8192
+token_limit_field = "max_completion_tokens"
+reasoning_enabled = true
+reasoning_effort = "high"
+
+# User-confirmed local proxy budget accounting: no per-token charges.
+# These are not the upstream provider's list prices.
+[profiles.local-openai.models."gpt-5.6-luna".pricing]
+version = "local-proxy-zero-v1"
+input_per_million = 0.0
+cached_input_per_million = 0.0
+output_per_million = 0.0

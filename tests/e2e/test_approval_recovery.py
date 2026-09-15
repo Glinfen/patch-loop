@@ -3,7 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from patchloop.domain import Task, TaskRuntimeCondition, TaskStatus, ToolCall
+from patchloop.domain import (
+    PromptCacheLayout,
+    Task,
+    TaskExecutionConfig,
+    TaskRuntimeCondition,
+    TaskStatus,
+    ToolCall,
+)
 from patchloop.execution.approvals import ApprovalService
 from patchloop.execution.models import ApprovalStatus, EffectStatus
 from patchloop.persistence import SQLiteStore
@@ -54,7 +61,10 @@ def _replace_response(*, path: str = "README.md") -> ModelResponse:
     )
 
 
-def test_runtime_persists_approval_and_yields_without_tool_failure(tmp_path: Path) -> None:
+@pytest.mark.parametrize("layout", [PromptCacheLayout.LEGACY, PromptCacheLayout.APPEND_ONLY])
+def test_runtime_persists_approval_and_yields_without_tool_failure(
+    tmp_path: Path, layout: PromptCacheLayout
+) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
     target = repository / "README.md"
@@ -67,7 +77,12 @@ def test_runtime_persists_approval_and_yields_without_tool_failure(tmp_path: Pat
         approval_handler=lambda request: callbacks.append(request.call_id) or True,
     )
     provider = FakeProvider([_plan_response(), _replace_response()])
-    task = Task(id="task-1", goal="Update README", repository=str(repository))
+    task = Task(
+        id="task-1",
+        goal="Update README",
+        repository=str(repository),
+        execution=TaskExecutionConfig(prompt_cache_layout=layout),
+    )
 
     result = AgentRuntime(
         provider,
@@ -234,7 +249,8 @@ def test_hard_permission_denial_cannot_be_approved(tmp_path: Path) -> None:
     assert store.list_approvals(task.id) == []
 
 
-def test_operator_can_deny_pending_effect(tmp_path: Path) -> None:
+@pytest.mark.parametrize("layout", [PromptCacheLayout.LEGACY, PromptCacheLayout.APPEND_ONLY])
+def test_operator_can_deny_pending_effect(tmp_path: Path, layout: PromptCacheLayout) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
     target = repository / "README.md"
@@ -244,7 +260,12 @@ def test_operator_can_deny_pending_effect(tmp_path: Path) -> None:
         frozenset({PermissionLevel.READ, PermissionLevel.WRITE}),
         approval_threshold=RiskLevel.MEDIUM,
     )
-    task = Task(id="task-1", goal="Update README", repository=str(repository))
+    task = Task(
+        id="task-1",
+        goal="Update README",
+        repository=str(repository),
+        execution=TaskExecutionConfig(prompt_cache_layout=layout),
+    )
     AgentRuntime(
         FakeProvider([_plan_response(), _replace_response()]),
         ToolGateway(

@@ -89,6 +89,28 @@ $env:DEEPSEEK_API_KEY = Read-Host "DeepSeek API key" -MaskInput
 
 ### Provider profiles
 
+本仓库的 [providers.toml](providers.toml) 提供默认 `local-openai` profile，使用标准
+Chat Completions。启动时显式指定这一份配置和根目录 `.env`：
+
+```powershell
+# 仅解析配置，不发送模型请求，也不校验 API Key 是否有效。
+.\.venv\Scripts\python.exe -m patchloop provider check local-openai --provider-config .\providers.toml --env-file .\.env
+
+# 填好 OPENAI_API_KEY 后，在测试仓库运行。
+.\.venv\Scripts\python.exe -m patchloop run "检查仓库" --repo D:\path\to\test-repo --provider-config .\providers.toml --env-file .\.env --prompt-cache-layout append_only
+```
+
+Profile 的 `base_url_env`、`model_env`、`reasoning_effort_env` 分别映射 `.env` 中的
+`OPENAI_BASE_URL`、`OPENAI_MODEL`、`OPENAI_REASONING_EFFORT`。优先级为进程环境、显式
+`.env`、profile 默认值；显式 `--model` 优先于环境变量。模型必须已有对应能力定义，
+不能只改模型名就沿用其他模型的能力。密钥单独从 `credential_env` 指向的变量读取。
+这些映射只在新任务创建时解析；恢复使用已保存的 binding。
+
+本地 profile 的 32,000 上下文和 8,192 输出是暂定运行限额，工具/usage 支持尚待该代理验证；
+缓存统计暂未声明支持。价格按用户确认的“不按 token 计费”设置为零，是本地预算口径，
+不是上游模型报价；零价基线不能用于证明 PPS 的费用下降目标。此文件需显式选择，
+不会自动加载被操作仓库里的配置或 `.env`。
+
 内置 `deepseek` profile 继续支持上面的环境变量。通用 Chat Completions、OpenAI Responses 和
 本地兼容服务使用 `~/.patchloop/providers.toml`，也可以通过 `--provider-config` 指定其他文件。
 下面给出四种接入方式；`models.<id>` 下必须显式声明能力、生成参数和价格，免费本地模型也要写
@@ -207,6 +229,83 @@ python -m patchloop.evaluation.provider \
 `PGW_LOCAL_*` 锁定值，再增加 `--real` 并使用独立输出文件。Runner 不会下载模型、启动本地服务，
 也不会把缺凭据、缺服务或 pytest skip 计为通过；这些结果会保留为 `unverified`。API Key 只经环境
 传给对应子进程，不写入报告。
+
+## Prompt 前缀稳定性（PPS）
+
+`run` 和 `session start` 都支持 `--prompt-cache-layout legacy|stable|append_only`。
+当前新任务默认仍为 `legacy`；真实 Provider A/B 验收尚未执行，默认切换等待 PPS 发布门禁。
+`append_only` 在同一 epoch 内保持已发送消息及工具顺序，新输入和记忆增量只追加到末尾；
+预算压缩会显式创建新 epoch，保留固定根前缀和最新摘要。
+
+```bash
+patchloop run "检查仓库" --repo /path/to/repo --prompt-cache-layout append_only
+patchloop session --repo /path/to/repo start SESSION_ID "检查仓库" --prompt-cache-layout append_only
+
+# 回退通过新建任务选择 legacy；已有任务 resume 使用保存的布局与 Provider 配置。
+patchloop run "检查仓库" --repo /path/to/repo --prompt-cache-layout legacy
+```
+
+离线验收走实际 Runtime、MemoryManager、ToolGateway 和 checkpoint 恢复，不产生付费调用：
+
+```bash
+patchloop benchmark-cache --suite prefix-runtime --output benchmarks/results/pps_prefix_runtime.json
+patchloop validate-cache-gates --profile pps --report benchmarks/results/pps_prefix_runtime.json \
+  --output benchmarks/results/pps_prefix_acceptance.json
+```
+
+第二条命令在真实证据缺失时输出 `unverified` 检查项并返回退出码 1。`--allow-simulated`
+不会绕过 PPS 的真实用量和费用门禁。已生成的报告见
+[Runtime 结构报告](benchmarks/results/pps_prefix_runtime.json) 和
+[PPS 验收报告](benchmarks/results/pps_prefix_acceptance.json)。
+
+配置好 Provider 后，在独立工作副本中对同样的两类任务各执行三次 legacy/append_only 配对实验，
+按配对交错运行，并锁定模型、端点、工具、输入预算及价格版本。每轮任务必须设置费用预算；
+缓存是服务端 best-effort，交错运行也不能保证严格冷缓存隔离。把真实任务的 JSONL 路径写入 manifest：
+
+```json
+{
+  "runs": [
+    {
+      "trace": "traces/contract-legacy-1.jsonl",
+      "variant": "current_layout",
+      "repeat": 1,
+      "batch_id": "pps-batch-1",
+      "task_case": "contract-migration",
+      "pair_id": "contract-1"
+    },
+    {
+      "trace": "traces/contract-append-1.jsonl",
+      "variant": "append_only",
+      "repeat": 1,
+      "batch_id": "pps-batch-1",
+      "task_case": "contract-migration",
+      "pair_id": "contract-1"
+    }
+  ]
+}
+```
+
+上例仅展示一对；实际需要补齐两个 task_case 各三对。路径相对于 manifest，单个 trace 包含多个
+任务时还需提供 `task_id`。Collector 按 `request_id` 关联普通请求、压缩和 usage，按 attempt ID
+去重；开始但没有明确结束的 attempt 保持未知费用。导入及评估命令如下：
+
+```bash
+patchloop benchmark-cache --mode provider --suite prefix-runtime --trace-manifest pps-traces.json \
+  --output benchmarks/results/pps_provider_pairs.json
+patchloop validate-cache-gates --profile pps --report benchmarks/results/pps_provider_pairs.json \
+  --local-report benchmarks/results/pps_prefix_runtime.json --quality pps-quality.json \
+  --enable-append-only --output benchmarks/results/pps_prefix_acceptance.json
+```
+
+`pps-quality.json` 使用 `MemoryQualityEvidence` 字段，记录实际 public/hidden 测试计数、
+`verified_task_cases`、成功率与关键事实/约束召回的 candidate/baseline 对照、越界修改、秘密泄漏、
+失效事实使用、`approval_bypasses` 和 `fault_matrix_passed`。未知项保留 `null`，不能用缓存结果代替。
+报告中的 rollout 选择只是门禁结果，不会修改已保存任务或自动改写程序默认值。
+
+`normalized_messages_v1` 指标证明本地消息结构前缀；`common_prefix_estimated_tokens` 和旧 JSON LCP
+都是估算。真实命中率仅使用 Provider 报告的 hit/miss，按 token 加权；成本含压缩和 attempt，
+未知费用会阻止费用验收。旧 checkpoint 缺消息摘要向量时指标不可用；旧任务缺布局字段时仍按
+legacy 恢复。新 append_only 数据不保证能被旧版本程序继续执行。
 
 ## 快速开始
 

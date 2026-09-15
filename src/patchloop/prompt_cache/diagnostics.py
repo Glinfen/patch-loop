@@ -1,8 +1,8 @@
 """Safe, provider-neutral prompt cache layout diagnostics.
 
-The diagnostics in this module deliberately operate on redacted request data and
-only retain irreversible SHA-256 fingerprints.  They describe why a request is
-different from the previous request; they do not implement a response cache and
+Legacy JSON metrics operate on redacted data. Message metrics hash the exact
+normalized messages and only retain irreversible SHA-256 fingerprints. They
+describe why a request differs from the previous request; they do not implement a response cache and
 must never be used as a correctness dependency.
 """
 
@@ -12,10 +12,11 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from patchloop.context.engine import ContextEngine
 from patchloop.providers.base import ModelMessage, ModelUsage, ToolSpec
 from patchloop.providers.continuation import ContinuationCodec
 from patchloop.security import SecretRedactor
@@ -90,6 +91,26 @@ class CacheRequestFingerprint(BaseModel):
     provider_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     epoch_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     request_wire_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    message_fingerprints: tuple[str, ...] | None = None
+    message_estimated_tokens: tuple[int, ...] | None = None
+    ordered_tools_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    binding_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_message_vector(self) -> Self:
+        if self.message_fingerprints is not None:
+            if self.message_estimated_tokens is None or len(self.message_fingerprints) != len(
+                self.message_estimated_tokens
+            ):
+                raise ValueError("message fingerprint and token vectors must have equal lengths")
+            if any(
+                len(value) != 64 or any(c not in "0123456789abcdef" for c in value)
+                for value in self.message_fingerprints
+            ):
+                raise ValueError("message fingerprints must be SHA-256 digests")
+            if any(value < 0 for value in self.message_estimated_tokens):
+                raise ValueError("message token estimates cannot be negative")
+        return self
 
     @property
     def section_fingerprints(self) -> dict[str, str]:
@@ -157,6 +178,32 @@ class CacheLayoutTrace(BaseModel):
     cache_miss_tokens: int | None = Field(default=None, ge=0)
     cache_usage_consistent: bool | None = None
     provider_best_effort: bool = False
+    request_id: str | None = None
+    source_request_id: str | None = None
+    message_count: int | None = Field(default=None, ge=0)
+    previous_message_count: int | None = Field(default=None, ge=0)
+    common_prefix_message_count: int | None = Field(default=None, ge=0)
+    previous_request_is_prefix: bool | None = None
+    first_changed_message_index: int | None = Field(default=None, ge=0)
+    common_prefix_estimated_tokens: int | None = Field(default=None, ge=0)
+    tools_unchanged: bool | None = None
+    binding_unchanged: bool | None = None
+    comparison_kind: Literal["cold_start", "ordinary", "compression", "epoch_boundary"] | None = (
+        None
+    )
+    prefix_break_reason: (
+        Literal[
+            "memory_insert",
+            "history_rewrite",
+            "tools_change",
+            "binding_change",
+            "security_rewrite",
+            "unknown",
+        ]
+        | None
+    ) = None
+    metric_basis: Literal["normalized_messages_v1"] | None = None
+    legacy_lcp_basis: Literal["canonical_json_estimate", "section_estimate"] | None = None
 
     @property
     def reason(self) -> CacheLayoutReason:
@@ -203,6 +250,8 @@ class CacheDiagnosticsSnapshot(BaseModel):
     previous_section_fingerprints: dict[str, str] = Field(default_factory=dict)
     previous_provider_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     previous_epoch_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    previous_ordinary_request: CacheRequestFingerprint | None = None
+    previous_ordinary_trace: CacheLayoutTrace | None = None
 
 
 class CacheDiagnostics:
@@ -220,10 +269,14 @@ class CacheDiagnostics:
         self.miss_threshold_tokens = miss_threshold_tokens
         self._previous: CacheRequestFingerprint | None = None
         self._previous_wire: bytes | None = None
+        self._previous_ordinary: CacheRequestFingerprint | None = None
+        self._previous_ordinary_trace: CacheLayoutTrace | None = None
 
     def reset(self) -> None:
         self._previous = None
         self._previous_wire = None
+        self._previous_ordinary = None
+        self._previous_ordinary_trace = None
 
     def snapshot(self) -> CacheDiagnosticsSnapshot:
         previous = self._previous
@@ -238,6 +291,8 @@ class CacheDiagnostics:
             previous_section_fingerprints=previous.section_fingerprints if previous else {},
             previous_provider_fingerprint=previous.provider_fingerprint if previous else None,
             previous_epoch_fingerprint=previous.epoch_fingerprint if previous else None,
+            previous_ordinary_request=self._previous_ordinary,
+            previous_ordinary_trace=self._previous_ordinary_trace,
         )
 
     def restore(self, snapshot: CacheDiagnosticsSnapshot | None) -> None:
@@ -245,6 +300,8 @@ class CacheDiagnostics:
         if snapshot is None:
             return
         self._previous = snapshot.previous_request
+        self._previous_ordinary = snapshot.previous_ordinary_request or snapshot.previous_request
+        self._previous_ordinary_trace = snapshot.previous_ordinary_trace
 
     def observe(
         self,
@@ -259,6 +316,9 @@ class CacheDiagnostics:
         system_instructions: str | None = None,
         task_project_snapshot: object | None = None,
         memory_projection: object | None = None,
+        request_kind: Literal["ordinary", "compression"] = "ordinary",
+        request_id: str | None = None,
+        binding_fingerprint: str | None = None,
     ) -> CacheLayoutTrace:
         if step < 0:
             raise ValueError("cache diagnostic step must be non-negative")
@@ -272,7 +332,23 @@ class CacheDiagnostics:
             system_instructions=system_instructions,
             task_project_snapshot=task_project_snapshot,
             memory_projection=memory_projection,
+            binding_fingerprint=binding_fingerprint,
+            provider=provider,
         )
+        if (
+            request_kind == "ordinary"
+            and request_id is not None
+            and self._previous_ordinary_trace is not None
+            and self._previous_ordinary_trace.request_id == request_id
+            and self._previous_ordinary_trace.request_fingerprint
+            == fingerprint.request_wire_fingerprint
+            and self._previous_ordinary is not None
+            and self._previous_ordinary.message_fingerprints == fingerprint.message_fingerprints
+            and self._previous_ordinary.ordered_tools_fingerprint
+            == fingerprint.ordered_tools_fingerprint
+            and self._previous_ordinary.binding_fingerprint == fingerprint.binding_fingerprint
+        ):
+            return self._previous_ordinary_trace
         previous = self._previous
         reasons, first_change = self._structural_reasons(previous, fingerprint)
         if previous is None:
@@ -299,10 +375,73 @@ class CacheDiagnostics:
             first_change_section=first_change,
             reasons=reasons,
             primary_reason=_primary_reason(reasons or [CacheLayoutReason.UNKNOWN]),
+            request_id=request_id,
+            legacy_lcp_basis=(
+                "section_estimate"
+                if previous is not None and self._previous_wire is None
+                else "canonical_json_estimate"
+            ),
+            **self._message_comparison(fingerprint, request_kind),
         )
+        if request_kind == "ordinary":
+            self._previous_ordinary = fingerprint
+            self._previous_ordinary_trace = trace
         self._previous = fingerprint
         self._previous_wire = wire
         return trace
+
+    def _message_comparison(
+        self,
+        current: CacheRequestFingerprint,
+        request_kind: str,
+    ) -> dict[str, Any]:
+        previous = self._previous_ordinary
+        current_hashes = current.message_fingerprints or ()
+        fields: dict[str, Any] = {"message_count": len(current_hashes)}
+        kind = (
+            "compression"
+            if request_kind == "compression"
+            else "cold_start"
+            if previous is None
+            else "epoch_boundary"
+            if previous.epoch_fingerprint != current.epoch_fingerprint
+            else "ordinary"
+        )
+        fields["comparison_kind"] = kind
+        if request_kind == "compression" and self._previous_ordinary_trace is not None:
+            fields["source_request_id"] = self._previous_ordinary_trace.request_id
+        if previous is not None and previous.message_fingerprints is None:
+            return fields  # Old checkpoints cannot prove a message-level prefix.
+        fields["metric_basis"] = "normalized_messages_v1"
+        old_hashes = previous.message_fingerprints or () if previous is not None else ()
+        common = 0
+        for old, new in zip(old_hashes, current_hashes, strict=False):
+            if old != new:
+                break
+            common += 1
+        fields.update(
+            previous_message_count=len(old_hashes),
+            common_prefix_message_count=common,
+            common_prefix_estimated_tokens=sum((current.message_estimated_tokens or ())[:common]),
+        )
+        if previous is None:
+            return fields
+        prefix = common == len(old_hashes)
+        tools_same = previous.ordered_tools_fingerprint == current.ordered_tools_fingerprint
+        binding_same = previous.binding_fingerprint == current.binding_fingerprint
+        fields.update(
+            previous_request_is_prefix=prefix,
+            tools_unchanged=tools_same,
+            binding_unchanged=binding_same,
+            first_changed_message_index=None if prefix else common,
+        )
+        if not binding_same:
+            fields["prefix_break_reason"] = "binding_change"
+        elif not tools_same:
+            fields["prefix_break_reason"] = "tools_change"
+        elif not prefix and kind != "epoch_boundary":
+            fields["prefix_break_reason"] = "history_rewrite"
+        return fields
 
     # Common spelling for call sites and integrations.
     record = observe
@@ -380,6 +519,8 @@ def fingerprint_request(
     system_instructions: str | None = None,
     task_project_snapshot: object | None = None,
     memory_projection: object | None = None,
+    binding_fingerprint: str | None = None,
+    provider: str | None = None,
 ) -> tuple[CacheRequestFingerprint, bytes]:
     """Return safe section fingerprints and ephemeral canonical request bytes.
 
@@ -394,10 +535,8 @@ def fingerprint_request(
         continuation_codec.to_public(message.model_dump(mode="json")) for message in messages
     ]
     safe_tools = [redactor.redact(tool.model_dump(mode="json")) for tool in tools]
-    safe_tools = sorted(
-        safe_tools,
-        key=lambda item: (str(item.get("name", "")), _canonical_json(item)),
-    )
+    # Preserve the legacy canonical JSON estimate; PPS separately hashes actual order.
+    safe_tools = sorted(safe_tools, key=lambda tool: str(tool["name"]))
     actual_system = safe_messages[0].get("content", "") if safe_messages else ""
     actual_project = safe_messages[1].get("content", "") if len(safe_messages) > 1 else ""
     system_value = actual_system if system_instructions is None else system_instructions
@@ -445,6 +584,24 @@ def fingerprint_request(
             provider_fingerprint=provider_fingerprint,
             epoch_fingerprint=epoch_fingerprint,
             request_wire_fingerprint=_sha256(wire),
+            message_fingerprints=tuple(
+                _sha256(_canonical_json(message.model_dump(mode="json")).encode("utf-8"))
+                for message in messages
+            ),
+            message_estimated_tokens=tuple(ContextEngine.estimate_message(m) for m in messages),
+            ordered_tools_fingerprint=_sha256(
+                _canonical_json([tool.model_dump(mode="json") for tool in tools]).encode("utf-8")
+            ),
+            binding_fingerprint=_sha256(
+                _canonical_json(
+                    {
+                        "binding": binding_fingerprint,
+                        "provider": provider,
+                        "model": model,
+                        "thinking": thinking,
+                    }
+                ).encode("utf-8")
+            ),
         ),
         wire,
     )

@@ -11,7 +11,7 @@ from time import monotonic
 from typing import cast
 from uuid import uuid4
 
-from patchloop.context import ContextBudgetError, ContextEngine
+from patchloop.context import ContextBudgetError, ContextEngine, ContextWindow
 from patchloop.domain import (
     AgentStep,
     ErrorKind,
@@ -87,6 +87,12 @@ from patchloop.prompt_cache import (
     PromptCacheCoordinator,
     PromptCacheCoordinatorError,
 )
+from patchloop.prompt_cache.coordinator import (
+    CompressionFailureAction,
+    PromptCompressionRejected,
+    compute_prefix_budget,
+)
+from patchloop.prompt_cache.publication import MemoryDeltaPublisher, MemoryDeltaTooLarge
 from patchloop.providers.base import (
     ControlAction,
     EncodedRequest,
@@ -268,6 +274,10 @@ class AgentRuntime:
         prefix_message_count = len(messages)
         session_history, consumed_input_sequence = self._session_history(task)
         messages.extend(session_history)
+        if task.execution.prompt_cache_layout is PromptCacheLayout.APPEND_ONLY:
+            normalized: list[ModelMessage] = []
+            self._append_prompt_messages(task, normalized, messages)
+            messages = normalized
         self._prompt_cache = PromptCacheCoordinator.bootstrap(
             messages,
             self.gateway.specifications(),
@@ -473,6 +483,7 @@ class AgentRuntime:
             self._prompt_cache = self._restore_prompt_cache(task, state)
         prompt_cache = self._prompt_cache
         stable_layout = prompt_cache.layout is PromptCacheLayout.STABLE
+        append_only = prompt_cache.layout is PromptCacheLayout.APPEND_ONLY
         started = monotonic()
         try:
             for step_index in range(
@@ -496,7 +507,23 @@ class AgentRuntime:
                         task,
                         step_index,
                     )
-                if persisted_step is None:
+                prefix_state = prompt_cache.append_only_state
+                replay_prompt = (
+                    append_only
+                    and prefix_state is not None
+                    and (
+                        prefix_state.compression_request_id is not None
+                        or prefix_state.last_submitted_request_id
+                        == self._provider_request_id(
+                            task,
+                            purpose=ProviderRequestPurpose.AGENT_STEP,
+                            step_index=step_index,
+                            epoch_generation=self._provider_epoch_generation(prompt_cache),
+                            input_revision=state.consumed_input_sequence,
+                        )
+                    )
+                )
+                if persisted_step is None and not replay_prompt:
                     state, messages = self._consume_pending_inputs(task, state, messages)
                 step = persisted_step or AgentStep(
                     task_id=task.id,
@@ -519,89 +546,108 @@ class AgentRuntime:
                     if state.tool_specifications is not None
                     else self.gateway.specifications()
                 )
-                request_messages = prompt_cache.materialize_messages(messages)
-                prefix_message_count = prompt_cache.prefix_message_count
-                try:
-                    mandatory_tokens = context_engine.estimate_messages(
-                        request_messages[:prefix_message_count]
-                    )
-                    mandatory_tokens += context_engine.estimate_tools(specifications)
-                    retrieval_cap = max(
-                        0,
-                        context_engine.max_tokens - mandatory_tokens - 16,
-                    )
-                    managed_retrieval = self._retrieve_memory(
+                layered_memory = None
+                memory_projection = None
+                if append_only:
+                    state, window = self._prepare_append_only_window(
                         task,
-                        context_engine.max_tokens,
-                        retrieval_cap,
+                        state,
+                        messages,
+                        specifications,
+                        context_engine,
+                        replay=replay_prompt or persisted_step is not None,
                     )
-                    layered_memory = managed_retrieval.context
-                    if managed_retrieval.fallback_reason is not None:
-                        self._emit_memory_fallback(
+                    messages = list(window.messages)
+                    if persisted_step is None:
+                        step.consumed_input_sequence = state.consumed_input_sequence
+                else:
+                    request_messages = prompt_cache.materialize_messages(messages)
+                    prefix_message_count = prompt_cache.prefix_message_count
+                    try:
+                        mandatory_tokens = context_engine.estimate_messages(
+                            request_messages[:prefix_message_count]
+                        )
+                        mandatory_tokens += context_engine.estimate_tools(specifications)
+                        retrieval_cap = max(
+                            0,
+                            context_engine.max_tokens - mandatory_tokens - 16,
+                        )
+                        managed_retrieval = self._retrieve_memory(
                             task,
-                            managed_retrieval.fallback_reason,
-                            phase="retrieval",
+                            context_engine.max_tokens,
+                            retrieval_cap,
                         )
-                    memory_projection: str | None = None
-                    if stable_layout and layered_memory is not None:
-                        memory_projection = layered_memory.provider_projection
-                        request_messages = prompt_cache.materialize_messages(
-                            messages,
-                            memory_projection=memory_projection,
-                        )
-                    if layered_memory is None:
-                        window = context_engine.build(
-                            request_messages,
-                            specifications,
-                            self.gateway.context.plan,
-                            stable_prefix_message_count=prefix_message_count,
-                            pinned_tail_message_count=(
-                                len(prompt_cache.publication_messages) if stable_layout else 0
-                            ),
-                            task_memory_in_system=not stable_layout,
-                        )
-                    elif stable_layout:
-                        window = context_engine.build(
-                            request_messages,
-                            specifications,
-                            self.gateway.context.plan,
-                            stable_prefix_message_count=prefix_message_count,
-                            pinned_tail_message_count=(
-                                len(prompt_cache.publication_messages) if stable_layout else 0
-                            ),
-                            history_token_budget=(layered_memory.allocation.recent_history_tokens),
-                            enable_task_memory=False,
-                            excluded_history_values=(
-                                self._memory_manager.inactive_context_values()
-                                if self._memory_manager is not None
-                                else ()
-                            ),
-                        )
-                    else:
-                        request_messages = self._with_runtime_memory(messages, layered_memory)
-                        window = context_engine.build(
-                            request_messages,
-                            specifications,
-                            self.gateway.context.plan,
-                            stable_prefix_message_count=prefix_message_count,
-                            history_token_budget=(layered_memory.allocation.recent_history_tokens),
-                            enable_task_memory=False,
-                            excluded_history_values=(
-                                self._memory_manager.inactive_context_values()
-                                if self._memory_manager is not None
-                                else ()
-                            ),
-                        )
-                        self._record_memory_retrieval(
-                            task,
-                            step_index,
-                            layered_memory,
-                            read_duration_ms=managed_retrieval.read_duration_ms,
-                        )
-                    if not stable_layout and layered_memory is not None:
-                        memory_projection = layered_memory.rendered
-                except ContextBudgetError as exc:
-                    return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
+                        layered_memory = managed_retrieval.context
+                        if managed_retrieval.fallback_reason is not None:
+                            self._emit_memory_fallback(
+                                task,
+                                managed_retrieval.fallback_reason,
+                                phase="retrieval",
+                            )
+                        memory_projection = None
+                        if stable_layout and layered_memory is not None:
+                            memory_projection = layered_memory.provider_projection
+                            request_messages = prompt_cache.materialize_messages(
+                                messages,
+                                memory_projection=memory_projection,
+                            )
+                        if layered_memory is None:
+                            window = context_engine.build(
+                                request_messages,
+                                specifications,
+                                self.gateway.context.plan,
+                                stable_prefix_message_count=prefix_message_count,
+                                pinned_tail_message_count=(
+                                    len(prompt_cache.publication_messages) if stable_layout else 0
+                                ),
+                                task_memory_in_system=not stable_layout,
+                            )
+                        elif stable_layout:
+                            window = context_engine.build(
+                                request_messages,
+                                specifications,
+                                self.gateway.context.plan,
+                                stable_prefix_message_count=prefix_message_count,
+                                pinned_tail_message_count=(
+                                    len(prompt_cache.publication_messages) if stable_layout else 0
+                                ),
+                                history_token_budget=(
+                                    layered_memory.allocation.recent_history_tokens
+                                ),
+                                enable_task_memory=False,
+                                excluded_history_values=(
+                                    self._memory_manager.inactive_context_values()
+                                    if self._memory_manager is not None
+                                    else ()
+                                ),
+                            )
+                        else:
+                            request_messages = self._with_runtime_memory(messages, layered_memory)
+                            window = context_engine.build(
+                                request_messages,
+                                specifications,
+                                self.gateway.context.plan,
+                                stable_prefix_message_count=prefix_message_count,
+                                history_token_budget=(
+                                    layered_memory.allocation.recent_history_tokens
+                                ),
+                                enable_task_memory=False,
+                                excluded_history_values=(
+                                    self._memory_manager.inactive_context_values()
+                                    if self._memory_manager is not None
+                                    else ()
+                                ),
+                            )
+                            self._record_memory_retrieval(
+                                task,
+                                step_index,
+                                layered_memory,
+                                read_duration_ms=managed_retrieval.read_duration_ms,
+                            )
+                        if not stable_layout and layered_memory is not None:
+                            memory_projection = layered_memory.rendered
+                    except ContextBudgetError as exc:
+                        return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
                 self._context_windows += 1
                 self._context_compactions += int(bool(window.debug.dropped_steps))
                 self._max_context_tokens_used = max(
@@ -636,7 +682,7 @@ class AgentRuntime:
                             if prompt_cache.publication_snapshot is not None
                             else None
                         ),
-                        "memory_fallback": layered_memory is None,
+                        "memory_fallback": layered_memory is None if not append_only else None,
                     },
                 )
                 provider_request_id = self._provider_request_id(
@@ -765,12 +811,21 @@ class AgentRuntime:
                             "updated_at": utc_now(),
                         }
                     )
-                    self._persist_checkpoint(state)
-                cache_observation = prompt_cache.observe_response(prepared_request, response.usage)
+                cache_observation = prompt_cache.observe_response(
+                    prepared_request,
+                    response.usage,
+                    account_usage=not usage_accounted,
+                )
+                # Cache usage and Provider usage share the same durable deduplication boundary.
+                state = state.model_copy(update={**prompt_cache.checkpoint_fields()})
+                self._persist_checkpoint(state)
                 self._emit(
                     "cache.layout",
                     task,
-                    cache_observation.cache_layout.model_dump(mode="json"),
+                    {
+                        **cache_observation.cache_layout.model_dump(mode="json"),
+                        "request_id": provider_request_id,
+                    },
                 )
                 budget_error = self._model_budget_error(task)
                 if budget_error is not None:
@@ -789,13 +844,17 @@ class AgentRuntime:
                     },
                 )
                 step.decision = response.content
-                messages.append(
-                    ModelMessage(
-                        role="assistant",
-                        content=response.content,
-                        tool_calls=response.tool_calls,
-                        continuation=response.continuation,
-                    )
+                self._append_prompt_messages(
+                    task,
+                    messages,
+                    [
+                        ModelMessage(
+                            role="assistant",
+                            content=response.content,
+                            tool_calls=response.tool_calls,
+                            continuation=response.continuation,
+                        )
+                    ],
                 )
                 pending_inputs = self._pending_input_turns(
                     task,
@@ -913,12 +972,16 @@ class AgentRuntime:
                     step.tool_results.append(result)
                     observation, truncated = context_engine.compact_tool_result(result)
                     self._truncated_tool_outputs += int(truncated)
-                    messages.append(
-                        ModelMessage(
-                            role="tool",
-                            content=observation,
-                            tool_call_id=call.id,
-                        )
+                    self._append_prompt_messages(
+                        task,
+                        messages,
+                        [
+                            ModelMessage(
+                                role="tool",
+                                content=observation,
+                                tool_call_id=call.id,
+                            )
+                        ],
                     )
                     self._observe_memory(task, call, result, step_index)
                     if not result.success and not self._is_recovery_retry_placeholder(effect):
@@ -1012,11 +1075,27 @@ class AgentRuntime:
             return task
         except MemoryStoreError as exc:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
-        except WorkingMemoryBudgetError as exc:
+        except ContextBudgetError as exc:
+            if (
+                append_only
+                and prompt_cache.append_only_state is not None
+                and (prompt_cache.append_only_state.last_submitted_message_count > 0)
+            ):
+                task.plan = self.gateway.context.plan
+                task.report = self._build_report(str(exc))
+                task.transition_runtime(TaskRuntimeCondition.PAUSING)
+                task.transition_runtime(TaskRuntimeCondition.PAUSED)
+                self._persist_task(task)
+                self._emit("context.budget_exceeded", task, {"reason": str(exc)})
+                return task
+            return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
+        except (WorkingMemoryBudgetError, MemoryDeltaTooLarge) as exc:
             return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
         except TransportControlError as exc:
             if exc.action == "lease_lost":
                 raise LeaseLost(task.id) from exc
+            if append_only and self.state_store is not None:
+                state = self.state_store.get_checkpoint(task.id)
             state = state.model_copy(
                 update={
                     "elapsed_seconds": elapsed_before + (monotonic() - started),
@@ -1144,10 +1223,14 @@ class AgentRuntime:
                     lease_guard=guard,
                 )
         updated_messages = list(messages)
-        updated_messages.extend(
-            ModelMessage(role="user", content=turn.content)
-            for turn in turns
-            if turn.role is TurnRole.USER and turn.task_id in {None, task.id}
+        self._append_prompt_messages(
+            task,
+            updated_messages,
+            [
+                ModelMessage(role="user", content=turn.content)
+                for turn in turns
+                if turn.role is TurnRole.USER and turn.task_id in {None, task.id}
+            ],
         )
         updated = state.model_copy(
             update={
@@ -1202,12 +1285,16 @@ class AgentRuntime:
             if persisted is not None:
                 if all(result.call_id != persisted.call_id for result in step.tool_results):
                     step.tool_results.append(persisted)
-                messages.append(
-                    ModelMessage(
-                        role="tool",
-                        content=persisted.output,
-                        tool_call_id=call.id,
-                    )
+                self._append_prompt_messages(
+                    task,
+                    messages,
+                    [
+                        ModelMessage(
+                            role="tool",
+                            content=self._tool_observation(task, persisted),
+                            tool_call_id=call.id,
+                        )
+                    ],
                 )
                 paired_call_ids.add(call.id)
                 continue
@@ -1231,19 +1318,27 @@ class AgentRuntime:
                 status=EffectStatus.CANCELLED,
             )
             step.tool_results.append(result)
-            messages.append(
-                ModelMessage(
-                    role="tool",
-                    content=result.output,
-                    tool_call_id=call.id,
-                )
+            self._append_prompt_messages(
+                task,
+                messages,
+                [
+                    ModelMessage(
+                        role="tool",
+                        content=self._tool_observation(task, result),
+                        tool_call_id=call.id,
+                    )
+                ],
             )
             paired_call_ids.add(call.id)
         self.gateway.context.requires_replan = True
-        messages.extend(
-            ModelMessage(role="user", content=turn.content)
-            for turn in turns
-            if turn.role is TurnRole.USER and turn.task_id in {None, task.id}
+        self._append_prompt_messages(
+            task,
+            messages,
+            [
+                ModelMessage(role="user", content=turn.content)
+                for turn in turns
+                if turn.role is TurnRole.USER and turn.task_id in {None, task.id}
+            ],
         )
         step.status = StepStatus.COMPLETED
         step.finished_at = utc_now()
@@ -2031,7 +2126,24 @@ class AgentRuntime:
             self._emit(
                 "provider.request.started",
                 task,
-                {"request_id": request.request_id, "purpose": request.purpose.value},
+                {
+                    "request_id": request.request_id,
+                    "purpose": request.purpose.value,
+                    "model": self.provider_binding.model,
+                    "binding_fingerprint": self.provider_binding.fingerprint,
+                    "endpoint_fingerprint": hashlib.sha256(
+                        self.provider_binding.base_url.encode("utf-8")
+                    ).hexdigest(),
+                    "input_budget": task.budget.max_context_tokens,
+                    "pricing_version": (
+                        self.provider_binding.pricing.version
+                        if self.provider_binding.pricing
+                        else None
+                    ),
+                    "step": request.step_index,
+                    "epoch_generation": request.epoch_generation,
+                    "input_revision": request.input_revision,
+                },
             )
         if self.state_store is not None:
             guard = self._lease_guard()
@@ -2107,6 +2219,17 @@ class AgentRuntime:
                         raise TransportControlError("lease_lost") from None
             elif event.type is ProviderEventType.ATTEMPT_FAILED:
                 if active_attempt_id is not None:
+                    self._emit(
+                        "provider.attempt.finished",
+                        task,
+                        {
+                            "request_id": request.request_id,
+                            "attempt_id": active_attempt_id,
+                            "status": "failed",
+                            "request_sent": event.request_sent,
+                            "usage_unknown": event.request_sent is not False,
+                        },
+                    )
                     self._finish_provider_attempt(
                         active_attempt_id,
                         ProviderError(
@@ -2128,6 +2251,16 @@ class AgentRuntime:
                 on_event=observe,
             )
             self._assert_ownership()
+            self._emit(
+                "provider.request.completed",
+                task,
+                {
+                    "request_id": request.request_id,
+                    "attempt_id": active_attempt_id,
+                    "purpose": request.purpose.value,
+                    "usage": response.usage.model_dump(mode="json"),
+                },
+            )
             if self.state_store is None and active_attempt_id is not None:
                 if response.usage.cost_status == "unknown":
                     self._unknown_usage_attempts += 1
@@ -2144,6 +2277,18 @@ class AgentRuntime:
                 raise budget_error from None
             if not (isinstance(exc, TransportControlError) and exc.action == "lease_lost"):
                 self._finish_provider_attempt(active_attempt_id, exc)
+                if active_attempt_id is not None:
+                    self._emit(
+                        "provider.attempt.finished",
+                        task,
+                        {
+                            "request_id": request.request_id,
+                            "attempt_id": active_attempt_id,
+                            "status": "failed",
+                            "request_sent": exc.request_sent,
+                            "usage_unknown": exc.request_sent,
+                        },
+                    )
             raise
 
     def _commit_provider_response(self, request_id: str, response: ModelResponse) -> ModelResponse:
@@ -2294,6 +2439,302 @@ class AgentRuntime:
         epoch = prompt_cache.checkpoint_fields()["cache_epoch_state"]
         return 0 if epoch is None else epoch.generation
 
+    def _append_prompt_messages(
+        self,
+        task: Task,
+        messages: list[ModelMessage],
+        incoming: list[ModelMessage],
+    ) -> None:
+        """Normalize at entry to the append-only transcript, never on old history."""
+        if task.execution.prompt_cache_layout is PromptCacheLayout.APPEND_ONLY:
+            engine = self.context_engine or ContextEngine(
+                max_tokens=task.budget.max_context_tokens,
+                max_tool_output_chars=task.budget.max_tool_output_chars,
+                recent_steps=task.budget.context_recent_steps,
+            )
+            incoming = engine.normalize_new_messages(incoming)
+        messages.extend(incoming)
+
+    def _tool_observation(self, task: Task, result: ToolResult) -> str:
+        if task.execution.prompt_cache_layout is not PromptCacheLayout.APPEND_ONLY:
+            return result.output
+        engine = self.context_engine or ContextEngine(
+            max_tokens=task.budget.max_context_tokens,
+            max_tool_output_chars=task.budget.max_tool_output_chars,
+            recent_steps=task.budget.context_recent_steps,
+        )
+        return engine.compact_tool_result(result)[0]
+
+    def _prepare_append_only_window(
+        self,
+        task: Task,
+        state: RuntimeCheckpoint,
+        messages: list[ModelMessage],
+        specifications: list[ToolSpec],
+        engine: ContextEngine,
+        *,
+        replay: bool,
+    ) -> tuple[RuntimeCheckpoint, ContextWindow]:
+        """Prepare one durable candidate, or replay its exact saved Provider input."""
+        cache = self._prompt_cache
+        if cache is None or cache.append_only_state is None:
+            raise CheckpointSchemaError("append-only prompt state is unavailable")
+        budget = compute_prefix_budget(task.budget, self.provider_binding, specifications)
+        prefix = cache.append_only_state
+        recovering_compression = prefix.compression_request_id is not None
+        if replay and not recovering_compression:
+            return state, engine.build_append_only(
+                messages,
+                specifications,
+                max_input_tokens=budget.ordinary_limit,
+            )
+
+        def checkpoint(candidate: list[ModelMessage]) -> RuntimeCheckpoint:
+            updated = self._checkpoint(
+                task,
+                state.next_step_index,
+                candidate,
+                state.previous_fingerprint,
+                state.repeated_actions,
+                state.repeated_errors,
+                state.tool_failures,
+                state.elapsed_seconds,
+                tool_specifications=specifications,
+                consumed_input_sequence=state.consumed_input_sequence,
+            )
+            self._persist_checkpoint(updated)
+            return updated
+
+        publication = cache.publication_snapshot
+        memory_messages: list[ModelMessage] = []
+        if recovering_compression:
+            # The checkpoint holds the complete candidate. Separate only its newly
+            # published tail; old publications remain part of the exact source.
+            if publication is not None:
+                for item in reversed(publication.messages):
+                    position = len(messages) - len(memory_messages) - 1
+                    if position < prefix.last_submitted_message_count or messages[position] != item:
+                        break
+                    memory_messages.insert(0, item)
+            base_messages = messages[: len(messages) - len(memory_messages)]
+        else:
+            base_messages = messages
+            remaining = budget.ordinary_limit - (
+                engine.estimate_messages(messages) + engine.estimate_tools(specifications)
+            )
+            retrieval = self._retrieve_memory(
+                task,
+                budget.ordinary_limit,
+                max(0, min(budget.memory_message_limit - 128, remaining - 128)),
+            )
+            if retrieval.fallback_reason is not None:
+                self._emit_memory_fallback(task, retrieval.fallback_reason, phase="retrieval")
+            projection = (
+                None if retrieval.context is None else retrieval.context.provider_projection
+            )
+            if projection is not None:
+                projection = engine.redactor.redact_text(projection)
+            invalidations = (
+                self._memory_manager.inactive_context_values()
+                if self._memory_manager is not None
+                else []
+            )
+            invalidations = [engine.redactor.redact_text(value) for value in invalidations]
+            publisher = MemoryDeltaPublisher(publication)
+            try:
+                update = publisher.preview(
+                    cache.epoch_id,
+                    projection,
+                    invalidated_values=list(invalidations),
+                    max_message_tokens=budget.memory_message_limit,
+                )
+            except MemoryDeltaTooLarge:
+                # A new epoch can represent a large transition by its bounded
+                # current snapshot, without cutting JSON or dropping constraints.
+                update = publisher.preview(
+                    cache.epoch_id,
+                    projection,
+                    invalidated_values=list(invalidations),
+                    max_message_tokens=budget.input_limit,
+                )
+                if prefix.last_submitted_message_count <= prefix.root_prefix_message_count:
+                    raise
+            publication = update.next_state
+            memory_messages = update.messages
+            messages = [*base_messages, *memory_messages]
+            if retrieval.context is not None:
+                self._record_memory_retrieval(
+                    task,
+                    state.next_step_index,
+                    retrieval.context,
+                    read_duration_ms=retrieval.read_duration_ms,
+                )
+
+        oversized_delta = any(
+            engine.estimate_message(item) > budget.memory_message_limit for item in memory_messages
+        )
+        estimated = engine.estimate_messages(messages) + engine.estimate_tools(specifications)
+        can_compress = prefix.last_submitted_message_count > cache.prefix_message_count
+        if recovering_compression or (
+            (estimated > budget.soft_limit or oversized_delta) and can_compress
+        ):
+            try:
+                prepared = cache.prepare_compression(
+                    state.next_step_index,
+                    messages,
+                    boundary=(
+                        CacheEpochBoundary.EXPLICIT_COMPRESSION
+                        if oversized_delta
+                        else CacheEpochBoundary.CONTEXT_THRESHOLD
+                    ),
+                    provider=self._provider_name,
+                    model=self._provider_model(),
+                    thinking=self._provider_thinking(),
+                    provider_binding=self.provider_binding,
+                    source_messages=base_messages[: prefix.last_submitted_message_count],
+                    unsent_suffix_messages=base_messages[prefix.last_submitted_message_count :],
+                    candidate_memory_messages=memory_messages,
+                    source_request_id=prefix.last_submitted_request_id,
+                    source_message_count=prefix.last_submitted_message_count,
+                    budget=budget,
+                    candidate_publication_state=publication,
+                )
+            except PromptCompressionRejected as exc:
+                if oversized_delta or exc.action is CompressionFailureAction.PAUSE_CONTEXT_BUDGET:
+                    raise ContextBudgetError(str(exc)) from exc
+            else:
+                request_id = prefix.compression_request_id or self._provider_request_id(
+                    task,
+                    purpose=ProviderRequestPurpose.EPOCH_COMPRESSION,
+                    step_index=state.next_step_index,
+                    epoch_generation=self._provider_epoch_generation(cache),
+                    input_revision=state.consumed_input_sequence,
+                )
+                if publication is not None:
+                    cache.commit_publication(publication)
+                compression_output_limit = (
+                    prefix.compression_max_output_tokens
+                    if recovering_compression
+                    else None
+                    if self.provider_binding.generation.reasoning_enabled
+                    else prepared.summary_limit
+                )
+                cache.set_compression_request_id(
+                    request_id, max_output_tokens=compression_output_limit
+                )
+                state = checkpoint(messages)
+                self._emit(
+                    "cache.compression.requested",
+                    task,
+                    {
+                        "step": state.next_step_index,
+                        "request_id": request_id,
+                        "source_request_id": prepared.source_request_id,
+                        "source_message_count": prepared.source_message_count,
+                        "epoch_id": cache.epoch_id,
+                    },
+                )
+                try:
+                    response = self._request_model(
+                        task,
+                        ProviderRequest(
+                            request_id=request_id,
+                            task_id=task.id,
+                            purpose=ProviderRequestPurpose.EPOCH_COMPRESSION,
+                            step_index=state.next_step_index,
+                            epoch_generation=prepared.request.generation,
+                            input_revision=state.consumed_input_sequence,
+                            messages=tuple(prepared.request.messages),
+                            tools=tuple(specifications),
+                            max_output_tokens=compression_output_limit,
+                        ),
+                    )
+                    if self.state_store is not None:
+                        response = self._commit_provider_response(request_id, response)
+                    accounted = request_id in self._accounted_provider_request_ids
+                    if not accounted:
+                        self._record_model_usage(response.usage)
+                        if (
+                            response.usage.input_tokens_reported is False
+                            or response.usage.output_tokens_reported is False
+                        ) and state.next_step_index not in self._unknown_model_usage_steps:
+                            self._unknown_model_usage_steps.append(state.next_step_index)
+                        self._accounted_provider_request_ids.append(request_id)
+                        self._account_provider_attempts(request_id)
+                    observation = cache.observe_compression_response(
+                        prepared,
+                        response.usage,
+                        account_usage=not accounted,
+                    )
+                    self._emit(
+                        "cache.layout",
+                        task,
+                        {
+                            **observation.cache_layout.model_dump(mode="json"),
+                            "request_id": request_id,
+                        },
+                    )
+                    if response.tool_calls:
+                        action = cache.record_compression_failure(prepared, "invalid_summary")
+                        raise PromptCompressionRejected("invalid_summary", action)
+                    completion = cache.complete_append_only_compression(prepared, response.content)
+                    messages = completion.messages
+                    self._context_compactions += 1
+                    self._emit(
+                        "cache.epoch.rolled_over",
+                        task,
+                        {
+                            "request_id": request_id,
+                            "source_request_id": prepared.source_request_id,
+                            "old_epoch_id": prepared.epoch_id,
+                            "new_epoch_id": cache.epoch_id,
+                            "generation": completion.epoch.generation,
+                        },
+                    )
+                except (LeaseLost, TransportControlError):
+                    cache.abort_pending()
+                    raise
+                except ProviderError as exc:
+                    cache.abort_pending()
+                    # An ambiguous sent attempt belongs to PGW recovery. Never
+                    # proceed to a new ordinary request with unknown input usage.
+                    if exc.kind in {ProviderErrorKind.CONNECTION, ProviderErrorKind.TIMEOUT} or (
+                        exc.request_sent and (exc.usage_unknown or exc.partial_output)
+                    ):
+                        raise
+                    action = cache.record_compression_failure(prepared, "provider_error")
+                    cache.set_compression_request_id(None)
+                    state = checkpoint(messages)
+                    if oversized_delta or action is CompressionFailureAction.PAUSE_CONTEXT_BUDGET:
+                        raise ContextBudgetError("compression failed above context budget") from exc
+                except PromptCompressionRejected as exc:
+                    cache.set_compression_request_id(None)
+                    state = checkpoint(messages)
+                    if (
+                        oversized_delta
+                        or exc.action is CompressionFailureAction.PAUSE_CONTEXT_BUDGET
+                    ):
+                        raise ContextBudgetError(str(exc)) from exc
+                cache.set_compression_request_id(None)
+                state = checkpoint(messages)
+                state, messages = self._consume_pending_inputs(task, state, messages)
+                return state, engine.build_append_only(
+                    messages,
+                    specifications,
+                    max_input_tokens=budget.ordinary_limit,
+                )
+
+        if oversized_delta:
+            raise ContextBudgetError("memory delta requires a new bounded epoch")
+        window = engine.build_append_only(
+            messages,
+            specifications,
+            max_input_tokens=budget.ordinary_limit,
+        )
+        if publication is not None:
+            cache.commit_publication(publication)
+        return state, window
+
     def _compress_epoch(
         self,
         task: Task,
@@ -2364,7 +2805,10 @@ class AgentRuntime:
             self._emit(
                 "cache.layout",
                 task,
-                observation.cache_layout.model_dump(mode="json"),
+                {
+                    **observation.cache_layout.model_dump(mode="json"),
+                    "request_id": provider_request_id,
+                },
             )
         except (PromptCacheCoordinatorError, LeaseLost, TransportControlError):
             prompt_cache.abort_pending()
@@ -2561,13 +3005,23 @@ class AgentRuntime:
             return checkpoint
         unknown_steps = list(checkpoint.unknown_model_usage_steps)
         durable_response = False
-        if self.state_store is not None and checkpoint.pending_provider_request_id is not None:
+        request_created = checkpoint.pending_provider_request_id is None
+        if (
+            self.state_store is not None
+            and checkpoint.pending_provider_request_id is not None
+            and self._provider_request_exists(checkpoint.pending_provider_request_id)
+        ):
+            request_created = True
             request = self.state_store.get_provider_request(checkpoint.pending_provider_request_id)
             durable_response = request.status in {
                 ProviderRequestStatus.RESPONSE_READY,
                 ProviderRequestStatus.COMPLETED,
             }
-        if self._persisted_response_step(task.id, step_index) is None and not durable_response:
+        if (
+            request_created
+            and self._persisted_response_step(task.id, step_index) is None
+            and not durable_response
+        ):
             if step_index not in unknown_steps:
                 unknown_steps.append(step_index)
             self._emit(

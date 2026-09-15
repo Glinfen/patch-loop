@@ -2,7 +2,7 @@
 
 ## 1. Problem
 
-**状态：** PGW-01～PGW-07 已完成，下一任务为 **PGW-08**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
+**状态：** PGW-01～PGW-08 已完成，下一任务为 **PGW-09**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
 
 **Current Problem：** SRF 已交付 Session、审批、所有权和恢复主线，但 CLI 仍固定创建 DeepSeek Provider，构造器只接受一个模型；请求非流式，Runtime 直接读取供应商配置，Task 未绑定模型配置，协议续接信息也未完整保存。这是 [第二阶段目标](PHASE_2_PROJECT_GOALS.md) S2-G2 的直接缺口。
 
@@ -491,6 +491,10 @@ RuntimeCheckpoint 使用 PGW-07 请求/用量游标
 
 - Runtime 无协议族分支、HTTP retry 循环、供应商字段猜测。
 - 未授权动作、已确认副作用重复、取消/断流半响应工具执行均为 0。
+
+**实施状态：已完成（2026-09-15）。** Runtime 的普通步骤与缓存压缩现统一构造稳定 `ProviderRequest`，通过 Gateway 执行，并以 PGW-07 的 request/attempt 记录完成恢复、失败和取消结算；完整普通响应与 Step/Effect 批次关联提交，`response_ready` 崩溃恢复不再发起新 HTTP，半截输出不会生成 Effect。Task 在 Session 创建或取得 Execution guard 后冻结 Provider binding，恢复会核对 fingerprint；旧同步 Provider 在 Runtime 初始化时一次性适配，DeepSeek 门面复用其既有 Gateway。模型与 reasoning 元信息只读取 binding，assistant 历史保留 continuation，新 Task 的 Session Turn 投影仍不复制供应商原生续接项。
+
+新增 `tests/integration/test_provider_runtime.py` 与 `tests/e2e/test_provider_session.py`，覆盖 Chat Completions、Responses、request/attempt journal、完整响应恢复和 partial output 零 Effect。PGW-08 定向 Runtime/Session/ownership/Gateway 回归 61 项通过，Provider 定向回归 81 项通过；全仓回归 686 项通过、1 项因 Windows 主机不提供默认 CA 文件而失败、1 项因同一主机不支持符号链接跳过，该传输环境失败与本任务改动无关。
 
 ### PGW-09：用量、缓存与费用精度
 

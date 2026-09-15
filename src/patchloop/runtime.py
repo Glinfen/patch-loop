@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Callable
 from contextlib import suppress
 from time import monotonic
+from typing import cast
 from uuid import uuid4
 
 from patchloop.context import ContextBudgetError, ContextEngine
@@ -73,6 +75,12 @@ from patchloop.persistence_contracts import (
     InputRevisionConflict,
     LeaseGuard,
     LeaseLost,
+    ProviderAttemptOutcome,
+    ProviderAttemptRecord,
+    ProviderAttemptStatus,
+    ProviderRequestRecord,
+    ProviderRequestStatus,
+    ProviderUsageStatus,
 )
 from patchloop.prompt_cache import (
     CacheEpochBoundary,
@@ -80,12 +88,35 @@ from patchloop.prompt_cache import (
     PromptCacheCoordinatorError,
 )
 from patchloop.providers.base import (
+    ControlAction,
     ModelMessage,
     ModelProvider,
     ModelResponse,
     ModelUsage,
+    ProviderEvent,
+    ProviderEventObserver,
+    ProviderEventType,
+    ProviderRequest,
+    ProviderRequestPurpose,
     ToolSpec,
 )
+from patchloop.providers.base import (
+    ProviderGateway as ProviderGatewayPort,
+)
+from patchloop.providers.continuation import ContinuationCodec
+from patchloop.providers.contracts import (
+    ChatDialect,
+    ProviderAuth,
+    ProviderBinding,
+    ProviderCapabilities,
+    ProviderError,
+    ProviderErrorKind,
+    ProviderGeneration,
+    ProviderProtocol,
+    ProviderTransportConfig,
+)
+from patchloop.providers.gateway import LegacyProviderAdapter
+from patchloop.providers.transport import TransportControlError
 from patchloop.sandbox import (
     LocalProcessSandbox,
     ManagedCommandIdentity,
@@ -118,15 +149,20 @@ _MUTATION_TOOL_NAMES = {"apply_patch", "create_file", "replace_text", "write_fil
 class AgentRuntime:
     def __init__(
         self,
-        provider: ModelProvider,
+        provider: ModelProvider | ProviderGatewayPort,
         gateway: ToolGateway,
         event_logger: EventLogger | None = None,
         state_store: SQLiteStore | None = None,
         context_engine: ContextEngine | None = None,
         ownership_manager: ExecutionOwnershipManager | None = None,
         owner_id: str | None = None,
+        provider_event_observer: ProviderEventObserver | None = None,
     ) -> None:
         self.provider = provider
+        self._provider_gateway = self._adapt_provider(provider)
+        self.provider_binding = self._binding_for_provider(provider, self._provider_gateway)
+        self._provider_name = self._display_name_for_provider(provider)
+        self._provider_event_observer = provider_event_observer
         self.gateway = gateway
         self.event_logger = event_logger
         self.state_store = state_store
@@ -141,6 +177,8 @@ class AgentRuntime:
         self._output_tokens = 0
         self._cost_usd = 0.0
         self._accounted_model_response_steps: list[int] = []
+        self._accounted_provider_request_ids: list[str] = []
+        self._accounted_provider_attempt_ids: list[str] = []
         self._unknown_model_usage_steps: list[int] = []
         self._context_windows = 0
         self._context_compactions = 0
@@ -172,6 +210,8 @@ class AgentRuntime:
         self._output_tokens = 0
         self._cost_usd = 0.0
         self._accounted_model_response_steps = []
+        self._accounted_provider_request_ids = []
+        self._accounted_provider_attempt_ids = []
         self._unknown_model_usage_steps = []
         self._context_windows = 0
         self._context_compactions = 0
@@ -223,7 +263,7 @@ class AgentRuntime:
         )
         frozen_tools = self._prompt_cache.frozen_tools
         self._persist_task(task)
-        self._emit("task.started", task, {"provider": self.provider.name})
+        self._emit("task.started", task, {"provider": self._provider_name})
         try:
             if self._memory_manager is not None:
                 self._apply_memory_update(task, self._memory_manager.ingest_initial())
@@ -287,6 +327,8 @@ class AgentRuntime:
         self._output_tokens = checkpoint.output_tokens
         self._cost_usd = checkpoint.cost_usd
         self._accounted_model_response_steps = list(checkpoint.accounted_model_response_steps)
+        self._accounted_provider_request_ids = list(checkpoint.accounted_provider_request_ids)
+        self._accounted_provider_attempt_ids = list(checkpoint.accounted_provider_attempt_ids)
         self._unknown_model_usage_steps = list(checkpoint.unknown_model_usage_steps)
         self._prompt_cache = self._restore_prompt_cache(task, checkpoint)
         self._context_windows = checkpoint.context_windows
@@ -577,12 +619,21 @@ class AgentRuntime:
                         "memory_fallback": layered_memory is None,
                     },
                 )
+                provider_request_id = self._provider_request_id(
+                    task,
+                    purpose=ProviderRequestPurpose.AGENT_STEP,
+                    step_index=step_index,
+                    epoch_generation=self._provider_epoch_generation(prompt_cache),
+                    input_revision=state.consumed_input_sequence,
+                )
                 prepared_request = prompt_cache.prepare_request(
                     step_index,
                     window.messages,
-                    provider=self.provider.name,
+                    provider=self._provider_name,
                     model=self._provider_model(),
                     thinking=self._provider_thinking(),
+                    provider_binding=self.provider_binding,
+                    request_id=provider_request_id,
                     memory_projection=memory_projection,
                     system_instructions=SYSTEM_PROMPT,
                     task_project_snapshot={
@@ -605,26 +656,38 @@ class AgentRuntime:
                         consumed_input_sequence=state.consumed_input_sequence,
                         pending_effect_ids=state.pending_effect_ids,
                         pending_model_request_step=step_index,
+                        pending_provider_request_id=provider_request_id,
                     )
                     self._persist_checkpoint(state)
-                    self._assert_ownership()
-                    response = self.provider.complete(
-                        prepared_request.messages, prepared_request.tools
+                    provider_request = ProviderRequest(
+                        request_id=provider_request_id,
+                        task_id=task.id,
+                        step_index=step_index,
+                        purpose=ProviderRequestPurpose.AGENT_STEP,
+                        epoch_generation=self._provider_epoch_generation(prompt_cache),
+                        input_revision=state.consumed_input_sequence,
+                        messages=tuple(prepared_request.messages),
+                        tools=tuple(prepared_request.tools),
                     )
-                    self._assert_ownership()
+                    response = self._request_model(task, provider_request)
                     step, effects = self._prepare_model_response(task, step, response)
                     if self.state_store is not None:
+                        response = self._commit_provider_response(provider_request_id, response)
+                        if step.model_response != response.model_dump(mode="json"):
+                            step, effects = self._prepare_model_response(task, step, response)
                         effects = self.state_store.prepare_effect_batch(
                             step,
                             effects,
                             expected_version=task.version,
                             lease_guard=self._lease_guard(),
+                            provider_request_id=provider_request_id,
                         )
                     state = state.model_copy(
                         update={
                             "event_sequence": self._current_event_sequence(task),
                             "pending_effect_ids": [effect.id for effect in effects],
                             "pending_model_request_step": None,
+                            "pending_provider_request_id": None,
                             "elapsed_seconds": elapsed_before + (monotonic() - started),
                             "updated_at": utc_now(),
                         }
@@ -642,6 +705,12 @@ class AgentRuntime:
                 if step_index not in self._accounted_model_response_steps:
                     self._record_model_usage(response.usage)
                     self._accounted_model_response_steps.append(step_index)
+                    if (
+                        self._provider_request_exists(provider_request_id)
+                        and provider_request_id not in self._accounted_provider_request_ids
+                    ):
+                        self._accounted_provider_request_ids.append(provider_request_id)
+                        self._account_provider_attempts(provider_request_id)
                     state = state.model_copy(
                         update={
                             "input_tokens": self._input_tokens,
@@ -649,6 +718,12 @@ class AgentRuntime:
                             "cost_usd": self._cost_usd,
                             "accounted_model_response_steps": list(
                                 self._accounted_model_response_steps
+                            ),
+                            "accounted_provider_request_ids": list(
+                                self._accounted_provider_request_ids
+                            ),
+                            "accounted_provider_attempt_ids": list(
+                                self._accounted_provider_attempt_ids
                             ),
                             "elapsed_seconds": elapsed_before + (monotonic() - started),
                             "updated_at": utc_now(),
@@ -682,6 +757,7 @@ class AgentRuntime:
                         role="assistant",
                         content=response.content,
                         tool_calls=response.tool_calls,
+                        continuation=response.continuation,
                     )
                 )
                 pending_inputs = self._pending_input_turns(
@@ -872,6 +948,7 @@ class AgentRuntime:
                         messages,
                         specifications,
                         step_index,
+                        input_revision=state.consumed_input_sequence,
                     )
                     prefix_message_count = prompt_cache.prefix_message_count
                 state = self._checkpoint(
@@ -900,6 +977,31 @@ class AgentRuntime:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
         except WorkingMemoryBudgetError as exc:
             return self._fail(task, ErrorKind.BUDGET_EXCEEDED, str(exc))
+        except TransportControlError as exc:
+            if exc.action == "lease_lost":
+                raise LeaseLost(task.id) from exc
+            state = state.model_copy(
+                update={
+                    "elapsed_seconds": elapsed_before + (monotonic() - started),
+                    "updated_at": utc_now(),
+                }
+            )
+            self._persist_checkpoint(state)
+            controlled = self._apply_pending_control(task)
+            if controlled is not None:
+                return controlled
+            return self._pause_for_provider_error(task, exc)
+        except ProviderError as exc:
+            if exc.kind in {
+                ProviderErrorKind.CONFIGURATION,
+                ProviderErrorKind.AUTHENTICATION,
+                ProviderErrorKind.RATE_LIMIT,
+                ProviderErrorKind.CONNECTION,
+                ProviderErrorKind.TIMEOUT,
+                ProviderErrorKind.TRUNCATED,
+            }:
+                return self._pause_for_provider_error(task, exc)
+            return self._fail(task, ErrorKind.PROVIDER_ERROR, exc.safe_message)
         except (LeaseLost, SandboxCleanupError):
             raise
         except Exception as exc:
@@ -993,6 +1095,17 @@ class AgentRuntime:
         turns = self._pending_input_turns(task, state.consumed_input_sequence)
         if not turns:
             return state, messages
+        pending_request_id = state.pending_provider_request_id
+        if self.state_store is not None and pending_request_id is not None:
+            request = self.state_store.get_provider_request(pending_request_id)
+            if request.status is not ProviderRequestStatus.COMPLETED:
+                guard = self._lease_guard()
+                if guard is None:
+                    raise LeaseLost(task.id)
+                self.state_store.invalidate_provider_request(
+                    pending_request_id,
+                    lease_guard=guard,
+                )
         updated_messages = list(messages)
         updated_messages.extend(
             ModelMessage(role="user", content=turn.content)
@@ -1003,6 +1116,7 @@ class AgentRuntime:
             update={
                 "messages": updated_messages,
                 "consumed_input_sequence": turns[-1].sequence,
+                "pending_provider_request_id": None,
             }
         )
         self._persist_checkpoint(updated)
@@ -1617,6 +1731,21 @@ class AgentRuntime:
         self._emit("task.paused", task, {"report": task.report.model_dump(mode="json")})
         return task
 
+    def _pause_for_provider_error(self, task: Task, error: ProviderError) -> Task:
+        task.plan = self.gateway.context.plan
+        task.report = self._build_report(error.safe_message)
+        if task.runtime_condition is TaskRuntimeCondition.RUNNING:
+            task.transition_runtime(TaskRuntimeCondition.PAUSING)
+        if task.runtime_condition is TaskRuntimeCondition.PAUSING:
+            task.transition_runtime(TaskRuntimeCondition.PAUSED)
+        self._persist_task(task)
+        self._emit(
+            "provider.paused",
+            task,
+            {"error_kind": error.kind.value, "message": error.safe_message},
+        )
+        return task
+
     def _apply_pending_control(self, task: Task) -> Task | None:
         if self.state_store is None:
             return None
@@ -1805,6 +1934,200 @@ class AgentRuntime:
         self._output_tokens += usage.output_tokens
         self._cost_usd += usage.cost_usd
 
+    def _request_model(self, task: Task, request: ProviderRequest) -> ModelResponse:
+        """Run or recover one logical provider request without committing partial output."""
+
+        if task.execution.provider is None:
+            raise ProviderError(
+                ProviderErrorKind.CONFIGURATION,
+                "task has no provider binding",
+            )
+        if task.execution.provider.fingerprint != self.provider_binding.fingerprint:
+            raise ProviderError(
+                ProviderErrorKind.CONFIGURATION,
+                "runtime provider does not match the task provider binding",
+            )
+
+        record = ProviderRequestRecord(
+            request_id=request.request_id,
+            task_id=request.task_id,
+            purpose=request.purpose,
+            step_index=request.step_index,
+            epoch_generation=request.epoch_generation,
+            input_revision=request.input_revision,
+            binding_fingerprint=self.provider_binding.fingerprint,
+            input_digest=ContinuationCodec.input_digest(
+                request.model_dump(mode="json", exclude={"request_id"})
+            ),
+        )
+        if self.state_store is not None:
+            guard = self._lease_guard()
+            if guard is None:
+                raise LeaseLost(task.id)
+            stored = self.state_store.begin_provider_request(record, lease_guard=guard)
+            if stored.status in {
+                ProviderRequestStatus.RESPONSE_READY,
+                ProviderRequestStatus.COMPLETED,
+            }:
+                if stored.response is None:
+                    raise RuntimeError("completed provider request has no response")
+                return ContinuationCodec().validate_for_replay(
+                    stored.response,
+                    binding=self.provider_binding,
+                    binding_fingerprint=stored.binding_fingerprint,
+                    response_sha256=stored.response_sha256,
+                )
+
+        active_attempt_id: str | None = None
+
+        def observe(event: ProviderEvent) -> None:
+            nonlocal active_attempt_id
+            if event.type is ProviderEventType.ATTEMPT_STARTED:
+                if event.attempt_id is None:
+                    raise RuntimeError("attempt_started event has no attempt ID")
+                active_attempt_id = event.attempt_id
+                if self.state_store is not None:
+                    try:
+                        self._assert_ownership()
+                        guard = self._lease_guard()
+                        if guard is None:
+                            raise LeaseLost(task.id)
+                        ordinal = (
+                            len(self.state_store.list_provider_attempts(request.request_id)) + 1
+                        )
+                        self.state_store.begin_provider_attempt(
+                            ProviderAttemptRecord(
+                                attempt_id=event.attempt_id,
+                                request_id=request.request_id,
+                                execution_id=guard.execution_id,
+                                ordinal=ordinal,
+                            ),
+                            lease_guard=guard,
+                        )
+                    except LeaseLost:
+                        raise TransportControlError("lease_lost") from None
+            if self._provider_event_observer is not None:
+                self._provider_event_observer(event)
+
+        try:
+            self._assert_ownership()
+            response = self._provider_gateway.complete_request(
+                request,
+                control=self._provider_request_control,
+                on_event=observe,
+            )
+            self._assert_ownership()
+            if self.provider_binding.profile_id == "legacy":
+                response = response.model_copy(update={"request_id": None})
+            return response
+        except ProviderError as exc:
+            if not (isinstance(exc, TransportControlError) and exc.action == "lease_lost"):
+                self._finish_provider_attempt(active_attempt_id, exc)
+            raise
+
+    def _commit_provider_response(self, request_id: str, response: ModelResponse) -> ModelResponse:
+        if self.state_store is None:
+            return response
+        guard = self._lease_guard()
+        if guard is None:
+            raise LeaseLost(request_id)
+        self._assert_ownership()
+        committed = self.state_store.commit_provider_response(
+            request_id,
+            response,
+            lease_guard=guard,
+        )
+        if committed.response is None:
+            raise RuntimeError("committed provider response is missing")
+        return committed.response
+
+    def _finish_provider_attempt(
+        self,
+        attempt_id: str | None,
+        error: ProviderError,
+    ) -> None:
+        if self.state_store is None or attempt_id is None:
+            return
+        guard = self._lease_guard()
+        if guard is None:
+            return
+        status = (
+            ProviderAttemptStatus.CANCELLED
+            if error.kind is ProviderErrorKind.CANCELLED
+            else ProviderAttemptStatus.FAILED
+        )
+        usage_status = (
+            ProviderUsageStatus.UNKNOWN
+            if error.usage_unknown or error.request_sent
+            else ProviderUsageStatus.UNREPORTED
+        )
+        self.state_store.finish_provider_attempt(
+            attempt_id,
+            ProviderAttemptOutcome(
+                status=status,
+                error_kind=error.kind.value,
+                safe_message=error.safe_message,
+                usage_status=usage_status,
+                request_sent=error.request_sent,
+            ),
+            lease_guard=guard,
+        )
+
+    def _provider_request_control(self) -> ControlAction | None:
+        heartbeat = self._heartbeat
+        if heartbeat is not None and heartbeat.failure is not None:
+            return "lease_lost"
+        if self.state_store is None or self._ownership is None:
+            return None
+        control = self.state_store.get_pending_control(self._ownership.execution.task_id)
+        if control is None:
+            return None
+        return control.kind.value
+
+    def _account_provider_attempts(self, request_id: str) -> None:
+        if self.state_store is None:
+            return
+        for attempt in self.state_store.list_provider_attempts(request_id):
+            if (
+                attempt.status is not ProviderAttemptStatus.RUNNING
+                and attempt.attempt_id not in self._accounted_provider_attempt_ids
+            ):
+                self._accounted_provider_attempt_ids.append(attempt.attempt_id)
+
+    def _provider_request_exists(self, request_id: str) -> bool:
+        if self.state_store is None:
+            return False
+        try:
+            self.state_store.get_provider_request(request_id)
+        except KeyError:
+            return False
+        return True
+
+    @staticmethod
+    def _provider_request_id(
+        task: Task,
+        *,
+        purpose: ProviderRequestPurpose,
+        step_index: int,
+        epoch_generation: int,
+        input_revision: int,
+    ) -> str:
+        identity = "\0".join(
+            (
+                task.id,
+                purpose.value,
+                str(step_index),
+                str(epoch_generation),
+                str(input_revision),
+            )
+        )
+        return f"provider-request-{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _provider_epoch_generation(prompt_cache: PromptCacheCoordinator) -> int:
+        epoch = prompt_cache.checkpoint_fields()["cache_epoch_state"]
+        return 0 if epoch is None else epoch.generation
+
     def _compress_epoch(
         self,
         task: Task,
@@ -1812,6 +2135,8 @@ class AgentRuntime:
         messages: list[ModelMessage],
         specifications: list[ToolSpec],
         step_index: int,
+        *,
+        input_revision: int,
     ) -> list[ModelMessage]:
         """Run phase one with the old prefix, then commit phase two on success."""
 
@@ -1819,12 +2144,20 @@ class AgentRuntime:
             step_index,
             messages,
             boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
-            provider=self.provider.name,
+            provider=self._provider_name,
             model=self._provider_model(),
             thinking=self._provider_thinking(),
+            provider_binding=self.provider_binding,
             system_instructions=SYSTEM_PROMPT,
         )
         request = prepared.request
+        provider_request_id = self._provider_request_id(
+            task,
+            purpose=ProviderRequestPurpose.EPOCH_COMPRESSION,
+            step_index=step_index,
+            epoch_generation=request.generation,
+            input_revision=input_revision,
+        )
         self._emit(
             "cache.compression.requested",
             task,
@@ -1837,25 +2170,47 @@ class AgentRuntime:
             },
         )
         try:
-            self._assert_ownership()
-            response = self.provider.complete(request.messages, request.tools)
-            self._assert_ownership()
+            response = self._request_model(
+                task,
+                ProviderRequest(
+                    request_id=provider_request_id,
+                    task_id=task.id,
+                    step_index=step_index,
+                    purpose=ProviderRequestPurpose.EPOCH_COMPRESSION,
+                    epoch_generation=request.generation,
+                    input_revision=input_revision,
+                    messages=tuple(request.messages),
+                    tools=tuple(request.tools),
+                ),
+            )
+            if self.state_store is not None:
+                response = self._commit_provider_response(provider_request_id, response)
             self._record_model_usage(response.usage)
+            if provider_request_id not in self._accounted_provider_request_ids:
+                self._accounted_provider_request_ids.append(provider_request_id)
+                self._account_provider_attempts(provider_request_id)
             observation = prompt_cache.observe_compression_response(prepared, response.usage)
             self._emit(
                 "cache.layout",
                 task,
                 observation.cache_layout.model_dump(mode="json"),
             )
-        except (PromptCacheCoordinatorError, LeaseLost):
+        except (PromptCacheCoordinatorError, LeaseLost, TransportControlError):
             prompt_cache.abort_pending()
             raise
-        except Exception:
+        except Exception as exc:
             prompt_cache.abort_pending()
             self._emit(
                 "cache.compression.failed",
                 task,
-                {"step": step_index, "epoch_id": prompt_cache.epoch_id, "reason": "provider_error"},
+                {
+                    "step": step_index,
+                    "epoch_id": prompt_cache.epoch_id,
+                    "reason": "provider_error",
+                    "error_kind": (
+                        exc.kind.value if isinstance(exc, ProviderError) else "provider_error"
+                    ),
+                },
             )
             return messages
         if response.tool_calls or not response.content.strip():
@@ -1885,19 +2240,15 @@ class AgentRuntime:
         return prompt_cache.frozen_prefix
 
     def _provider_model(self) -> str:
-        config = getattr(self.provider, "config", None)
-        model = getattr(config, "model", None)
-        return model if isinstance(model, str) and model else self.provider.name
+        return self.provider_binding.model
 
     def _provider_thinking(self) -> dict[str, object] | None:
-        config = getattr(self.provider, "config", None)
-        if config is None:
-            return None
         thinking: dict[str, object] = {}
-        for name in ("thinking_enabled", "reasoning_effort"):
-            value = getattr(config, name, None)
-            if isinstance(value, (bool, str)):
-                thinking[name] = value
+        generation = self.provider_binding.generation
+        if generation.reasoning_enabled:
+            thinking["reasoning_enabled"] = True
+        if generation.reasoning_effort is not None:
+            thinking["reasoning_effort"] = generation.reasoning_effort
         return thinking or None
 
     def _checkpoint(
@@ -1915,6 +2266,7 @@ class AgentRuntime:
         consumed_input_sequence: int = 0,
         pending_effect_ids: list[str] | None = None,
         pending_model_request_step: int | None = None,
+        pending_provider_request_id: str | None = None,
     ) -> RuntimeCheckpoint:
         if self._prompt_cache is None:
             raise RuntimeError("prompt-cache coordinator was not initialized")
@@ -1925,7 +2277,10 @@ class AgentRuntime:
             event_sequence=self._current_event_sequence(task),
             pending_effect_ids=list(pending_effect_ids or ()),
             pending_model_request_step=pending_model_request_step,
+            pending_provider_request_id=pending_provider_request_id,
             accounted_model_response_steps=list(self._accounted_model_response_steps),
+            accounted_provider_request_ids=list(self._accounted_provider_request_ids),
+            accounted_provider_attempt_ids=list(self._accounted_provider_attempt_ids),
             unknown_model_usage_steps=list(self._unknown_model_usage_steps),
             next_step_index=next_step_index,
             messages=messages,
@@ -2029,7 +2384,14 @@ class AgentRuntime:
         if step_index is None:
             return checkpoint
         unknown_steps = list(checkpoint.unknown_model_usage_steps)
-        if self._persisted_response_step(task.id, step_index) is None:
+        durable_response = False
+        if self.state_store is not None and checkpoint.pending_provider_request_id is not None:
+            request = self.state_store.get_provider_request(checkpoint.pending_provider_request_id)
+            durable_response = request.status in {
+                ProviderRequestStatus.RESPONSE_READY,
+                ProviderRequestStatus.COMPLETED,
+            }
+        if self._persisted_response_step(task.id, step_index) is None and not durable_response:
             if step_index not in unknown_steps:
                 unknown_steps.append(step_index)
             self._emit(
@@ -2520,7 +2882,7 @@ class AgentRuntime:
 
     def _with_execution_ownership(self, task: Task, action: Callable[[Task], Task]) -> Task:
         if self.state_store is None:
-            return action(task)
+            return action(self._bind_or_validate_provider(task))
         prepared = self.state_store.prepare_task_execution(task)
         manager = self.ownership_manager or ExecutionOwnershipManager(self.state_store)
         permissions = self.gateway.policy.allowed_permissions
@@ -2555,6 +2917,10 @@ class AgentRuntime:
         self._heartbeat.start()
         cleanup_error: SandboxCleanupError | None = None
         try:
+            try:
+                prepared = self._bind_or_validate_provider(prepared)
+            except ProviderError as exc:
+                return self._pause_for_provider_error(prepared, exc)
             return action(prepared)
         except SandboxCleanupError as exc:
             cleanup_error = exc
@@ -2581,6 +2947,78 @@ class AgentRuntime:
             self._ownership = None
             if cleanup_error is not None:
                 raise cleanup_error
+
+    def _bind_or_validate_provider(self, task: Task) -> Task:
+        current = task.execution.provider
+        if current is not None:
+            if current.fingerprint != self.provider_binding.fingerprint:
+                raise ProviderError(
+                    ProviderErrorKind.CONFIGURATION,
+                    "runtime provider does not match the task provider binding",
+                )
+            return task
+        bound = task.model_copy(
+            update={
+                "execution": task.execution.model_copy(update={"provider": self.provider_binding})
+            }
+        )
+        if self.state_store is None:
+            return bound
+        updated = self.state_store.update_task(
+            bound,
+            expected_version=task.version,
+            lease_guard=self._lease_guard(),
+        )
+        return updated
+
+    @staticmethod
+    def _adapt_provider(
+        provider: ModelProvider | ProviderGatewayPort,
+    ) -> ProviderGatewayPort:
+        nested = getattr(provider, "gateway", None)
+        if callable(getattr(nested, "complete_request", None)):
+            return cast(ProviderGatewayPort, nested)
+        if callable(getattr(provider, "complete_request", None)):
+            return cast(ProviderGatewayPort, provider)
+        return LegacyProviderAdapter(
+            cast(ModelProvider, provider),
+            validate_tool_names=False,
+            check_control_after_complete=False,
+        )
+
+    @staticmethod
+    def _binding_for_provider(
+        provider: ModelProvider | ProviderGatewayPort,
+        gateway: ProviderGatewayPort,
+    ) -> ProviderBinding:
+        for candidate in (gateway, provider):
+            binding = getattr(candidate, "binding", None)
+            if isinstance(binding, ProviderBinding):
+                return binding
+        return ProviderBinding(
+            profile_id="legacy",
+            protocol=ProviderProtocol.CHAT_COMPLETIONS,
+            dialect=ChatDialect.STANDARD,
+            model="legacy",
+            base_url="https://legacy-provider.invalid",
+            auth=ProviderAuth.NONE,
+            capabilities=ProviderCapabilities(
+                tools=True,
+                multiple_tool_calls=True,
+                streaming=False,
+                context_window_tokens=1_000_000,
+                max_output_tokens=100_000,
+                usage_supported=True,
+                cache_usage_supported=True,
+            ),
+            generation=ProviderGeneration(max_output_tokens=100_000),
+            transport=ProviderTransportConfig(streaming=False, max_retries=0),
+        )
+
+    @staticmethod
+    def _display_name_for_provider(provider: object) -> str:
+        name = getattr(provider, "name", None)
+        return name if isinstance(name, str) and name else "provider-gateway"
 
     def _lease_guard(self) -> LeaseGuard | None:
         return None if self._ownership is None else self._ownership.lease_guard

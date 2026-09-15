@@ -117,6 +117,8 @@ class _EventPublisher:
             return
         try:
             self.observer(event)
+        except TransportControlError:
+            raise
         except Exception:
             raise ProviderError(
                 ProviderErrorKind.OBSERVER,
@@ -632,8 +634,16 @@ class LegacyProviderAdapter:
 
     supports_live_cancellation = False
 
-    def __init__(self, provider: ModelProvider) -> None:
+    def __init__(
+        self,
+        provider: ModelProvider,
+        *,
+        validate_tool_names: bool = True,
+        check_control_after_complete: bool = True,
+    ) -> None:
         self.provider = provider
+        self.validate_tool_names = validate_tool_names
+        self.check_control_after_complete = check_control_after_complete
 
     def complete_request(
         self,
@@ -656,7 +666,8 @@ class LegacyProviderAdapter:
             _check_legacy_control(control)
             publisher.emit(ProviderEventType.ATTEMPT_STARTED, attempt_id=attempt_id)
             response = self.provider.complete(list(request.messages), list(request.tools))
-            _check_legacy_control(control)
+            if self.check_control_after_complete:
+                _check_legacy_control(control)
             response = response.model_copy(update={"request_id": request.request_id})
             if (response.finish_reason or "").lower() in {
                 "length",
@@ -687,7 +698,7 @@ class LegacyProviderAdapter:
                     not call.id.strip()
                     or call.id == "missing-tool-call-id"
                     or call.id in seen_ids
-                    or call.name not in allowed_tools
+                    or (self.validate_tool_names and call.name not in allowed_tools)
                 ):
                     raise ProviderError(
                         ProviderErrorKind.PROTOCOL,

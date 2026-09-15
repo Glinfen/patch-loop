@@ -155,6 +155,13 @@ class SessionService:
                 raise ValueError("task belongs to a different session")
             if goal.repository != session.workspace_ref:
                 raise ValueError("task repository must match the Session workspace")
+            runtime_binding = getattr(self.runtime, "provider_binding", None)
+            if goal.execution.provider is None and runtime_binding is not None:
+                goal = goal.model_copy(
+                    update={
+                        "execution": goal.execution.model_copy(update={"provider": runtime_binding})
+                    }
+                )
             return self.store.start_task(
                 session.id,
                 goal,
@@ -168,6 +175,11 @@ class SessionService:
             values["id"] = task_id
         if budget is not None:
             values["budget"] = budget
+        runtime_binding = getattr(self.runtime, "provider_binding", None)
+        if execution is None and runtime_binding is not None:
+            execution = TaskExecutionConfig(provider=runtime_binding)
+        elif execution is not None and execution.provider is None and runtime_binding is not None:
+            execution = execution.model_copy(update={"provider": runtime_binding})
         if execution is not None:
             values["execution"] = execution
         task = Task.model_validate(values)

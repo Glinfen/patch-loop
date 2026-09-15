@@ -16,6 +16,7 @@ from patchloop.events import EventLogger
 from patchloop.persistence import SQLiteStore
 from patchloop.persistence_contracts import ProviderAttemptStatus, ProviderRequestStatus
 from patchloop.providers.chat import ChatCompletionsAdapter
+from patchloop.providers.config import CredentialResolver, ProfileResolver
 from patchloop.providers.contracts import (
     ChatDialect,
     ProviderAuth,
@@ -316,15 +317,17 @@ def test_loopback_http_session_core(
         assert "call-denied" in wire_text
 
 
-@pytest.mark.skipif(
-    os.environ.get("PATCHLOOP_ACCEPTANCE_ACTIVE") != "1"
-    or not os.environ.get("PATCHLOOP_ACCEPTANCE_ENDPOINT")
-    or not os.environ.get("PATCHLOOP_ACCEPTANCE_MODEL"),
-    reason="PGW real-provider acceptance is not explicitly configured",
-)
-def test_real_provider_session_trial(tmp_path: Path) -> None:
-    """Exercise a user-configured real service through a restored Session and a tool call."""
-
+def _real_provider_configuration() -> tuple[ProviderBinding, SecretStr | None]:
+    if config_path := os.environ.get("PATCHLOOP_ACCEPTANCE_PROVIDER_CONFIG"):
+        env_file = (
+            Path(value) if (value := os.environ.get("PATCHLOOP_ACCEPTANCE_ENV_FILE")) else None
+        )
+        binding = ProfileResolver().resolve(
+            os.environ.get("PATCHLOOP_ACCEPTANCE_PROFILE"),
+            config_path=Path(config_path),
+            env_file=env_file,
+        )
+        return binding, CredentialResolver().resolve(binding, env_file=env_file)
     protocol = ProviderProtocol(os.environ["PATCHLOOP_ACCEPTANCE_PROTOCOL"])
     kind = os.environ["PATCHLOOP_ACCEPTANCE_KIND"]
     endpoint = os.environ["PATCHLOOP_ACCEPTANCE_ENDPOINT"]
@@ -365,6 +368,24 @@ def test_real_provider_session_trial(tmp_path: Path) -> None:
             output_per_million=float(os.environ["PATCHLOOP_ACCEPTANCE_OUTPUT_PRICE"]),
         ),
     )
+    return binding, SecretStr(api_key) if api_key else None
+
+
+@pytest.mark.skipif(
+    os.environ.get("PATCHLOOP_ACCEPTANCE_ACTIVE") != "1"
+    or (
+        not os.environ.get("PATCHLOOP_ACCEPTANCE_PROVIDER_CONFIG")
+        and (
+            not os.environ.get("PATCHLOOP_ACCEPTANCE_ENDPOINT")
+            or not os.environ.get("PATCHLOOP_ACCEPTANCE_MODEL")
+        )
+    ),
+    reason="PGW real-provider acceptance is not explicitly configured",
+)
+def test_real_provider_session_trial(tmp_path: Path) -> None:
+    """Exercise a user-configured real service through a restored Session and a tool call."""
+
+    binding, credential = _real_provider_configuration()
     repository = tmp_path / "real-provider-workspace"
     repository.mkdir()
     (repository / "acceptance.txt").write_text("PGW-11", encoding="utf-8")
@@ -376,11 +397,11 @@ def test_real_provider_session_trial(tmp_path: Path) -> None:
         ProviderGateway(
             binding,
             ChatCompletionsAdapter(binding.dialect)
-            if protocol is ProviderProtocol.CHAT_COMPLETIONS
+            if binding.protocol is ProviderProtocol.CHAT_COMPLETIONS
             else ResponsesAdapter(),
             HttpxTransport(
-                endpoint,
-                credential=SecretStr(api_key) if api_key else None,
+                binding.base_url,
+                credential=credential,
                 config=binding.transport,
             ),
         ),
@@ -399,11 +420,11 @@ def test_real_provider_session_trial(tmp_path: Path) -> None:
         ProviderGateway(
             binding,
             ChatCompletionsAdapter(binding.dialect)
-            if protocol is ProviderProtocol.CHAT_COMPLETIONS
+            if binding.protocol is ProviderProtocol.CHAT_COMPLETIONS
             else ResponsesAdapter(),
             HttpxTransport(
-                endpoint,
-                credential=SecretStr(api_key) if api_key else None,
+                binding.base_url,
+                credential=credential,
                 config=binding.transport,
             ),
         ),

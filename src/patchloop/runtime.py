@@ -2632,6 +2632,13 @@ class AgentRuntime:
                         "source_request_id": prepared.source_request_id,
                         "source_message_count": prepared.source_message_count,
                         "epoch_id": cache.epoch_id,
+                        "boundary": prepared.request.boundary.value,
+                        "candidate_input_tokens": prepared.candidate_input_tokens,
+                        "ordinary_limit": budget.ordinary_limit,
+                        "soft_limit": budget.soft_limit,
+                        "memory_message_tokens": [
+                            engine.estimate_message(item) for item in memory_messages
+                        ],
                     },
                 )
                 try:
@@ -2689,6 +2696,8 @@ class AgentRuntime:
                             "old_epoch_id": prepared.epoch_id,
                             "new_epoch_id": cache.epoch_id,
                             "generation": completion.epoch.generation,
+                            "candidate_input_tokens": completion.candidate_input_tokens,
+                            "rebased_input_tokens": completion.rebased_input_tokens,
                         },
                     )
                 except (LeaseLost, TransportControlError):

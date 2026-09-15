@@ -10,6 +10,8 @@ from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from patchloop.context.engine import ContextEngine
+from patchloop.memory.working import WORKING_MEMORY_PREFIX
 from patchloop.providers.base import ModelMessage
 
 MEMORY_SNAPSHOT_PREFIX = (
@@ -391,7 +393,7 @@ class MemoryDeltaPublisher:
                 candidate_payload,
                 candidate_invalidations,
             )
-            if _estimate_tokens(candidate_message.content) <= token_budget:
+            if ContextEngine.estimate_message(candidate_message) <= token_budget:
                 pending = candidate_operations
                 pending_state = (candidate_payload, candidate_invalidations)
                 continue
@@ -399,7 +401,7 @@ class MemoryDeltaPublisher:
             if not pending:
                 raise MemoryDeltaTooLarge(
                     "one memory item exceeds the message token budget "
-                    f"({_estimate_tokens(candidate_message.content)} > {token_budget})"
+                    f"({ContextEngine.estimate_message(candidate_message)} > {token_budget})"
                 )
 
             completed_message = build_message(pending, pending_state[0], pending_state[1])
@@ -420,10 +422,10 @@ class MemoryDeltaPublisher:
                 pending_state[0],
                 pending_state[1],
             )
-            if _estimate_tokens(candidate_message.content) > token_budget:
+            if ContextEngine.estimate_message(candidate_message) > token_budget:
                 raise MemoryDeltaTooLarge(
                     "one memory item exceeds the message token budget "
-                    f"({_estimate_tokens(candidate_message.content)} > {token_budget})"
+                    f"({ContextEngine.estimate_message(candidate_message)} > {token_budget})"
                 )
 
         if pending:
@@ -470,7 +472,7 @@ class MemoryDeltaPublisher:
         return payload, invalidations
 
     def _require_message_budget(self, message: ModelMessage, budget: int, label: str) -> None:
-        estimated = _estimate_tokens(message.content)
+        estimated = ContextEngine.estimate_message(message)
         if estimated > budget:
             raise MemoryDeltaTooLarge(
                 f"{label} requires {estimated} tokens, message budget is {budget}"
@@ -545,7 +547,46 @@ def _projection_payload_v2(value: str) -> dict[str, list[dict[str, object]]]:
     payload = json.loads("\n".join(lines[2:]))
     if not isinstance(payload, dict):
         raise ValueError("provider memory projection payload must be an object")
-    return _normalize_v2_payload(payload)
+    normalized = _normalize_v2_payload(payload)
+    if "working_state" in normalized:
+        normalized["working_state"] = [
+            entry for item in normalized["working_state"] for entry in _working_state_entries(item)
+        ]
+    return _normalize_v2_payload(normalized)
+
+
+def _working_state_entries(item: dict[str, object]) -> list[dict[str, object]]:
+    """Publish individual runtime facts instead of replacing a nested JSON blob.
+
+    This only converts newly retrieved projections. Persisted V2 messages retain
+    their original bodies and fingerprints, and transition through normal deltas.
+    The working-memory revision is bookkeeping, not a model-facing fact.
+    """
+
+    text = item.get("text")
+    if set(item) != {"text"} or not isinstance(text, str):
+        return [item]
+    prefix = WORKING_MEMORY_PREFIX
+    if not text.startswith(prefix):
+        return [item]
+    try:
+        state = json.loads(text[len(prefix) :])
+    except json.JSONDecodeError:
+        return [item]
+    if not isinstance(state, dict):
+        return [item]
+    entries: list[dict[str, object]] = []
+    for field, value in state.items():
+        if field == "revision":
+            continue
+        if isinstance(value, list):
+            entries.extend(
+                {"type": "working_memory", "field": field, "index": index, "value": entry}
+                for index, entry in enumerate(value)
+            )
+        else:
+            entries.append({"type": "working_memory", "field": field, "value": value})
+    return entries
 
 
 def _normalize_v2_payload(

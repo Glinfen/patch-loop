@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from patchloop.context.engine import ContextEngine
+from patchloop.memory.working import WORKING_MEMORY_PREFIX
 from patchloop.prompt_cache import (
     MEMORY_DELTA_PREFIX,
     MEMORY_DELTA_V2_PREFIX,
@@ -239,9 +241,7 @@ def test_v2_delta_chunks_are_deterministic_and_replay_as_one_update() -> None:
     assert len(first.messages) > 1
     assert first.messages == second.messages
     assert first.next_state == second.next_state
-    assert all(
-        (len(message.content.encode("utf-8")) + 2) // 3 + 4 <= 256 for message in first.messages
-    )
+    assert all(ContextEngine.estimate_message(message) <= 256 for message in first.messages)
     assert MemoryDeltaPublisher.replay(first.next_state) == first.next_state.current_payload
     assert first.next_state.delta_count == len(first.next_state.messages) - 1
 
@@ -254,6 +254,108 @@ def test_v2_initial_snapshot_obeys_message_budget() -> None:
             invalidated_values=[],
             max_message_tokens=64,
         )
+
+
+def test_v2_json_escaping_is_included_in_snapshot_and_delta_budgets() -> None:
+    projection = _projection({"facts": [_item('a "quoted" path\\part\n' * 10)]})
+    initial = MemoryDeltaPublisher().preview(
+        "epoch-1", projection, invalidated_values=[], max_message_tokens=2_048
+    )
+    limit = ContextEngine.estimate_message(initial.messages[0]) - 1
+    with pytest.raises(MemoryDeltaTooLarge, match="memory snapshot"):
+        MemoryDeltaPublisher().preview(
+            "epoch-1", projection, invalidated_values=[], max_message_tokens=limit
+        )
+    publisher = MemoryDeltaPublisher(initial.next_state)
+    with pytest.raises(MemoryDeltaTooLarge, match="memory snapshot"):
+        publisher.rebase_snapshot("epoch-2", max_message_tokens=limit)
+
+    empty = MemoryDeltaPublisher().preview(
+        "epoch-1", _projection({}), invalidated_values=[], max_message_tokens=2_048
+    )
+    publisher = MemoryDeltaPublisher(empty.next_state)
+    update = publisher.preview(
+        "epoch-1", projection, invalidated_values=[], max_message_tokens=2_048
+    )
+    limit = ContextEngine.estimate_message(update.messages[0]) - 1
+    with pytest.raises(MemoryDeltaTooLarge, match="one memory item"):
+        publisher.preview("epoch-1", projection, invalidated_values=[], max_message_tokens=limit)
+    assert publisher.snapshot == empty.next_state
+
+
+def _working_projection(revision: int, read_files: list[str]) -> str:
+    return _projection(
+        {
+            "working_state": [
+                {
+                    "text": WORKING_MEMORY_PREFIX
+                    + json.dumps(
+                        {
+                            "revision": revision,
+                            "goal": "user_message",
+                            "constraints": ["preserve exact whitespace validation"],
+                            "read_files": read_files,
+                        }
+                    )
+                }
+            ]
+        }
+    )
+
+
+def test_v2_working_memory_only_publishes_changed_facts_and_ignores_revision() -> None:
+    first = MemoryDeltaPublisher().preview(
+        "epoch-1",
+        _working_projection(1, ["contract.md"]),
+        invalidated_values=[],
+        max_message_tokens=2_048,
+    )
+    publisher = MemoryDeltaPublisher(first.next_state)
+    unchanged = publisher.preview(
+        "epoch-1",
+        _working_projection(2, ["contract.md"]),
+        invalidated_values=[],
+        max_message_tokens=2_048,
+    )
+    assert unchanged.messages == []
+    changed = publisher.preview(
+        "epoch-1",
+        _working_projection(3, ["contract.md", "service.py"]),
+        invalidated_values=[],
+        max_message_tokens=512,
+    )
+    assert len(changed.messages) == 1
+    envelope = _v2_envelope(changed.messages[0], MEMORY_DELTA_V2_PREFIX)
+    assert envelope["payload"]["removed"] == {}
+    assert envelope["payload"]["added"]["working_state"] == [
+        {"type": "working_memory", "field": "read_files", "index": 1, "value": "service.py"}
+    ]
+    assert "whitespace" not in changed.messages[0].content
+    replayed = MemoryDeltaPublisher.replay(changed.next_state)
+    assert {entry["value"] for entry in replayed["working_state"]} == {
+        "user_message",
+        "preserve exact whitespace validation",
+        "contract.md",
+        "service.py",
+    }
+    assert (
+        changed.next_state.messages[: len(first.next_state.messages)] == first.next_state.messages
+    )
+
+
+def test_v2_existing_working_blob_upgrades_by_appending_without_rewriting_history() -> None:
+    projection = _working_projection(1, ["contract.md"])
+    # V1-to-V2 upgrade retains the old opaque working item in its first snapshot.
+    legacy, _ = MemoryDeltaPublisher().publish("epoch-1", projection)
+    upgraded = legacy.preview("epoch-1", None, invalidated_values=[], max_message_tokens=2_048)
+    old_messages = upgraded.next_state.messages.copy()
+    changed = MemoryDeltaPublisher(upgraded.next_state).preview(
+        "epoch-1", projection, invalidated_values=[], max_message_tokens=2_048
+    )
+    assert changed.next_state.messages[: len(old_messages)] == old_messages
+    assert all(
+        "field" in item for item in MemoryDeltaPublisher.replay(changed.next_state)["working_state"]
+    )
 
 
 def test_v2_preview_can_upgrade_v1_state_without_mutating_it() -> None:

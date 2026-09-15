@@ -70,6 +70,60 @@ def test_missing_pricing_and_missing_usage_are_not_known_zero_cost() -> None:
     assert absent.cost_status == "unknown"
 
 
+@pytest.mark.parametrize("cached", [0, 75, 100])
+def test_standard_chat_usage_derives_uncached_input_from_reported_totals(cached: int) -> None:
+    usage = UsageNormalizer.normalize(
+        ProviderProtocol.CHAT_COMPLETIONS,
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "prompt_tokens_details": {"cached_tokens": cached},
+        },
+        pricing(),
+    )
+    assert usage.cache_hit_tokens_source == "reported"
+    assert usage.cache_miss_tokens == 100 - cached
+    assert usage.cache_miss_tokens_source == "derived"
+    assert usage.cost_usd == pytest.approx((cached * 0.5 + (100 - cached) * 2 + 10 * 8) / 1_000_000)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"prompt_tokens": 100},
+        {"prompt_tokens_details": {"cached_tokens": 75}},
+        {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 101}},
+        {"prompt_tokens": 100, "prompt_cache_hit_tokens": 75},
+        {
+            "prompt_tokens": 100,
+            "prompt_cache_hit_tokens": 70,
+            "prompt_tokens_details": {"cached_tokens": 75},
+        },
+    ],
+)
+def test_chat_usage_does_not_derive_miss_from_missing_or_ambiguous_fields(raw) -> None:
+    usage = UsageNormalizer.normalize(ProviderProtocol.CHAT_COMPLETIONS, raw, pricing())
+    assert usage.cache_miss_tokens is None
+    assert usage.cache_miss_tokens_source is None
+
+
+def test_chat_usage_preserves_explicit_miss_even_when_it_disagrees_with_totals() -> None:
+    usage = UsageNormalizer.normalize(
+        ProviderProtocol.CHAT_COMPLETIONS,
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "prompt_tokens_details": {"cached_tokens": 75},
+            "prompt_cache_miss_tokens": 10,
+        },
+        pricing(),
+    )
+    assert usage.cache_miss_tokens == 10
+    assert usage.cache_miss_tokens_source == "reported"
+    # Inconsistent reported counts cannot claim a cached-input discount.
+    assert usage.cost_usd == pytest.approx((100 * 2 + 10 * 8) / 1_000_000)
+
+
 def test_boolean_token_counts_are_rejected() -> None:
     with pytest.raises(ProviderError, match="invalid token usage"):
         UsageNormalizer.normalize(

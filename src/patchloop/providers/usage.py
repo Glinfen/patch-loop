@@ -121,10 +121,25 @@ class UsageNormalizer:
             raise cls._invalid("provider returned invalid prompt usage details")
         input_tokens = cls._integer(raw, "prompt_tokens")
         output_tokens = cls._integer(raw, "completion_tokens")
+        standard_cache_hit = cls._integer(details, "cached_tokens")
         cache_hit = cls._integer(raw, "prompt_cache_hit_tokens")
         if cache_hit is None:
-            cache_hit = cls._integer(details, "cached_tokens")
+            cache_hit = standard_cache_hit
         cache_miss = cls._integer(raw, "prompt_cache_miss_tokens")
+        cache_miss_source: Literal["reported", "derived"] | None = (
+            "reported" if cache_miss is not None else None
+        )
+        # Standard Chat usage includes cached input in prompt_tokens. Custom
+        # top-level cache fields alone do not establish that same accounting.
+        if (
+            cache_miss is None
+            and input_tokens is not None
+            and standard_cache_hit is not None
+            and cache_hit == standard_cache_hit
+            and standard_cache_hit <= input_tokens
+        ):
+            cache_miss = input_tokens - standard_cache_hit
+            cache_miss_source = "derived"
         cache_write = cls._integer(raw, "cache_write_tokens")
         if cache_write is None:
             cache_write = cls._integer(raw, "prompt_cache_write_tokens")
@@ -136,7 +151,7 @@ class UsageNormalizer:
             cache_write,
             prices,
             cache_hit_source="reported" if cache_hit is not None else None,
-            cache_miss_source="reported" if cache_miss is not None else None,
+            cache_miss_source=cache_miss_source,
         )
 
     @classmethod

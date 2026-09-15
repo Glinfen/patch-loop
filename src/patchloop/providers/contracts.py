@@ -32,6 +32,7 @@ class ProviderAuth(StrEnum):
 
 class ReasoningTransport(StrEnum):
     NONE = "none"
+    CHAT_INTERNAL = "chat_internal"
     DEEPSEEK_TEXT = "deepseek_text"
     RESPONSES_ITEMS = "responses_items"
 
@@ -231,6 +232,11 @@ class ProviderBinding(BaseModel):
             raise ValueError("auth=none cannot define credential_env")
         if self.protocol is ProviderProtocol.RESPONSES and self.dialect is not ChatDialect.STANDARD:
             raise ValueError("Responses protocol does not support a Chat dialect")
+        if self.capabilities.reasoning_transport is ReasoningTransport.CHAT_INTERNAL and not (
+            self.protocol is ProviderProtocol.CHAT_COMPLETIONS
+            and self.dialect is ChatDialect.STANDARD
+        ):
+            raise ValueError("chat_internal reasoning requires standard Chat Completions")
         if self.capabilities.reasoning_transport is ReasoningTransport.DEEPSEEK_TEXT and not (
             self.protocol is ProviderProtocol.CHAT_COMPLETIONS
             and self.dialect is ChatDialect.DEEPSEEK

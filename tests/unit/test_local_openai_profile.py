@@ -44,6 +44,13 @@ def test_local_profile_resolves_env_and_encodes_high(tmp_path, monkeypatch):
     assert body["max_completion_tokens"] == 8192
     assert "max_tokens" not in body
     assert "thinking" not in body
+    # Exercise gateway capability validation as well as adapter encoding.
+    from patchloop.providers.gateway import ProviderGateway
+    from tests.unit.test_prompt_prefix_transport import _CaptureTransport
+
+    transport = _CaptureTransport(responses=False)
+    ProviderGateway(binding, ChatCompletionsAdapter(), transport).complete_request(request)
+    assert transport.payloads[0]["reasoning_effort"] == "high"
     saved = binding.model_dump_json()
     monkeypatch.setenv("OPENAI_REASONING_EFFORT", "low")
     changed = resolver.resolve(config_path=PROFILE, env_file=env_file)

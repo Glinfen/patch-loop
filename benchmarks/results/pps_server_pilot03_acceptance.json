@@ -1,0 +1,191 @@
+{
+  "schema_version": "pps.v1",
+  "candidate_variant": "append_only",
+  "passed": false,
+  "rollout": {
+    "enabled": false,
+    "candidate_layout": "append_only",
+    "fallback_layout": "legacy",
+    "previous_release_retained": true,
+    "persistence_migration_required": false
+  },
+  "checks": [
+    {
+      "name": "ordinary_prefix",
+      "status": "pass",
+      "actual": {
+        "samples": 34,
+        "missing": 0
+      },
+      "target": "100% ordinary message prefixes, tools and binding; zero missing samples",
+      "detail": "requirement satisfied"
+    },
+    {
+      "name": "compression_source",
+      "status": "pass",
+      "actual": 18,
+      "target": "every compression reuses its complete declared ordinary source",
+      "detail": "requirement satisfied"
+    },
+    {
+      "name": "runtime_fixture_coverage",
+      "status": "pass",
+      "actual": 3,
+      "target": "6 tool rounds and 3 retrieval states",
+      "detail": "requirement satisfied"
+    },
+    {
+      "name": "bounded_epochs",
+      "status": "pass",
+      "actual": [
+        17,
+        17,
+        17
+      ],
+      "target": "10 compressions, one current summary and all ordinary inputs within budget",
+      "detail": "requirement satisfied"
+    },
+    {
+      "name": "offline_recovery",
+      "status": "unverified",
+      "actual": 3,
+      "target": "Runtime checkpoint restore and full fault matrix passed",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "provider_reported_cache_usage",
+      "status": "unverified",
+      "actual": true,
+      "target": "complete request-associated Provider usage; simulations cannot pass",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "paired_batch",
+      "status": "fail",
+      "actual": {
+        "candidate_runs": 2,
+        "baseline_runs": 2,
+        "cases": [
+          "contract-migration",
+          "long-tool-output"
+        ]
+      },
+      "target": "two task cases, three interleaved pairs each; same batch/model/endpoint/budget/pricing",
+      "detail": "requirement not satisfied"
+    },
+    {
+      "name": "warm_cache_hit_rate",
+      "status": "unverified",
+      "actual": null,
+      "target": "weighted warm hit rate >= 70%, excluding epoch first requests",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "cache_hit_rate_gain",
+      "status": "unverified",
+      "actual": {
+        "candidate": null,
+        "baseline": null
+      },
+      "target": "all-request hit rate gain >= 20 percentage points",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "total_cost_reduction",
+      "status": "unverified",
+      "actual": {},
+      "target": "each task's median total known cost decreases >= 20%, including compression/attempts",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "real_resume",
+      "status": "pass",
+      "actual": 3,
+      "target": "at least one real pause/resume with a verified prefix",
+      "detail": "requirement satisfied"
+    },
+    {
+      "name": "quality_and_safety",
+      "status": "unverified",
+      "actual": {
+        "public_passed": 4,
+        "public_total": 4,
+        "hidden_passed": 13,
+        "hidden_total": 20,
+        "out_of_bounds_changes": null,
+        "secret_leaks": null,
+        "stale_fact_hits": null,
+        "candidate_success_rate": 0.0,
+        "baseline_success_rate": 1.0,
+        "candidate_critical_fact_recall": null,
+        "baseline_critical_fact_recall": null,
+        "candidate_stale_fact_rate": null,
+        "baseline_stale_fact_rate": null,
+        "candidate_repeated_failure_risk": null,
+        "baseline_repeated_failure_risk": null,
+        "candidate_recovery_consistency": null,
+        "baseline_recovery_consistency": null,
+        "verified_task_cases": [
+          "contract-migration",
+          "long-tool-output"
+        ],
+        "candidate_constraint_recall": null,
+        "baseline_constraint_recall": null,
+        "approval_bypasses": null,
+        "fault_matrix_passed": null
+      },
+      "target": "all public/hidden checks pass; unsafe/stale uses zero",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "success",
+      "status": "fail",
+      "actual": {
+        "candidate": 0.0,
+        "baseline": 1.0
+      },
+      "target": "no regression versus paired baseline",
+      "detail": "requirement not satisfied"
+    },
+    {
+      "name": "critical_fact_recall",
+      "status": "unverified",
+      "actual": {
+        "candidate": null,
+        "baseline": null
+      },
+      "target": "no regression versus paired baseline",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "constraint_recall",
+      "status": "unverified",
+      "actual": {
+        "candidate": null,
+        "baseline": null
+      },
+      "target": "no regression versus paired baseline",
+      "detail": "evidence unavailable"
+    },
+    {
+      "name": "rollout_candidate",
+      "status": "pass",
+      "actual": "append_only",
+      "target": "append_only candidate with legacy fallback",
+      "detail": "requirement satisfied"
+    }
+  ],
+  "blocking_checks": [
+    "offline_recovery",
+    "provider_reported_cache_usage",
+    "paired_batch",
+    "warm_cache_hit_rate",
+    "cache_hit_rate_gain",
+    "total_cost_reduction",
+    "quality_and_safety",
+    "success",
+    "critical_fact_recall",
+    "constraint_recall"
+  ],
+  "provider_reported": true
+}

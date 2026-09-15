@@ -313,7 +313,7 @@ class CacheAcceptanceEvaluator:
             "offline_recovery",
             all(r.recovery_verified is True for r in restored)
             and quality.fault_matrix_passed is True
-            if restored and quality is not None
+            if restored and quality is not None and quality.fault_matrix_passed is not None
             else None,
             len(restored),
             "Runtime checkpoint restore and full fault matrix passed",

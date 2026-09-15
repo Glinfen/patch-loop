@@ -222,6 +222,14 @@ def test_warm_rate_is_weighted_by_tokens():
     assert warm.actual == pytest.approx(6590 / 10100)
 
 
+def test_missing_fault_matrix_evidence_is_unverified():
+    report, local, quality = _evidence()
+    quality = quality.model_copy(update={"fault_matrix_passed": None})
+    result = _evaluate(report, local, quality)
+    check = next(item for item in result.checks if item.name == "offline_recovery")
+    assert check.status is GateStatus.UNVERIFIED
+
+
 @pytest.mark.parametrize("case", ["ordinary", "compression", "restore"])
 def test_prefix_fixture_uses_runtime_without_a_cache_simulator(tmp_path, monkeypatch, case):
     from patchloop.evaluation.cache import CacheBenchmarkRunner

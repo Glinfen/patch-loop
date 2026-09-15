@@ -1,6 +1,6 @@
 # Prompt 前缀稳定性修改方案
 
-调研日期：2026-09-13。状态：PPS-01～07 已完成；PPS-08 验收工具与离线套件已实现；PPS-09 入口及回退已准备，默认切换等待真实验收。用户于 2026-09-15 明确暂不进行真实验收，待配置后执行。任务前缀：PPS。
+调研日期：2026-09-13。状态：PPS-01～07 已完成；PPS-08 验收工具与离线套件已实现，服务器真实试跑已执行但未通过发布门禁；PPS-09 入口及回退已准备，默认仍为 legacy。任务前缀：PPS。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，基于当前工作区实际代码（含尚未提交的 Provider 契约改动）。不把其他计划中的接口当作已经完成的实现。
 
@@ -816,7 +816,7 @@ PGW adapter 契约测试随其文件落地加入 targeted 集合，不用尚不�
 
 **实施前置依赖（2026-09-15 更新）：** PGW-07/08 的请求持久化与 Runtime 恢复整合、PPS-07 诊断以及 PPS-08 验收工具已完成。PPS-09 默认切换仍等待真实 A/B 门禁；不另建 request journal。
 
-**发布待验证：** 用户明确暂不进行真实验收，待其配置完成后执行。没有本次 append_only 的真实 A/B 数据，不能把历史基线或 FakeProvider 结果当作缓存收益验收；保留 legacy 默认和 append_only opt-in。
+**发布待验证：** 用户后续已配置本地代理并授权服务器真实测试。三个不同代码修订的试跑批次已完成，不能合并冒充同一修订各三次的正式配对验收。最新批次前缀结构通过，但 append_only 任务超时且隐藏测试未通过；缓存 miss 缺失、零价预算也无法证明收益目标。保留 legacy 默认和 append_only opt-in。
 
 ### PPS-07～09 开发记录（2026-09-15）
 
@@ -828,3 +828,19 @@ PGW adapter 契约测试随其文件落地加入 targeted 集合，不用尚不�
 - 最终验证：全量 pytest 为 746 passed、2 skipped、1 failed；失败为既有 transport CA 测试，本机 `ssl.get_default_verify_paths().cafile` 为 None。仅在该测试进程中用 certifi 设置 `SSL_CERT_FILE` 后复验 1 passed，未修改 transport 或系统配置。跳过项是真实 Provider 验收未配置和 Windows 符号链接不可用。`ruff check src tests`、`mypy src/patchloop` 及 `git diff --check` 通过。
 - 离线三轮各包含 6 个工具轮次、3 种检索状态；每轮长期场景完成 17 次压缩，最多一条摘要，三轮 checkpoint 恢复均通过。验收报告的普通前缀、压缩 source、场景覆盖和摘要预算门禁通过；缺少独立质量/完整故障矩阵证据文件的汇总项与真实门禁仍保留 unverified，具体恢复测试由上述 pytest 覆盖。
 - 收尾核对补充 `restored_request_count`，分别从实际 Runtime 恢复标记和真实 Trace 的恢复后请求统计，重复事件不重复计数。相关评估、PPS 门禁、旧基线和 CLI 回归 37 项通过，ruff/mypy 通过；离线报告已重新生成。
+
+### 服务器真实试跑（2026-09-15）
+
+- 环境：Linux 服务器独立目录 `/root/autodl-tmp/pps-openai-20260915`，Python 3.12.14，通过 SSH 回环端口转发访问本机代理，模型 `gpt-5.6-luna`、推理强度 high、标准 Chat Completions。密钥经用户明确授权单独传输，未进入 Git。
+- 三轮 pilot 各运行合同迁移和长工具输出两类场景的 legacy/append_only，共 12 个任务。这是三个修订的调试试跑，不是同一批次、同一修订各三次的正式收益验收。pilot-01 为 `d8adeb7`，pilot-02 为 `4dfc3ed`，pilot-03 为 `79bb981`。
+- 实验发现并修复：标准 Chat 内部推理缺少网关能力声明；压缩保留工具定义但默认 tool_choice=auto，真实模型返回工具调用而非摘要；暂停任务在释放 lease 后写报告产物导致 LeaseLost。现已增加 chat_internal 模式，压缩请求使用 tool_choice=none（工具定义与 source 消息仍保持），活动任务的报告产物延后到结束时保存。相关回归包括 Provider/CLI 69 项、编码/恢复 45 项及 gate 16 项通过。
+- pilot-03 每个任务输入预算 24,000、累计输入上限 500,000、累计输出上限 80,000、最多 40 步；Task 原有时间预算为 300 秒，驱动进程另有 900 秒超时。网关上下文声明 128,000 为暂定运行配置，不是已核实的上游模型规格。价格按用户确认的本地零价预算记录。
+
+| 最新试跑场景 | legacy | append_only |
+| --- | --- | --- |
+| 合同迁移 | 完成；隐藏测试 5/5；188,307 输入 token | 第 30 步超时；隐藏测试 3/5；270,770 输入 token；9 次压缩 |
+| 长工具输出 | 完成；隐藏测试 5/5；320,323 输入 token | 第 24 步超时；隐藏测试 0/5、尚无修改；246,733 输入 token；9 次压缩 |
+
+- append_only 的 34 个同 epoch 普通请求比较全部保持前缀；18 次压缩 source 复用检查通过；真实中断/恢复及审批后恢复的前缀检查通过。合同迁移遗漏纯空白 order_id 的拒绝要求，表明结构正确尚不足以保证摘要后的任务质量。长输出的较低输入量来自任务未完成，不能宣称节省。
+- 原始响应提供 input/output 和 cache hit，但未提供 cache miss；本批严格缓存命中率仍不可验证。没有非零成本基线，不能证明费用下降 20%。本批未提供完整质量/安全与离线故障矩阵证据文件，相关缺项保持 unverified；已证实的任务成功率退化明确为 fail。
+- 结果文件：`benchmarks/results/pps_server_pilot01_*`、`pps_server_pilot02_*`、`pps_server_pilot03_*`。最新正式评估输出为 `pps_server_pilot03_acceptance.json`，passed=false、rollout=legacy。下一步应先改进摘要约束保真及压缩开销，再安排同一修订下的三次配对验收。

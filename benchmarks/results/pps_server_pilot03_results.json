@@ -1,0 +1,89 @@
+{
+  "kind": "pilot-not-release-acceptance",
+  "source_revision": "79bb9814a8a4673cf76ea8b2476c2e3283321079",
+  "results": [
+    {
+      "approved_ids": [
+        "approval-f275912d9a0256eeb00682c0cf569cd0",
+        "approval-c86c780a68a358b09416fa3d3718e751"
+      ],
+      "trial": "contract-migration-1-legacy",
+      "exit_code": 10,
+      "resume_code": 0,
+      "pause_requested": false,
+      "validation": {
+        "public": 0,
+        "hidden": 0
+      },
+      "changed_files": [
+        "order_service.py"
+      ],
+      "task_id": "8850b93c-ac10-47e6-aab9-cbae0cf1fb43",
+      "outcome": "completed",
+      "runtime_condition": "ended",
+      "summary": "Completed the plan and verified passing tests for: order_service.py.",
+      "hidden_details": ".....                                                                    [100%]\n5 passed in 0.01s\n"
+    },
+    {
+      "approved_ids": [
+        "approval-66467ca504d85467b3dff0fdd44431e1",
+        "approval-844eace587f652c6b1d0ff45e36e5394"
+      ],
+      "trial": "contract-migration-1-append_only",
+      "exit_code": 130,
+      "resume_code": 1,
+      "pause_requested": true,
+      "validation": {
+        "public": 0,
+        "hidden": 1
+      },
+      "changed_files": [
+        "order_service.py"
+      ],
+      "task_id": "d305c407-e223-4eef-ba7e-92075c604426",
+      "outcome": "failed",
+      "runtime_condition": "ended",
+      "summary": "time budget exceeded after 30 steps",
+      "hidden_details": "..FF.                                                                    [100%]\n=================================== FAILURES ===================================\n______________________ test_blank_order_id_is_rejected[ ] ______________________\n\norder_id = ' '\n\n    @pytest.mark.parametrize(\"order_id\", [\"\", \" \", \"\\t\\n\"])\n    def test_blank_order_id_is_rejected(order_id: str) -> None:\n        service = _load_service()\n    \n>       with pytest.raises(ValueError, match=r\"^order_id is required$\"):\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       Failed: DID NOT RAISE ValueError\n\n../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py:41: Failed\n____________________ test_blank_order_id_is_rejected[\\t\\n] _____________________\n\norder_id = '\\t\\n'\n\n    @pytest.mark.parametrize(\"order_id\", [\"\", \" \", \"\\t\\n\"])\n    def test_blank_order_id_is_rejected(order_id: str) -> None:\n        service = _load_service()\n    \n>       with pytest.raises(ValueError, match=r\"^order_id is required$\"):\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       Failed: DID NOT RAISE ValueError\n\n../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py:41: Failed\n=========================== short test summary info ============================\nFAILED ../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py::test_blank_order_id_is_rejected[ ]\nFAILED ../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py::test_blank_order_id_is_rejected[\\t\\n]\n2 failed, 3 passed in 0.03s\n"
+    },
+    {
+      "approved_ids": [
+        "approval-3dce1158895e56c2a44dab988a7e64cc",
+        "approval-ddbba6c61b0b5ff09bfb2ef3e1c87c02"
+      ],
+      "trial": "long-tool-output-1-legacy",
+      "exit_code": 10,
+      "resume_code": 0,
+      "pause_requested": false,
+      "validation": {
+        "public": 0,
+        "hidden": 0
+      },
+      "changed_files": [
+        "order_service.py"
+      ],
+      "task_id": "10b8b85a-9e3c-45aa-a8f9-557f1e333c6a",
+      "outcome": "completed",
+      "runtime_condition": "ended",
+      "summary": "Completed the plan and verified passing tests for: order_service.py.",
+      "hidden_details": ".....                                                                    [100%]\n5 passed in 0.01s\n"
+    },
+    {
+      "approved_ids": [],
+      "trial": "long-tool-output-1-append_only",
+      "exit_code": 1,
+      "resume_code": null,
+      "pause_requested": false,
+      "validation": {
+        "public": 0,
+        "hidden": 1
+      },
+      "changed_files": [],
+      "task_id": "ba5e237e-a141-4bd8-aaac-02355fa57557",
+      "outcome": "failed",
+      "runtime_condition": "ended",
+      "summary": "time budget exceeded after 24 steps",
+      "hidden_details": "FFFFF                                                                    [100%]\n=================================== FAILURES ===================================\n_________________ test_current_contract_and_superseded_fields __________________\n\n    def test_current_contract_and_superseded_fields() -> None:\n        service = _load_service()\n    \n>       assert service.build_order_status(\"order-7\", 4, False) == {\n            \"state\": \"ready\",\n            \"order_id\": \"order-7\",\n            \"retry\": 3,\n        }\nE       AssertionError: assert {'status': 'o... 'retries': 4} == {'state': 're...', 'retry': 3}\nE         \nE         Left contains 3 more items:\nE         {'id': 'order-7', 'retries': 4, 'status': 'ok'}\nE         Right contains 3 more items:\nE         {'order_id': 'order-7', 'retry': 3, 'state': 'ready'}\nE         Use -v to get more diff\n\n../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py:24: AssertionError\n______________________ test_blank_order_id_is_rejected[] _______________________\n\norder_id = ''\n\n    @pytest.mark.parametrize(\"order_id\", [\"\", \" \", \"\\t\\n\"])\n    def test_blank_order_id_is_rejected(order_id: str) -> None:\n        service = _load_service()\n    \n>       with pytest.raises(ValueError, match=r\"^order_id is required$\"):\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       Failed: DID NOT RAISE ValueError\n\n../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py:41: Failed\n______________________ test_blank_order_id_is_rejected[ ] ______________________\n\norder_id = ' '\n\n    @pytest.mark.parametrize(\"order_id\", [\"\", \" \", \"\\t\\n\"])\n    def test_blank_order_id_is_rejected(order_id: str) -> None:\n        service = _load_service()\n    \n>       with pytest.raises(ValueError, match=r\"^order_id is required$\"):\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       Failed: DID NOT RAISE ValueError\n\n../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py:41: Failed\n____________________ test_blank_order_id_is_rejected[\\t\\n] _____________________\n\norder_id = '\\t\\n'\n\n    @pytest.mark.parametrize(\"order_id\", [\"\", \" \", \"\\t\\n\"])\n    def test_blank_order_id_is_rejected(order_id: str) -> None:\n        service = _load_service()\n    \n>       with pytest.raises(ValueError, match=r\"^order_id is required$\"):\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       Failed: DID NOT RAISE ValueError\n\n../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py:41: Failed\n______________________ test_negative_attempt_is_rejected _______________________\n\n    def test_negative_attempt_is_rejected() -> None:\n        service = _load_service()\n    \n>       with pytest.raises(ValueError, match=r\"^attempt must be non-negative$\"):\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       Failed: DID NOT RAISE ValueError\n\n../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py:48: Failed\n=========================== short test summary info ============================\nFAILED ../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py::test_current_contract_and_superseded_fields\nFAILED ../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py::test_blank_order_id_is_rejected[]\nFAILED ../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py::test_blank_order_id_is_rejected[ ]\nFAILED ../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py::test_blank_order_id_is_rejected[\\t\\n]\nFAILED ../../../repo/benchmarks/hidden_tests/real_memory/test_contract_migration_hidden.py::test_negative_attempt_is_rejected\n5 failed in 0.04s\n"
+    }
+  ]
+}

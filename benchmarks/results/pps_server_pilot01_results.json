@@ -1,0 +1,46 @@
+[
+  {
+    "trial": "contract-migration-1-legacy",
+    "exit_code": 1,
+    "resume_code": null,
+    "pause_requested": false,
+    "validation": {
+      "public": 0,
+      "hidden": 1
+    },
+    "changed_files": []
+  },
+  {
+    "trial": "contract-migration-1-append_only",
+    "exit_code": 130,
+    "resume_code": 1,
+    "pause_requested": true,
+    "validation": {
+      "public": 0,
+      "hidden": 1
+    },
+    "changed_files": []
+  },
+  {
+    "trial": "long-tool-output-1-legacy",
+    "exit_code": 1,
+    "resume_code": null,
+    "pause_requested": false,
+    "validation": {
+      "public": 0,
+      "hidden": 1
+    },
+    "changed_files": []
+  },
+  {
+    "trial": "long-tool-output-1-append_only",
+    "exit_code": 1,
+    "resume_code": null,
+    "pause_requested": false,
+    "validation": {
+      "public": 0,
+      "hidden": 1
+    },
+    "changed_files": []
+  }
+]

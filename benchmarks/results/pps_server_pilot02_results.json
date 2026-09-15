@@ -1,0 +1,86 @@
+{
+  "kind": "pilot-not-release-acceptance",
+  "source_revision": "4dfc3edd90c886da822e9079122c22e689206547",
+  "results": [
+    {
+      "trial": "contract-migration-1-append_only",
+      "task_id": "9db95d65-d914-45b6-b55b-81d9b01b4e09",
+      "status": "running",
+      "runtime_condition": "paused",
+      "summary": "append-only compression rejected: invalid_summary (continue_old_epoch)",
+      "validation": {
+        "public": {
+          "exit_code": 0,
+          "summary": ".                                                                        [100%]"
+        },
+        "hidden": {
+          "exit_code": 1,
+          "summary": "5 failed in 0.03s"
+        }
+      },
+      "changed_files": [],
+      "scope_ok": true
+    },
+    {
+      "trial": "contract-migration-1-legacy",
+      "task_id": "93a1409a-2ed9-44b3-965d-95e96a2996ff",
+      "status": "completed",
+      "runtime_condition": "ended",
+      "summary": "Completed the plan and verified passing tests for: order_service.py.",
+      "validation": {
+        "public": {
+          "exit_code": 0,
+          "summary": ".                                                                        [100%]"
+        },
+        "hidden": {
+          "exit_code": 0,
+          "summary": "5 passed in 0.01s"
+        }
+      },
+      "changed_files": [
+        "order_service.py"
+      ],
+      "scope_ok": true
+    },
+    {
+      "trial": "long-tool-output-1-append_only",
+      "task_id": "1164704c-eacd-4904-b419-b864a37db3f3",
+      "status": "running",
+      "runtime_condition": "paused",
+      "summary": "append-only compression rejected: invalid_summary (continue_old_epoch)",
+      "validation": {
+        "public": {
+          "exit_code": 0,
+          "summary": ".                                                                        [100%]"
+        },
+        "hidden": {
+          "exit_code": 1,
+          "summary": "5 failed in 0.04s"
+        }
+      },
+      "changed_files": [],
+      "scope_ok": true
+    },
+    {
+      "trial": "long-tool-output-1-legacy",
+      "task_id": "e5290f7e-47fd-49e5-92b6-3132d3d1adb9",
+      "status": "completed",
+      "runtime_condition": "ended",
+      "summary": "Completed the plan and verified passing tests for: order_service.py.",
+      "validation": {
+        "public": {
+          "exit_code": 0,
+          "summary": ".                                                                        [100%]"
+        },
+        "hidden": {
+          "exit_code": 0,
+          "summary": "5 passed in 0.01s"
+        }
+      },
+      "changed_files": [
+        "order_service.py"
+      ],
+      "scope_ok": true
+    }
+  ]
+}

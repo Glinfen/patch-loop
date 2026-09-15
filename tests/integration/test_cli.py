@@ -239,7 +239,7 @@ def test_run_uses_provider_and_persists_result(tmp_path: Path, monkeypatch: obje
         ]
     )
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "patchloop.cli.DeepSeekProvider.from_env",
+        "patchloop.cli._provider_from_env",
         lambda *_: provider,
     )
 
@@ -306,7 +306,7 @@ def test_cli_resumes_running_task(tmp_path: Path, monkeypatch: object) -> None:
         )
     )
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "patchloop.cli.DeepSeekProvider.from_env",
+        "patchloop.cli._provider_from_env",
         lambda *_: FakeProvider([ModelResponse(content="Resumed successfully.")]),
     )
 
@@ -352,7 +352,7 @@ def test_legacy_run_requires_persisted_approval_before_non_interactive_write(
         ]
     )
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "patchloop.cli.DeepSeekProvider.from_env",
+        "patchloop.cli._provider_from_env",
         lambda *_: provider,
     )
 

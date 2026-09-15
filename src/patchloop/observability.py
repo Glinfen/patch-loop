@@ -19,6 +19,11 @@ class TaskMetrics(BaseModel):
     events: int = Field(default=0, ge=0)
     steps: int = Field(default=0, ge=0)
     model_calls: int = Field(default=0, ge=0)
+    provider_requests: int = Field(default=0, ge=0)
+    provider_attempts: int = Field(default=0, ge=0)
+    unknown_usage_attempts: int = Field(default=0, ge=0)
+    reserved_cost_usd: float = Field(default=0.0, ge=0.0)
+    cost_status: str = Field(default="legacy", pattern=r"^(estimated|unknown|legacy)$")
     tool_calls: int = Field(default=0, ge=0)
     failed_tool_calls: int = Field(default=0, ge=0)
     approvals_requested: int = Field(default=0, ge=0)
@@ -92,7 +97,19 @@ class TaskMetrics(BaseModel):
                     metrics.input_tokens += int(usage.get("input_tokens", 0))
                     metrics.output_tokens += int(usage.get("output_tokens", 0))
                     metrics.cost_usd += float(usage.get("cost_usd", 0.0))
+                    status = usage.get("cost_status", "legacy")
+                    if status == "unknown":
+                        metrics.cost_status = "unknown"
+                    elif status == "estimated" and metrics.cost_status != "unknown":
+                        metrics.cost_status = "estimated"
                     _apply_provider_usage(metrics, usage)
+            elif event.type == "provider.request.started":
+                metrics.provider_requests += 1
+            elif event.type == "provider.attempt.started":
+                metrics.provider_attempts += 1
+                metrics.reserved_cost_usd += _nonnegative_float(
+                    event.data.get("budget_reservation_usd")
+                )
             elif event.type == "cache.layout":
                 try:
                     layout = CacheLayoutTrace.model_validate(event.data)
@@ -213,8 +230,12 @@ class TaskMetrics(BaseModel):
                     )
             elif event.type in {"task.completed", "task.failed", "task.cancelled"}:
                 metrics.status = event.type.removeprefix("task.")
+                _apply_report_accounting(metrics, event.data.get("report"))
                 if event.type == "task.failed":
                     errors[str(event.data.get("error_kind") or "unknown")] += 1
+            elif event.type in {"task.paused", "provider.paused"}:
+                metrics.status = "paused"
+                _apply_report_accounting(metrics, event.data.get("report"))
         metrics.steps = len(step_indices)
         metrics.errors = dict(sorted(errors.items()))
         if metrics.memory_compression_input_tokens:
@@ -255,9 +276,13 @@ class MemoryDecision(BaseModel):
 class ProviderUsageRecord(BaseModel):
     sequence: int
     step: int
+    request_id: str | None = None
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0)
+    cost_status: str = Field(default="legacy", pattern=r"^(estimated|unknown|legacy)$")
+    pricing_version: str | None = None
+    reasoning_output_tokens: int | None = Field(default=None, ge=0)
     cache_hit_tokens: int | None = Field(default=None, ge=0)
     cache_miss_tokens: int | None = Field(default=None, ge=0)
     cache_write_tokens: int | None = Field(default=None, ge=0)
@@ -338,9 +363,23 @@ class TaskReplay(BaseModel):
                         ProviderUsageRecord(
                             sequence=event.sequence,
                             step=event_step,
+                            request_id=(
+                                str(event.data["request_id"])
+                                if event.data.get("request_id") is not None
+                                else None
+                            ),
                             input_tokens=input_tokens,
                             output_tokens=_nonnegative_int(usage.get("output_tokens")),
                             cost_usd=_nonnegative_float(usage.get("cost_usd")),
+                            cost_status=str(usage.get("cost_status", "legacy")),
+                            pricing_version=(
+                                str(usage["pricing_version"])
+                                if usage.get("pricing_version") is not None
+                                else None
+                            ),
+                            reasoning_output_tokens=_optional_nonnegative_int(
+                                usage.get("reasoning_output_tokens")
+                            ),
                             cache_hit_tokens=hit_tokens,
                             cache_miss_tokens=miss_tokens,
                             cache_write_tokens=_optional_nonnegative_int(
@@ -380,6 +419,18 @@ def _apply_provider_usage(metrics: TaskMetrics, usage: dict[str, Any]) -> None:
     if write_tokens is not None:
         metrics.cache_write_tokens = (metrics.cache_write_tokens or 0) + write_tokens
         metrics.cache_write_reported_calls += 1
+
+
+def _apply_report_accounting(metrics: TaskMetrics, raw_report: object) -> None:
+    if not isinstance(raw_report, dict):
+        return
+    metrics.provider_requests = _nonnegative_int(raw_report.get("provider_requests"))
+    metrics.provider_attempts = _nonnegative_int(raw_report.get("provider_attempts"))
+    metrics.unknown_usage_attempts = _nonnegative_int(raw_report.get("unknown_usage_attempts"))
+    metrics.reserved_cost_usd = _nonnegative_float(raw_report.get("reserved_cost_usd"))
+    cost_status = raw_report.get("cost_status")
+    if cost_status in {"estimated", "unknown", "legacy"}:
+        metrics.cost_status = cost_status
 
 
 def _nonnegative_int(value: object) -> int:

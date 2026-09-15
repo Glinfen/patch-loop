@@ -100,6 +100,10 @@ def test_runtime_reports_and_traces_provider_cache_usage(tmp_path: Path) -> None
     assert result.report.cache_usage_unreported_calls == 0
     assert result.report.cache_usage_inconsistent_calls == 0
     assert result.report.cache_write_reported_calls == 1
+    assert result.report.provider_requests == 2
+    assert result.report.provider_attempts == 2
+    assert result.report.unknown_usage_attempts == 0
+    assert result.report.reserved_cost_usd == 0
     model_events = [event for event in trace.read() if event.type == "model.completed"]
     assert model_events[0].data["usage"]["cache_hit_tokens"] == 10
     assert model_events[1].data["usage"]["cache_miss_tokens"] == 20

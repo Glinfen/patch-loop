@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from patchloop.providers.fake import FakeProvider
     from patchloop.providers.gateway import LegacyProviderAdapter, ProviderGateway
     from patchloop.providers.responses import ResponsesAdapter, ResponsesStreamReducer
+    from patchloop.providers.usage import PriceSnapshot, UsageNormalizer
 
 _MODULE_BY_NAME = {
     "ChatCompletionsAdapter": "chat",
@@ -86,6 +87,7 @@ _MODULE_BY_NAME = {
     "ProviderGateway": "gateway",
     "ProviderGeneration": "contracts",
     "ProviderPricing": "contracts",
+    "PriceSnapshot": "usage",
     "ProviderProtocol": "contracts",
     "ProviderRequest": "base",
     "ProviderRequestPurpose": "base",
@@ -95,6 +97,7 @@ _MODULE_BY_NAME = {
     "ReasoningTransport": "contracts",
     "StreamReducer": "base",
     "ToolSpec": "base",
+    "UsageNormalizer": "usage",
     "ValidatedResponseItem": "contracts",
     "provider_endpoint": "config",
     "resolve_credential": "contracts",
@@ -118,6 +121,7 @@ __all__ = [
     "ModelProvider",
     "ModelResponse",
     "ModelUsage",
+    "PriceSnapshot",
     "ProfileResolver",
     "ProviderAdapter",
     "ProviderAuth",
@@ -143,6 +147,7 @@ __all__ = [
     "ResponsesStreamReducer",
     "StreamReducer",
     "ToolSpec",
+    "UsageNormalizer",
     "ValidatedResponseItem",
     "provider_endpoint",
     "resolve_credential",

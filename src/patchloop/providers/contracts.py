@@ -264,6 +264,8 @@ class ProviderBinding(BaseModel):
 
 class ProviderErrorKind(StrEnum):
     CONFIGURATION = "configuration"
+    PRICING_REQUIRED = "pricing_required"
+    BUDGET_EXCEEDED = "budget_exceeded"
     AUTHENTICATION = "authentication"
     RATE_LIMIT = "rate_limit"
     CONNECTION = "connection"

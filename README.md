@@ -87,6 +87,111 @@ $env:DEEPSEEK_API_KEY = Read-Host "DeepSeek API key" -MaskInput
 `.env`。Provider 上下文、SQLite、轨迹和任务产物会对常见 API Key、Bearer Token、密码及敏感
 字段进行脱敏。
 
+### Provider profiles
+
+内置 `deepseek` profile 继续支持上面的环境变量。通用 Chat Completions、OpenAI Responses 和
+本地兼容服务使用 `~/.patchloop/providers.toml`，也可以通过 `--provider-config` 指定其他文件。
+下面给出四种接入方式；`models.<id>` 下必须显式声明能力、生成参数和价格，免费本地模型也要写
+零价，避免预算把“未知价格”误判为免费。
+
+```toml
+schema_version = 1
+default_profile = "chat"
+
+# 1. DeepSeek：可直接使用内置 profile，无需在此重复配置。
+
+# 2. 标准 Chat Completions
+[profiles.chat]
+protocol = "chat_completions"
+base_url = "https://chat.example.com/v1"
+credential_env = "CHAT_API_KEY"
+default_model = "chat-model"
+
+[profiles.chat.models.chat-model.capabilities]
+tools = true
+multiple_tool_calls = true
+streaming = true
+context_window_tokens = 32768
+max_output_tokens = 4096
+usage_supported = true
+cache_usage_supported = true
+
+[profiles.chat.models.chat-model.generation]
+max_output_tokens = 4096
+
+[profiles.chat.models.chat-model.pricing]
+version = "chat-2026-09"
+input_per_million = 1.0
+cached_input_per_million = 0.25
+output_per_million = 4.0
+
+# 3. Responses（其余 capabilities/generation/pricing 字段写法相同）
+[profiles.responses]
+protocol = "responses"
+base_url = "https://responses.example.com/v1"
+credential_env = "RESPONSES_API_KEY"
+default_model = "responses-model"
+
+[profiles.responses.models.responses-model.capabilities]
+tools = true
+multiple_tool_calls = true
+streaming = true
+reasoning_transport = "responses_items"
+context_window_tokens = 128000
+max_output_tokens = 8192
+usage_supported = true
+cache_usage_supported = true
+
+[profiles.responses.models.responses-model.generation]
+max_output_tokens = 8192
+reasoning_enabled = true
+reasoning_effort = "medium"
+
+[profiles.responses.models.responses-model.pricing]
+version = "responses-2026-09"
+input_per_million = 2.0
+cached_input_per_million = 0.5
+output_per_million = 8.0
+
+# 4. 无凭据的 loopback 本地服务（显式零价）
+[profiles.local]
+protocol = "chat_completions"
+base_url = "http://127.0.0.1:8000/v1"
+auth = "none"
+default_model = "local-model"
+
+[profiles.local.models.local-model.capabilities]
+tools = true
+multiple_tool_calls = true
+streaming = true
+context_window_tokens = 32768
+max_output_tokens = 4096
+usage_supported = true
+
+[profiles.local.models.local-model.generation]
+max_output_tokens = 4096
+
+[profiles.local.models.local-model.pricing]
+version = "local-zero-v1"
+input_per_million = 0
+output_per_million = 0
+```
+
+先进行本地检查；只有显式增加 `--connect` 才会发出一个最小请求：
+
+```bash
+patchloop provider list --provider-config /path/to/providers.toml
+patchloop provider show local --provider-config /path/to/providers.toml
+patchloop provider check local --provider-config /path/to/providers.toml
+patchloop provider check local --provider-config /path/to/providers.toml --connect
+```
+
+新 Task 可使用 `--provider`、`--model` 和 `--provider-config` 选择配置。Task 创建后 binding 固定，
+`resume` 不允许切换 profile、模型、协议或端点；旧的无 binding Task 只能显式使用
+`--legacy-provider` 完成一次性绑定。每个网络 attempt 在发送前按未缓存价格保守预留预算，已送达但
+用量未知时预留不会释放。机器输出默认或 `--json` 为单个对象；流式消费者使用
+`--events-jsonl`，终端查看可使用 `--human`，三者不能组合。
+
 ## 快速开始
 
 先准备一个独立 Git 仓库。不要把第一次试运行指向 PatchLoop 自身或包含重要未提交改动的目录：

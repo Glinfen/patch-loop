@@ -167,6 +167,30 @@ class ProfileResolver:
             pricing=selected.pricing,
         )
 
+    def list_bindings(self, config_path: Path | None = None) -> list[ProviderBinding]:
+        """Return each locally configured profile's default binding."""
+
+        selected_path = config_path if config_path is not None else DEFAULT_PROVIDER_CONFIG
+        configured = self._load(selected_path, required=config_path is not None)
+        profiles = {"deepseek": _builtin_deepseek(), **configured.profiles}
+        return [
+            self.resolve(profile_id, config_path=config_path) for profile_id in sorted(profiles)
+        ]
+
+    def resolve_legacy_environment(self) -> ProviderBinding:
+        """Project the historical DeepSeek environment aliases onto the built-in profile."""
+
+        binding = self.resolve("deepseek")
+        payload = binding.model_dump(mode="json", exclude={"fingerprint"})
+        base_url = os.environ.get("DEEPSEEK_BASE_URL") or os.environ.get("LLM_BASE_URL")
+        model = os.environ.get("DEEPSEEK_MODEL") or os.environ.get("LLM_MODEL_ID")
+        if base_url:
+            _validate_url(base_url, field="base_url", allow_http_loopback=True)
+            payload["base_url"] = base_url.rstrip("/")
+        if model:
+            payload["model"] = model
+        return ProviderBinding.model_validate(payload)
+
     @staticmethod
     def _load(path: Path, *, required: bool) -> _ProviderFile:
         if not path.is_file():
@@ -208,7 +232,7 @@ class CredentialResolver:
                     return SecretStr(value)
         raise ProviderError(
             ProviderErrorKind.CONFIGURATION,
-            f"credential environment variable {binding.credential_env} is not set",
+            f"{' or '.join(names)} is not set",
         )
 
 

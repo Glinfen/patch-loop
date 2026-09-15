@@ -13,6 +13,7 @@ from patchloop.persistence_contracts import ProviderAttemptStatus, ProviderReque
 from patchloop.providers.base import (
     ModelMessage,
     ModelResponse,
+    ModelUsage,
     ProviderEvent,
     ProviderEventObserver,
     ProviderEventType,
@@ -27,6 +28,7 @@ from patchloop.providers.contracts import (
     ProviderError,
     ProviderErrorKind,
     ProviderGeneration,
+    ProviderPricing,
     ProviderProtocol,
     ProviderTransportConfig,
     ReasoningTransport,
@@ -59,7 +61,27 @@ def _binding(protocol: ProviderProtocol) -> ProviderBinding:
         ),
         generation=ProviderGeneration(max_output_tokens=1_024),
         transport=ProviderTransportConfig(streaming=True, max_retries=0),
+        pricing=ProviderPricing(
+            version="test-local-zero",
+            input_per_million=0,
+            output_per_million=0,
+        ),
     )
+
+
+def _without_pricing(binding: ProviderBinding) -> ProviderBinding:
+    payload = binding.model_dump(mode="json", exclude={"fingerprint", "pricing"})
+    return ProviderBinding.model_validate(payload)
+
+
+def _billable(binding: ProviderBinding) -> ProviderBinding:
+    payload = binding.model_dump(mode="json", exclude={"fingerprint"})
+    payload["pricing"] = {
+        "version": "test-billable",
+        "input_per_million": 1.0,
+        "output_per_million": 2.0,
+    }
+    return ProviderBinding.model_validate(payload)
 
 
 class _ScriptedGateway:
@@ -128,6 +150,117 @@ class _ScriptedGateway:
     def complete(self, messages: list[ModelMessage], tools: list[ToolSpec]) -> ModelResponse:
         del messages, tools
         raise AssertionError("Runtime must use complete_request")
+
+
+class _RetryGateway:
+    def __init__(self, binding: ProviderBinding, *, first_request_sent: bool) -> None:
+        self.binding = binding
+        self.first_request_sent = first_request_sent
+
+    def complete_request(self, request: ProviderRequest, *, control=None, on_event=None):
+        del control
+        assert on_event is not None
+        on_event(
+            ProviderEvent(
+                type=ProviderEventType.ATTEMPT_STARTED,
+                request_id=request.request_id,
+                attempt_id="attempt-1",
+                sequence=0,
+            )
+        )
+        on_event(
+            ProviderEvent(
+                type=ProviderEventType.ATTEMPT_FAILED,
+                request_id=request.request_id,
+                attempt_id="attempt-1",
+                sequence=1,
+                error_kind=ProviderErrorKind.CONNECTION.value,
+                safe_message="first attempt failed",
+                request_sent=self.first_request_sent,
+                usage_unknown=self.first_request_sent,
+            )
+        )
+        on_event(
+            ProviderEvent(
+                type=ProviderEventType.ATTEMPT_STARTED,
+                request_id=request.request_id,
+                attempt_id="attempt-2",
+                sequence=2,
+            )
+        )
+        response = ModelResponse(
+            content="done",
+            request_id=request.request_id,
+            usage=ModelUsage(
+                input_tokens=10,
+                output_tokens=1,
+                input_tokens_reported=True,
+                output_tokens_reported=True,
+                cost_status="estimated",
+                pricing_version="test-billable",
+                cost_usd=0.000012,
+            ),
+        )
+        on_event(
+            ProviderEvent(
+                type=ProviderEventType.RESPONSE_COMPLETED,
+                request_id=request.request_id,
+                attempt_id="attempt-2",
+                sequence=3,
+                response=response,
+            )
+        )
+        return response
+
+
+def test_runtime_pauses_before_network_when_pricing_is_missing(tmp_path: Path) -> None:
+    repository = tmp_path / "unpriced"
+    repository.mkdir()
+    store = SQLiteStore(tmp_path / "unpriced.sqlite")
+    binding = _without_pricing(_binding(ProviderProtocol.RESPONSES))
+    provider = _ScriptedGateway(binding, [ModelResponse(content="must not run")])
+    service = SessionService(
+        store,
+        AgentRuntime(provider, ToolGateway(ToolContext(repository), []), state_store=store),
+    )
+    session = service.create(str(repository), session_id="session-unpriced")
+    service.start_task(session.id, "answer", task_id="task-unpriced")
+
+    result = service.resume(session.id)
+
+    assert result.runtime_condition is TaskRuntimeCondition.PAUSED
+    assert result.report is not None
+    assert result.report.summary == "provider pricing is required when a task has a dollar budget"
+    assert provider.requests == []
+
+
+@pytest.mark.parametrize("first_request_sent", [False, True])
+def test_retry_reservation_releases_only_a_confirmed_unsent_attempt(
+    tmp_path: Path, first_request_sent: bool
+) -> None:
+    repository = tmp_path / f"retry-{first_request_sent}"
+    repository.mkdir()
+    store = SQLiteStore(tmp_path / f"retry-{first_request_sent}.sqlite")
+    binding = _billable(_binding(ProviderProtocol.CHAT_COMPLETIONS))
+    service = SessionService(
+        store,
+        AgentRuntime(
+            _RetryGateway(binding, first_request_sent=first_request_sent),
+            ToolGateway(ToolContext(repository), []),
+            state_store=store,
+        ),
+    )
+    session = service.create(str(repository), session_id=f"session-retry-{first_request_sent}")
+    service.start_task(session.id, "answer", task_id=f"task-retry-{first_request_sent}")
+
+    result = service.resume(session.id)
+
+    assert result.status is TaskStatus.COMPLETED
+    assert result.report is not None
+    assert result.report.provider_requests == 1
+    assert result.report.provider_attempts == 2
+    assert result.report.unknown_usage_attempts == int(first_request_sent)
+    assert (result.report.reserved_cost_usd > 0) is first_request_sent
 
 
 @pytest.mark.parametrize(

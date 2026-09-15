@@ -18,6 +18,7 @@ from patchloop.providers.contracts import (
     ProviderBinding,
     ProviderCapabilities,
     ProviderGeneration,
+    ProviderPricing,
     ProviderProtocol,
     ProviderTransportConfig,
 )
@@ -73,6 +74,11 @@ def _binding(protocol: ProviderProtocol) -> ProviderBinding:
         ),
         generation=ProviderGeneration(max_output_tokens=1_024),
         transport=ProviderTransportConfig(streaming=False, max_retries=0),
+        pricing=ProviderPricing(
+            version="test-local-zero",
+            input_per_million=0,
+            output_per_million=0,
+        ),
     )
 
 

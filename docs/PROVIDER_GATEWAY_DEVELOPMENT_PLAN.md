@@ -2,7 +2,7 @@
 
 ## 1. Problem
 
-**状态：** PGW-01～PGW-08 已完成，下一任务为 **PGW-09**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
+**状态：** PGW-01～PGW-10 已完成，下一任务为 **PGW-11**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
 
 **Current Problem：** SRF 已交付 Session、审批、所有权和恢复主线，但 CLI 仍固定创建 DeepSeek Provider，构造器只接受一个模型；请求非流式，Runtime 直接读取供应商配置，Task 未绑定模型配置，协议续接信息也未完整保存。这是 [第二阶段目标](PHASE_2_PROJECT_GOALS.md) S2-G2 的直接缺口。
 
@@ -543,6 +543,8 @@ Checkpoint: accounted_provider_request_ids / accounted_provider_attempt_ids
 - 费用有来源与精度，未知不展示成已知 0 美元；预算含全部 attempt。
 - request/attempt 去重与旧水位转换无双计，新能力不破坏旧布局基线。
 
+**实施状态：已完成（2026-09-15）。** 新增跨 Chat/Responses 的 `UsageNormalizer` 和不可变 `PriceSnapshot`，保留缓存命中/未命中的 reported/derived 来源及 Responses reasoning 子集；缺失用量、缺失价格和 bool Token 均不会被解释为已知零费用。Runtime 按编码请求 UTF-8 字节、消息开销和最大输出在 attempt 前预留未缓存费用，成功且用量完整时释放预留，已送达但用量未知时保留；报告、检查点、指标和回放增加请求数、尝试数、未知用量、费用状态及预留费用。新的带美元预算 Task 若绑定缺少价格，会以 `pricing_required` 在网络请求前暂停；旧无绑定 Provider 仍按 legacy 兼容路径运行。
+
 ### PGW-10：Provider CLI 与流式展示
 
 **Goal**
@@ -587,6 +589,8 @@ patchloop resume <legacy-task-id> --legacy-provider <profile-id>
 
 - 用户修改配置即可给新 Task 换 Provider，无需修改 Runtime；活动任务不漂移。
 - CI/human 契约稳定，所有入口保持原审批/所有权/恢复路径。
+
+**实施状态：已完成（2026-09-15）。** CLI 新增本地只读的 `provider list/show/check`，仅 `check --connect` 会构造无仓库内容的最小请求；`run` 与 `session start` 支持 profile/model/config/env-file 并在创建 Task 时固定 binding，运行服务从持久化 binding 经 Factory 构造 Gateway。绑定任务拒绝 Provider 覆盖，旧无绑定任务只允许通过 `--legacy-provider` 一次性绑定。`--events-jsonl` 输出带版本、request/attempt/sequence 的生命周期行和最终 result，`--human` 对跨 chunk 正文整体脱敏、reasoning 仅显示状态；默认/`--json` 继续输出单个 SRF 对象。README 和 `.env.example` 已补四类配置、显式零价、预算预留和恢复约束。
 
 ### PGW-11：跨协议验收、本地服务与真实试用
 

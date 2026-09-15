@@ -51,8 +51,11 @@ class ModelUsage(BaseModel):
     cache_hit_tokens: int | None = Field(default=None, ge=0)
     cache_miss_tokens: int | None = Field(default=None, ge=0)
     cache_write_tokens: int | None = Field(default=None, ge=0)
+    reasoning_output_tokens: int | None = Field(default=None, ge=0)
     input_tokens_reported: bool | None = None
     output_tokens_reported: bool | None = None
+    cache_hit_tokens_source: Literal["reported", "derived"] | None = None
+    cache_miss_tokens_source: Literal["reported", "derived"] | None = None
     cost_status: Literal["estimated", "unknown", "legacy"] = "legacy"
     pricing_version: str | None = None
 
@@ -66,6 +69,12 @@ class ModelUsage(BaseModel):
             payload.pop("input_tokens_reported", None)
         if self.output_tokens_reported is None:
             payload.pop("output_tokens_reported", None)
+        if self.reasoning_output_tokens is None:
+            payload.pop("reasoning_output_tokens", None)
+        if self.cache_hit_tokens_source is None:
+            payload.pop("cache_hit_tokens_source", None)
+        if self.cache_miss_tokens_source is None:
+            payload.pop("cache_miss_tokens_source", None)
         if self.cost_status == "legacy":
             payload.pop("cost_status", None)
         if self.pricing_version is None:
@@ -119,6 +128,7 @@ class ProviderRequest(BaseModel):
 class ProviderEventType(StrEnum):
     REQUEST_STARTED = "request_started"
     ATTEMPT_STARTED = "attempt_started"
+    ATTEMPT_FAILED = "attempt_failed"
     TEXT_DELTA = "text_delta"
     REASONING_DELTA = "reasoning_delta"
     TOOL_CALL_DELTA = "tool_call_delta"
@@ -141,6 +151,8 @@ class ProviderEvent(BaseModel):
     response: ModelResponse | None = None
     error_kind: str | None = None
     safe_message: str | None = None
+    request_sent: bool | None = None
+    usage_unknown: bool | None = None
 
     @model_validator(mode="after")
     def validate_payload(self) -> ProviderEvent:
@@ -157,8 +169,15 @@ class ProviderEvent(BaseModel):
             raise ValueError("response_completed event requires response")
         if self.type is not ProviderEventType.RESPONSE_COMPLETED and self.response is not None:
             raise ValueError("only response_completed may carry a response")
-        if self.type is ProviderEventType.REQUEST_FAILED and not self.error_kind:
-            raise ValueError("request_failed event requires error_kind")
+        if (
+            self.type
+            in {
+                ProviderEventType.ATTEMPT_FAILED,
+                ProviderEventType.REQUEST_FAILED,
+            }
+            and not self.error_kind
+        ):
+            raise ValueError(f"{self.type.value} event requires error_kind")
         return self
 
 

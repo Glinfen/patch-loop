@@ -194,7 +194,7 @@ def test_competing_resume_returns_machine_readable_conflict(
         expected_version=task.version,
     )
     monkeypatch.setattr(
-        "patchloop.cli.DeepSeekProvider.from_env",
+        "patchloop.cli._provider_from_env",
         lambda: FakeProvider([ModelResponse(content="must not run")]),
     )
 
@@ -480,7 +480,7 @@ def test_session_start_and_approval_commands_use_persisted_services(
             ),
         ]
     )
-    monkeypatch.setattr("patchloop.cli.DeepSeekProvider.from_env", lambda: provider)
+    monkeypatch.setattr("patchloop.cli._provider_from_env", lambda: provider)
     prefix = ["session", "--repo", str(tmp_path)]
     created = runner.invoke(app, [*prefix, "create"])
     session_id = json.loads(created.stdout)["id"]
@@ -592,7 +592,7 @@ def test_session_recover_requires_separate_duplicate_risk_acknowledgement(
         lease_guard=guard,
     )
     store.release_execution(guard, now=datetime.now(UTC))
-    monkeypatch.setattr("patchloop.cli.DeepSeekProvider.from_env", lambda: FakeProvider([]))
+    monkeypatch.setattr("patchloop.cli._provider_from_env", lambda: FakeProvider([]))
     prefix = ["session", "--repo", str(tmp_path)]
 
     shown = runner.invoke(app, [*prefix, "recover", session.id])

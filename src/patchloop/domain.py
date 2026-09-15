@@ -126,6 +126,11 @@ class TaskReport(BaseModel):
     cost_usd: float = Field(default=0.0, ge=0)
     unknown_model_usage_calls: int = Field(default=0, ge=0)
     model_usage_exact: bool = True
+    provider_requests: int = Field(default=0, ge=0)
+    provider_attempts: int = Field(default=0, ge=0)
+    unknown_usage_attempts: int = Field(default=0, ge=0)
+    cost_status: str = Field(default="legacy", pattern=r"^(estimated|unknown|legacy)$")
+    reserved_cost_usd: float = Field(default=0.0, ge=0.0)
     cache_hit_tokens: int | None = Field(default=None, ge=0)
     cache_miss_tokens: int | None = Field(default=None, ge=0)
     cache_write_tokens: int | None = Field(default=None, ge=0)

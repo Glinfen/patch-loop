@@ -89,6 +89,7 @@ from patchloop.prompt_cache import (
 )
 from patchloop.providers.base import (
     ControlAction,
+    EncodedRequest,
     ModelMessage,
     ModelProvider,
     ModelResponse,
@@ -117,6 +118,7 @@ from patchloop.providers.contracts import (
 )
 from patchloop.providers.gateway import LegacyProviderAdapter
 from patchloop.providers.transport import TransportControlError
+from patchloop.providers.usage import UsageNormalizer
 from patchloop.sandbox import (
     LocalProcessSandbox,
     ManagedCommandIdentity,
@@ -180,6 +182,12 @@ class AgentRuntime:
         self._accounted_provider_request_ids: list[str] = []
         self._accounted_provider_attempt_ids: list[str] = []
         self._unknown_model_usage_steps: list[int] = []
+        self._provider_requests = 0
+        self._provider_attempts = 0
+        self._unknown_usage_attempts = 0
+        self._cost_status = "legacy"
+        self._reserved_cost_usd = 0.0
+        self._attempt_reservations: dict[str, float] = {}
         self._context_windows = 0
         self._context_compactions = 0
         self._max_context_tokens_used = 0
@@ -213,6 +221,12 @@ class AgentRuntime:
         self._accounted_provider_request_ids = []
         self._accounted_provider_attempt_ids = []
         self._unknown_model_usage_steps = []
+        self._provider_requests = 0
+        self._provider_attempts = 0
+        self._unknown_usage_attempts = 0
+        self._cost_status = "legacy"
+        self._reserved_cost_usd = 0.0
+        self._attempt_reservations = {}
         self._context_windows = 0
         self._context_compactions = 0
         self._max_context_tokens_used = 0
@@ -330,6 +344,12 @@ class AgentRuntime:
         self._accounted_provider_request_ids = list(checkpoint.accounted_provider_request_ids)
         self._accounted_provider_attempt_ids = list(checkpoint.accounted_provider_attempt_ids)
         self._unknown_model_usage_steps = list(checkpoint.unknown_model_usage_steps)
+        self._provider_requests = checkpoint.provider_requests
+        self._provider_attempts = checkpoint.provider_attempts
+        self._unknown_usage_attempts = checkpoint.unknown_usage_attempts
+        self._cost_status = checkpoint.cost_status
+        self._reserved_cost_usd = checkpoint.reserved_cost_usd
+        self._attempt_reservations = {}
         self._prompt_cache = self._restore_prompt_cache(task, checkpoint)
         self._context_windows = checkpoint.context_windows
         self._context_compactions = checkpoint.context_compactions
@@ -702,8 +722,19 @@ class AgentRuntime:
                 controlled = self._apply_pending_control(task)
                 if controlled is not None:
                     return controlled
-                if step_index not in self._accounted_model_response_steps:
+                usage_accounted = provider_request_id in self._accounted_provider_request_ids
+                if (
+                    not self._accounted_provider_request_ids
+                    and step_index in self._accounted_model_response_steps
+                ):
+                    usage_accounted = True
+                if not usage_accounted:
                     self._record_model_usage(response.usage)
+                    if (
+                        response.usage.input_tokens_reported is False
+                        or response.usage.output_tokens_reported is False
+                    ) and step_index not in self._unknown_model_usage_steps:
+                        self._unknown_model_usage_steps.append(step_index)
                     self._accounted_model_response_steps.append(step_index)
                     if (
                         self._provider_request_exists(provider_request_id)
@@ -725,6 +756,11 @@ class AgentRuntime:
                             "accounted_provider_attempt_ids": list(
                                 self._accounted_provider_attempt_ids
                             ),
+                            "provider_requests": self._provider_requests,
+                            "provider_attempts": self._provider_attempts,
+                            "unknown_usage_attempts": self._unknown_usage_attempts,
+                            "cost_status": self._cost_status,
+                            "reserved_cost_usd": self._reserved_cost_usd,
                             "elapsed_seconds": elapsed_before + (monotonic() - started),
                             "updated_at": utc_now(),
                         }
@@ -744,6 +780,7 @@ class AgentRuntime:
                     task,
                     {
                         "step": step_index,
+                        "request_id": provider_request_id,
                         "content": response.content,
                         "tool_calls": [
                             call.model_dump(mode="json") for call in response.tool_calls
@@ -1742,7 +1779,11 @@ class AgentRuntime:
         self._emit(
             "provider.paused",
             task,
-            {"error_kind": error.kind.value, "message": error.safe_message},
+            {
+                "error_kind": error.kind.value,
+                "message": error.safe_message,
+                "report": task.report.model_dump(mode="json"),
+            },
         )
         return task
 
@@ -1821,9 +1862,20 @@ class AgentRuntime:
         memory_snapshot = (
             self._memory_manager.snapshot() if self._memory_manager is not None else None
         )
-        if self._prompt_cache is None:
-            raise RuntimeError("prompt-cache coordinator was not initialized")
-        cache_usage = self._prompt_cache.report_fields()
+        cache_usage = (
+            self._prompt_cache.report_fields()
+            if self._prompt_cache is not None
+            else {
+                "cache_hit_tokens": None,
+                "cache_miss_tokens": None,
+                "cache_write_tokens": None,
+                "cache_hit_rate": None,
+                "cache_usage_reported_calls": 0,
+                "cache_usage_unreported_calls": 0,
+                "cache_usage_inconsistent_calls": 0,
+                "cache_write_reported_calls": 0,
+            }
+        )
         return TaskReport(
             summary=summary,
             changed_files=self.gateway.context.changes.changed_paths(),
@@ -1838,6 +1890,11 @@ class AgentRuntime:
             cost_usd=self._cost_usd,
             unknown_model_usage_calls=len(self._unknown_model_usage_steps),
             model_usage_exact=not self._unknown_model_usage_steps,
+            provider_requests=self._provider_requests,
+            provider_attempts=self._provider_attempts,
+            unknown_usage_attempts=self._unknown_usage_attempts,
+            cost_status=self._cost_status,
+            reserved_cost_usd=self._reserved_cost_usd,
             cache_hit_tokens=cache_usage["cache_hit_tokens"],
             cache_miss_tokens=cache_usage["cache_miss_tokens"],
             cache_write_tokens=cache_usage["cache_write_tokens"],
@@ -1925,7 +1982,7 @@ class AgentRuntime:
             return f"input token budget exceeded ({task.budget.max_input_tokens})"
         if self._output_tokens > task.budget.max_output_tokens:
             return f"output token budget exceeded ({task.budget.max_output_tokens})"
-        if self._cost_usd > task.budget.max_cost_usd:
+        if self._cost_usd + self._reserved_cost_usd > task.budget.max_cost_usd:
             return f"cost budget exceeded (${task.budget.max_cost_usd:.4f})"
         return None
 
@@ -1933,6 +1990,10 @@ class AgentRuntime:
         self._input_tokens += usage.input_tokens
         self._output_tokens += usage.output_tokens
         self._cost_usd += usage.cost_usd
+        if usage.cost_status == "unknown":
+            self._cost_status = "unknown"
+        elif self._cost_status != "unknown" and usage.cost_status == "estimated":
+            self._cost_status = "estimated"
 
     def _request_model(self, task: Task, request: ProviderRequest) -> ModelResponse:
         """Run or recover one logical provider request without committing partial output."""
@@ -1960,6 +2021,18 @@ class AgentRuntime:
                 request.model_dump(mode="json", exclude={"request_id"})
             ),
         )
+        request_existed = self._provider_request_exists(request.request_id)
+        if not request_existed or (
+            request.request_id not in self._accounted_provider_request_ids
+            and self._provider_requests <= len(self._accounted_provider_request_ids)
+        ):
+            self._provider_requests += 1
+        if not request_existed:
+            self._emit(
+                "provider.request.started",
+                task,
+                {"request_id": request.request_id, "purpose": request.purpose.value},
+            )
         if self.state_store is not None:
             guard = self._lease_guard()
             if guard is None:
@@ -1971,6 +2044,7 @@ class AgentRuntime:
             }:
                 if stored.response is None:
                     raise RuntimeError("completed provider request has no response")
+                self._release_succeeded_reservations(request.request_id)
                 return ContinuationCodec().validate_for_replay(
                     stored.response,
                     binding=self.provider_binding,
@@ -1979,13 +2053,37 @@ class AgentRuntime:
                 )
 
         active_attempt_id: str | None = None
+        budget_error: ProviderError | None = None
 
         def observe(event: ProviderEvent) -> None:
-            nonlocal active_attempt_id
+            nonlocal active_attempt_id, budget_error
             if event.type is ProviderEventType.ATTEMPT_STARTED:
                 if event.attempt_id is None:
                     raise RuntimeError("attempt_started event has no attempt ID")
                 active_attempt_id = event.attempt_id
+                reservation = self._provider_reservation(request)
+                if (
+                    self._cost_usd + self._reserved_cost_usd + reservation
+                    > task.budget.max_cost_usd
+                ):
+                    budget_error = ProviderError(
+                        ProviderErrorKind.BUDGET_EXCEEDED,
+                        f"provider cost reservation exceeds task budget "
+                        f"(${task.budget.max_cost_usd:.4f})",
+                    )
+                    raise TransportControlError("budget")
+                self._provider_attempts += 1
+                self._reserved_cost_usd += reservation
+                self._attempt_reservations[event.attempt_id] = reservation
+                self._emit(
+                    "provider.attempt.started",
+                    task,
+                    {
+                        "request_id": request.request_id,
+                        "attempt_id": event.attempt_id,
+                        "budget_reservation_usd": reservation,
+                    },
+                )
                 if self.state_store is not None:
                     try:
                         self._assert_ownership()
@@ -2001,11 +2099,24 @@ class AgentRuntime:
                                 request_id=request.request_id,
                                 execution_id=guard.execution_id,
                                 ordinal=ordinal,
+                                budget_reservation_usd=reservation,
                             ),
                             lease_guard=guard,
                         )
                     except LeaseLost:
                         raise TransportControlError("lease_lost") from None
+            elif event.type is ProviderEventType.ATTEMPT_FAILED:
+                if active_attempt_id is not None:
+                    self._finish_provider_attempt(
+                        active_attempt_id,
+                        ProviderError(
+                            event.error_kind or ProviderErrorKind.CONNECTION,
+                            event.safe_message or "provider attempt failed",
+                            request_sent=event.request_sent is True,
+                            usage_unknown=event.usage_unknown is True,
+                        ),
+                    )
+                    active_attempt_id = None
             if self._provider_event_observer is not None:
                 self._provider_event_observer(event)
 
@@ -2017,10 +2128,20 @@ class AgentRuntime:
                 on_event=observe,
             )
             self._assert_ownership()
+            if self.state_store is None and active_attempt_id is not None:
+                if response.usage.cost_status == "unknown":
+                    self._unknown_usage_attempts += 1
+                    self._cost_status = "unknown"
+                else:
+                    reservation = self._attempt_reservations.pop(active_attempt_id, 0.0)
+                    self._reserved_cost_usd = max(0.0, self._reserved_cost_usd - reservation)
             if self.provider_binding.profile_id == "legacy":
                 response = response.model_copy(update={"request_id": None})
             return response
         except ProviderError as exc:
+            if isinstance(exc, TransportControlError) and exc.action == "budget":
+                assert budget_error is not None
+                raise budget_error from None
             if not (isinstance(exc, TransportControlError) and exc.action == "lease_lost"):
                 self._finish_provider_attempt(active_attempt_id, exc)
             raise
@@ -2039,6 +2160,7 @@ class AgentRuntime:
         )
         if committed.response is None:
             raise RuntimeError("committed provider response is missing")
+        self._release_succeeded_reservations(request_id)
         return committed.response
 
     def _finish_provider_attempt(
@@ -2046,32 +2168,38 @@ class AgentRuntime:
         attempt_id: str | None,
         error: ProviderError,
     ) -> None:
-        if self.state_store is None or attempt_id is None:
+        if attempt_id is None:
             return
-        guard = self._lease_guard()
-        if guard is None:
-            return
-        status = (
-            ProviderAttemptStatus.CANCELLED
-            if error.kind is ProviderErrorKind.CANCELLED
-            else ProviderAttemptStatus.FAILED
-        )
-        usage_status = (
-            ProviderUsageStatus.UNKNOWN
-            if error.usage_unknown or error.request_sent
-            else ProviderUsageStatus.UNREPORTED
-        )
-        self.state_store.finish_provider_attempt(
-            attempt_id,
-            ProviderAttemptOutcome(
-                status=status,
-                error_kind=error.kind.value,
-                safe_message=error.safe_message,
-                usage_status=usage_status,
-                request_sent=error.request_sent,
-            ),
-            lease_guard=guard,
-        )
+        reservation = self._attempt_reservations.pop(attempt_id, 0.0)
+        if self.state_store is not None and (guard := self._lease_guard()) is not None:
+            status = (
+                ProviderAttemptStatus.CANCELLED
+                if error.kind is ProviderErrorKind.CANCELLED
+                else ProviderAttemptStatus.FAILED
+            )
+            usage_status = (
+                ProviderUsageStatus.UNKNOWN
+                if error.request_sent
+                else ProviderUsageStatus.UNREPORTED
+            )
+            finished = self.state_store.finish_provider_attempt(
+                attempt_id,
+                ProviderAttemptOutcome(
+                    status=status,
+                    error_kind=error.kind.value,
+                    safe_message=error.safe_message,
+                    usage_status=usage_status,
+                    request_sent=error.request_sent,
+                ),
+                lease_guard=guard,
+            )
+            reservation = max(reservation, finished.budget_reservation_usd)
+        if error.request_sent:
+            self._attempt_reservations[attempt_id] = reservation
+            self._unknown_usage_attempts += 1
+            self._cost_status = "unknown"
+        else:
+            self._reserved_cost_usd = max(0.0, self._reserved_cost_usd - reservation)
 
     def _provider_request_control(self) -> ControlAction | None:
         heartbeat = self._heartbeat
@@ -2092,7 +2220,45 @@ class AgentRuntime:
                 attempt.status is not ProviderAttemptStatus.RUNNING
                 and attempt.attempt_id not in self._accounted_provider_attempt_ids
             ):
+                if self._provider_attempts <= len(self._accounted_provider_attempt_ids):
+                    self._provider_attempts += 1
                 self._accounted_provider_attempt_ids.append(attempt.attempt_id)
+
+    def _release_succeeded_reservations(self, request_id: str) -> None:
+        if self.state_store is None:
+            return
+        for attempt in self.state_store.list_provider_attempts(request_id):
+            usage_unknown = attempt.usage_status is ProviderUsageStatus.UNKNOWN or (
+                attempt.status is ProviderAttemptStatus.SUCCEEDED
+                and (attempt.usage is None or attempt.usage.cost_status == "unknown")
+            )
+            if usage_unknown:
+                if (
+                    attempt.attempt_id not in self._attempt_reservations
+                    and attempt.attempt_id not in self._accounted_provider_attempt_ids
+                ):
+                    self._reserved_cost_usd += attempt.budget_reservation_usd
+                    self._attempt_reservations[attempt.attempt_id] = attempt.budget_reservation_usd
+                    self._unknown_usage_attempts += 1
+                self._cost_status = "unknown"
+                continue
+            if attempt.status is not ProviderAttemptStatus.SUCCEEDED:
+                continue
+            reservation = self._attempt_reservations.pop(
+                attempt.attempt_id, attempt.budget_reservation_usd
+            )
+            self._reserved_cost_usd = max(0.0, self._reserved_cost_usd - reservation)
+
+    def _provider_reservation(self, request: ProviderRequest) -> float:
+        pricing = self.provider_binding.pricing
+        if pricing is None:
+            return 0.0
+        body = request.model_dump(mode="json", exclude={"request_id"})
+        body["max_output_tokens"] = (
+            request.max_output_tokens or self.provider_binding.generation.max_output_tokens
+        )
+        encoded = EncodedRequest(path="/budget-reservation", body=body)
+        return UsageNormalizer.reserve(encoded, body["max_output_tokens"], pricing)
 
     def _provider_request_exists(self, request_id: str) -> bool:
         if self.state_store is None:
@@ -2185,8 +2351,13 @@ class AgentRuntime:
             )
             if self.state_store is not None:
                 response = self._commit_provider_response(provider_request_id, response)
-            self._record_model_usage(response.usage)
             if provider_request_id not in self._accounted_provider_request_ids:
+                self._record_model_usage(response.usage)
+                if (
+                    response.usage.input_tokens_reported is False
+                    or response.usage.output_tokens_reported is False
+                ) and step_index not in self._unknown_model_usage_steps:
+                    self._unknown_model_usage_steps.append(step_index)
                 self._accounted_provider_request_ids.append(provider_request_id)
                 self._account_provider_attempts(provider_request_id)
             observation = prompt_cache.observe_compression_response(prepared, response.usage)
@@ -2282,6 +2453,11 @@ class AgentRuntime:
             accounted_provider_request_ids=list(self._accounted_provider_request_ids),
             accounted_provider_attempt_ids=list(self._accounted_provider_attempt_ids),
             unknown_model_usage_steps=list(self._unknown_model_usage_steps),
+            provider_requests=self._provider_requests,
+            provider_attempts=self._provider_attempts,
+            unknown_usage_attempts=self._unknown_usage_attempts,
+            cost_status=self._cost_status,
+            reserved_cost_usd=self._reserved_cost_usd,
             next_step_index=next_step_index,
             messages=messages,
             tool_specifications=(
@@ -2956,7 +3132,17 @@ class AgentRuntime:
                     ProviderErrorKind.CONFIGURATION,
                     "runtime provider does not match the task provider binding",
                 )
+            if current.profile_id != "legacy" and current.pricing is None:
+                raise ProviderError(
+                    ProviderErrorKind.PRICING_REQUIRED,
+                    "provider pricing is required when a task has a dollar budget",
+                )
             return task
+        if self.provider_binding.profile_id != "legacy" and self.provider_binding.pricing is None:
+            raise ProviderError(
+                ProviderErrorKind.PRICING_REQUIRED,
+                "provider pricing is required when a task has a dollar budget",
+            )
         bound = task.model_copy(
             update={
                 "execution": task.execution.model_copy(update={"provider": self.provider_binding})

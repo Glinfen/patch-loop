@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,6 +11,7 @@ from enum import IntEnum
 from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Never, Optional, cast
+from uuid import uuid4
 
 import typer
 
@@ -67,10 +69,25 @@ from patchloop.persistence_contracts import (
     StaleVersion,
     SubmissionConflict,
 )
-from patchloop.providers import DeepSeekProvider, ModelProvider
+from patchloop.providers import (
+    CredentialResolver,
+    DeepSeekProvider,
+    ModelMessage,
+    ModelProvider,
+    ProfileResolver,
+    ProviderBinding,
+    ProviderError,
+    ProviderEvent,
+    ProviderEventObserver,
+    ProviderFactory,
+    ProviderRequest,
+    ProviderRequestPurpose,
+)
+from patchloop.providers.base import ProviderGateway as ProviderGatewayPort
+from patchloop.providers.transport import HttpxTransport
 from patchloop.runtime import AgentRuntime
 from patchloop.sandbox import DockerSandbox, DockerSandboxConfig, LocalProcessSandbox
-from patchloop.security import RiskLevel
+from patchloop.security import RiskLevel, SecretRedactor
 from patchloop.session import SessionService
 from patchloop.storage import ArtifactStore, TaskNotFoundError
 from patchloop.tools import (
@@ -97,11 +114,14 @@ app = typer.Typer(help="PatchLoop local-first coding agent runtime.", no_args_is
 task_app = typer.Typer(help="Create and inspect local tasks.", no_args_is_help=True)
 session_app = typer.Typer(help="Manage persistent PatchLoop sessions.", no_args_is_help=True)
 approval_app = typer.Typer(help="Inspect and decide persistent approvals.", no_args_is_help=True)
+provider_app = typer.Typer(help="Inspect and validate provider profiles.", no_args_is_help=True)
 app.add_typer(task_app, name="task")
 app.add_typer(session_app, name="session")
 app.add_typer(approval_app, name="approval")
+app.add_typer(provider_app, name="provider")
 
 CLI_SCHEMA_VERSION = "1.0"
+type RuntimeProvider = ModelProvider | ProviderGatewayPort
 
 
 class CliExitCode(IntEnum):
@@ -245,6 +265,13 @@ def _command_error(exc: Exception) -> Never:
     elif isinstance(exc, CliUsageError):
         category = "usage_error"
         exit_code = CliExitCode.USAGE_ERROR
+    elif isinstance(exc, ProviderError):
+        category = exc.kind.value
+        exit_code = (
+            CliExitCode.USAGE_ERROR
+            if exc.kind.value in {"configuration", "pricing_required"}
+            else CliExitCode.EXECUTION_FAILED
+        )
     elif isinstance(exc, InvalidRepository):
         category = "invalid_repository"
         exit_code = CliExitCode.EXECUTION_FAILED
@@ -277,20 +304,78 @@ def _command_error(exc: Exception) -> Never:
     raise typer.Exit(code=int(exit_code)) from None
 
 
-def _provider_from_env() -> ModelProvider:
+def _provider_from_env() -> RuntimeProvider:
+    """Resolve the legacy environment entry point through the profile gateway."""
+
     try:
-        return DeepSeekProvider.from_env()
-    except ValueError as exc:
+        binding = ProfileResolver().resolve_legacy_environment()
+        credential = CredentialResolver().resolve(binding)
+        transport = HttpxTransport(
+            binding.base_url,
+            credential=credential,
+            config=binding.transport,
+        )
+        return ProviderFactory().create(binding, transport)
+    except (ProviderError, ValueError) as exc:
         raise CliUsageError(str(exc)) from exc
+
+
+def _provider_binding(provider: RuntimeProvider) -> ProviderBinding | None:
+    gateway = getattr(provider, "gateway", provider)
+    binding = getattr(gateway, "binding", None)
+    return binding if isinstance(binding, ProviderBinding) else None
+
+
+def _configured_provider(
+    profile: str,
+    *,
+    model: str | None = None,
+    config_path: Path | None = None,
+    env_file: Path | None = None,
+) -> tuple[RuntimeProvider, ProviderBinding]:
+    binding = ProfileResolver().resolve(profile, model, config_path, env_file)
+    credential = CredentialResolver().resolve(binding, env_file=env_file)
+    transport = HttpxTransport(
+        binding.base_url,
+        credential=credential,
+        config=binding.transport,
+    )
+    return ProviderFactory().create(binding, transport), binding
+
+
+def _selected_provider(
+    profile: str | None,
+    *,
+    model: str | None = None,
+    config_path: Path | None = None,
+    env_file: Path | None = None,
+) -> tuple[RuntimeProvider, ProviderBinding | None]:
+    if profile is None and model is None and config_path is None and env_file is None:
+        provider = _provider_from_env()
+        return provider, _provider_binding(provider)
+    selected_profile = profile or "deepseek"
+    return _configured_provider(
+        selected_profile,
+        model=model,
+        config_path=config_path,
+        env_file=env_file,
+    )
 
 
 def _session_runtime_service(
     services: WorkspaceServices,
     task: Task,
     *,
-    provider: ModelProvider | None = None,
+    provider: RuntimeProvider | None = None,
+    provider_event_observer: ProviderEventObserver | None = None,
 ) -> SessionService:
-    provider = _provider_from_env() if provider is None else provider
+    if provider is None:
+        binding = task.execution.provider
+        provider = (
+            ProviderFactory().create(binding)
+            if binding is not None and binding.profile_id != "legacy"
+            else _provider_from_env()
+        )
     sandbox = _create_sandbox(
         task.execution.sandbox_backend,
         task.execution.sandbox_image,
@@ -302,8 +387,95 @@ def _session_runtime_service(
         trace,
         _tool_policy(task),
     )
-    runtime = AgentRuntime(provider, gateway, trace, services.store)
+    runtime = AgentRuntime(
+        provider,
+        gateway,
+        trace,
+        services.store,
+        provider_event_observer=provider_event_observer,
+    )
     return SessionService(services.store, runtime)
+
+
+class _ProviderEventWriter:
+    """Emit safe JSONL lifecycle events without exposing partial secret fragments."""
+
+    def __init__(self) -> None:
+        self.redactor = SecretRedactor()
+        self._text: list[str] = []
+        self._last_text_event: ProviderEvent | None = None
+
+    def __call__(self, event: ProviderEvent) -> None:
+        event_type = event.type.value
+        if event_type == "text_delta":
+            self._text.append(event.delta or "")
+            self._last_text_event = event
+            return
+        self.flush()
+        payload: dict[str, object] = {
+            "version": CLI_SCHEMA_VERSION,
+            "type": "reasoning_status" if event_type == "reasoning_delta" else event_type,
+            "request_id": event.request_id,
+            "attempt_id": event.attempt_id,
+            "sequence": event.sequence,
+        }
+        usage = event.usage
+        if usage is not None:
+            payload["usage"] = usage.model_dump(mode="json")
+        safe_message = event.safe_message
+        if safe_message:
+            payload["safe_message"] = self.redactor.redact_text(str(safe_message))
+        _echo_json_line(payload)
+
+    def flush(self) -> None:
+        if not self._text or self._last_text_event is None:
+            return
+        event = self._last_text_event
+        _echo_json_line(
+            {
+                "version": CLI_SCHEMA_VERSION,
+                "type": "text_delta",
+                "request_id": event.request_id,
+                "attempt_id": event.attempt_id,
+                "sequence": event.sequence,
+                "delta": self.redactor.redact_text("".join(self._text)),
+            }
+        )
+        self._text.clear()
+        self._last_text_event = None
+
+
+class _HumanProviderWriter:
+    """Render safe lifecycle progress while buffering text across chunk boundaries."""
+
+    def __init__(self) -> None:
+        self.redactor = SecretRedactor()
+        self._text: list[str] = []
+        self._reasoning_announced = False
+
+    def __call__(self, event: ProviderEvent) -> None:
+        if event.type.value == "text_delta":
+            self._text.append(event.delta or "")
+        elif event.type.value == "reasoning_delta" and not self._reasoning_announced:
+            typer.echo("[provider] reasoning", err=True)
+            self._reasoning_announced = True
+        elif event.type.value in {"request_started", "attempt_started", "request_failed"}:
+            typer.echo(f"[provider] {event.type.value}", err=True)
+        elif event.type.value == "response_completed":
+            self.flush()
+
+    def flush(self) -> None:
+        if self._text:
+            typer.echo(self.redactor.redact_text("".join(self._text)))
+            self._text.clear()
+
+
+def _echo_human_task(task: Task) -> None:
+    typer.echo(f"status: {_effective_task_status(task)}")
+    if task.result:
+        typer.echo(task.result)
+    elif task.report is not None:
+        typer.echo(task.report.summary)
 
 
 def _tool_policy(task: Task) -> ToolPolicy:
@@ -387,6 +559,9 @@ def _activity_projection(services: WorkspaceServices, task: Task) -> list[dict[s
     replay = TaskReplay.from_events(task.id, events)
     visible = {
         "model.completed",
+        "provider.request.started",
+        "provider.attempt.started",
+        "provider.paused",
         "tool.completed",
         "tool.replayed",
         "approval.waiting",
@@ -641,6 +816,98 @@ def _echo_task_result(
         raise typer.Exit(code=int(exit_code))
 
 
+def _provider_projection(binding: ProviderBinding) -> dict[str, object]:
+    payload = binding.model_dump(mode="json")
+    payload["credential_configured"] = binding.auth.value == "none" or (
+        binding.credential_env is not None and bool(os.environ.get(binding.credential_env))
+    )
+    payload["pricing_status"] = "configured" if binding.pricing is not None else "missing"
+    return payload
+
+
+@provider_app.command("list")
+def list_providers(
+    provider_config: Annotated[Path | None, typer.Option("--provider-config")] = None,
+) -> None:
+    """List locally configured provider profiles without connecting."""
+
+    try:
+        bindings = ProfileResolver().list_bindings(provider_config)
+    except ProviderError as exc:
+        _command_error(exc)
+    _echo_json(
+        {
+            "schema_version": CLI_SCHEMA_VERSION,
+            "items": [_provider_projection(binding) for binding in bindings],
+        }
+    )
+
+
+@provider_app.command("show")
+def show_provider(
+    profile: Annotated[str, typer.Argument()],
+    model: Annotated[str | None, typer.Option("--model")] = None,
+    provider_config: Annotated[Path | None, typer.Option("--provider-config")] = None,
+) -> None:
+    """Show one resolved local binding without reading its credential value."""
+
+    try:
+        binding = ProfileResolver().resolve(profile, model, provider_config)
+    except ProviderError as exc:
+        _command_error(exc)
+    _echo_json({"schema_version": CLI_SCHEMA_VERSION, "provider": _provider_projection(binding)})
+
+
+@provider_app.command("check")
+def check_provider(
+    profile: Annotated[str, typer.Argument()] = "deepseek",
+    model: Annotated[str | None, typer.Option("--model")] = None,
+    provider_config: Annotated[Path | None, typer.Option("--provider-config")] = None,
+    env_file: Annotated[Path | None, typer.Option("--env-file")] = None,
+    connect: Annotated[
+        bool,
+        typer.Option(help="Send one minimal request; disabled by default."),
+    ] = False,
+) -> None:
+    """Validate a provider locally, optionally performing an explicit connection check."""
+
+    try:
+        binding = ProfileResolver().resolve(profile, model, provider_config, env_file)
+        data: dict[str, object] = {
+            "schema_version": CLI_SCHEMA_VERSION,
+            "provider": _provider_projection(binding),
+            "connected": False,
+        }
+        if connect:
+            gateway, _ = _configured_provider(
+                profile,
+                model=model,
+                config_path=provider_config,
+                env_file=env_file,
+            )
+            response = cast(ProviderGatewayPort, gateway).complete_request(
+                ProviderRequest(
+                    request_id=f"provider-check-{uuid4().hex}",
+                    task_id="provider-check",
+                    step_index=0,
+                    purpose=ProviderRequestPurpose.AGENT_STEP,
+                    messages=(ModelMessage(role="user", content="Reply with OK."),),
+                    max_output_tokens=1,
+                )
+            )
+            data.update(
+                {
+                    "connected": True,
+                    "request_id": response.request_id,
+                    "finish_reason": response.finish_reason,
+                    "usage": response.usage.model_dump(mode="json"),
+                }
+            )
+    except (ProviderError, ValueError) as exc:
+        _command_error(exc)
+    _echo_json(data)
+
+
 @session_app.command("create")
 def create_session(context: typer.Context) -> None:
     """Create a persistent Session for this workspace without starting work."""
@@ -735,6 +1002,10 @@ def start_session_task(
     sandbox: Annotated[
         str, typer.Option(help="Command sandbox backend: docker or local.")
     ] = "docker",
+    provider_profile: Annotated[str | None, typer.Option("--provider")] = None,
+    model: Annotated[str | None, typer.Option("--model")] = None,
+    provider_config: Annotated[Path | None, typer.Option("--provider-config")] = None,
+    env_file: Annotated[Path | None, typer.Option("--env-file")] = None,
 ) -> None:
     """Create the Session's active Task and run it until the next boundary."""
 
@@ -744,7 +1015,17 @@ def start_session_task(
         permissions.append(PermissionLevel.WRITE.value)
     if allow_execute:
         permissions.append(PermissionLevel.EXECUTE.value)
+    event_writer = None if services.json_output else _HumanProviderWriter()
     try:
+        active_task = services.session.active_task(session_id)
+        if active_task is not None:
+            raise LeaseConflict(session_id, active_task.id)
+        provider, binding = _selected_provider(
+            provider_profile,
+            model=model,
+            config_path=provider_config,
+            env_file=env_file,
+        )
         task = services.session.start_task(
             session_id,
             goal,
@@ -752,17 +1033,44 @@ def start_session_task(
                 allowed_permissions=permissions,
                 non_interactive=True,
                 sandbox_backend=sandbox,
+                provider=binding,
             ),
         )
-    except (ContractError, KeyError, OSError, TaskNotFoundError, ValueError) as exc:
+    except (
+        ContractError,
+        KeyError,
+        OSError,
+        ProviderError,
+        TaskNotFoundError,
+        ValueError,
+    ) as exc:
         _command_error(exc)
     try:
-        result = _session_runtime_service(services, task).resume(session_id)
+        result = _session_runtime_service(
+            services,
+            task,
+            provider=provider,
+            provider_event_observer=event_writer,
+        ).resume(session_id)
     except KeyboardInterrupt:
         _pause_interrupted_session(services, session_id)
-    except (ContractError, KeyError, OSError, RuntimeError, TaskNotFoundError, ValueError) as exc:
+    except (
+        ContractError,
+        KeyError,
+        OSError,
+        ProviderError,
+        RuntimeError,
+        TaskNotFoundError,
+        ValueError,
+    ) as exc:
         _command_error(exc)
-    _echo_task_result(services, session_id, result, exit_for_state=True)
+    if event_writer is not None:
+        event_writer.flush()
+        _echo_human_task(result)
+        if (exit_code := _task_exit_code(result)) is not CliExitCode.SUCCESS:
+            raise typer.Exit(code=int(exit_code))
+    else:
+        _echo_task_result(services, session_id, result, exit_for_state=True)
 
 
 @session_app.command("send")
@@ -839,7 +1147,13 @@ def cancel_session(context: typer.Context, session_id: Annotated[str, typer.Argu
 
 
 @session_app.command("resume")
-def resume_session(context: typer.Context, session_id: Annotated[str, typer.Argument()]) -> None:
+def resume_session(
+    context: typer.Context,
+    session_id: Annotated[str, typer.Argument()],
+    legacy_provider: Annotated[str | None, typer.Option("--legacy-provider")] = None,
+    provider_config: Annotated[Path | None, typer.Option("--provider-config")] = None,
+    env_file: Annotated[Path | None, typer.Option("--env-file")] = None,
+) -> None:
     """Resume the active Task without changing its persisted authorization."""
 
     services = _services_from_context(context)
@@ -847,15 +1161,52 @@ def resume_session(context: typer.Context, session_id: Annotated[str, typer.Argu
         task = services.session.active_task(session_id)
         if task is None:
             raise ValueError(f"session {session_id} has no active task")
-    except (ContractError, KeyError, OSError, TaskNotFoundError, ValueError) as exc:
+        provider = None
+        if legacy_provider is not None:
+            if task.execution.provider is not None:
+                raise CliUsageError("provider override is forbidden for a bound task")
+            provider, binding = _configured_provider(
+                legacy_provider,
+                config_path=provider_config,
+                env_file=env_file,
+            )
+            task = task.model_copy(
+                update={"execution": task.execution.model_copy(update={"provider": binding})}
+            )
+    except (ContractError, KeyError, OSError, ProviderError, TaskNotFoundError, ValueError) as exc:
         _command_error(exc)
+    event_writer = None if services.json_output else _HumanProviderWriter()
     try:
-        result = _session_runtime_service(services, task).resume(session_id)
+        runtime_service = (
+            _session_runtime_service(services, task)
+            if provider is None and event_writer is None
+            else _session_runtime_service(
+                services,
+                task,
+                provider=provider,
+                provider_event_observer=event_writer,
+            )
+        )
+        result = runtime_service.resume(session_id)
     except KeyboardInterrupt:
         _pause_interrupted_session(services, session_id)
-    except (ContractError, KeyError, OSError, RuntimeError, TaskNotFoundError, ValueError) as exc:
+    except (
+        ContractError,
+        KeyError,
+        OSError,
+        ProviderError,
+        RuntimeError,
+        TaskNotFoundError,
+        ValueError,
+    ) as exc:
         _command_error(exc)
-    _echo_task_result(services, session_id, result, exit_for_state=True)
+    if event_writer is not None:
+        event_writer.flush()
+        _echo_human_task(result)
+        if (exit_code := _task_exit_code(result)) is not CliExitCode.SUCCESS:
+            raise typer.Exit(code=int(exit_code))
+    else:
+        _echo_task_result(services, session_id, result, exit_for_state=True)
 
 
 @session_app.command("close")
@@ -1916,6 +2267,13 @@ def run_task(
         str,
         typer.Option(help="Prompt layout: legacy (rollback) or stable (PCO-02)."),
     ] = "legacy",
+    provider_profile: Annotated[str | None, typer.Option("--provider")] = None,
+    model: Annotated[str | None, typer.Option("--model")] = None,
+    provider_config: Annotated[Path | None, typer.Option("--provider-config")] = None,
+    env_file: Annotated[Path | None, typer.Option("--env-file")] = None,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    events_jsonl: Annotated[bool, typer.Option("--events-jsonl")] = False,
+    human: Annotated[bool, typer.Option("--human")] = False,
 ) -> None:
     repository = repo.resolve()
     permissions = {PermissionLevel.READ}
@@ -1932,8 +2290,15 @@ def run_task(
         raise typer.Exit(code=2) from None
     services = _workspace_services(repository)
     try:
-        provider = _provider_from_env()
-    except CliUsageError as exc:
+        if sum((json_output, events_jsonl, human)) > 1:
+            raise CliUsageError("--json, --events-jsonl, and --human are mutually exclusive")
+        provider, binding = _selected_provider(
+            provider_profile,
+            model=model,
+            config_path=provider_config,
+            env_file=env_file,
+        )
+    except (CliUsageError, ProviderError) as exc:
         _command_error(exc)
     budget = TaskBudget(
         max_steps=max_steps,
@@ -1952,7 +2317,15 @@ def run_task(
         sandbox_backend=sandbox,
         sandbox_image=sandbox_image,
         prompt_cache_layout=cache_layout,
+        provider=binding,
     )
+    event_writer: ProviderEventObserver | None
+    if events_jsonl:
+        event_writer = _ProviderEventWriter()
+    elif human:
+        event_writer = _HumanProviderWriter()
+    else:
+        event_writer = None
     try:
         session = services.session.create(str(repository))
         task = services.session.start_task(
@@ -1961,14 +2334,55 @@ def run_task(
             budget=budget,
             execution=execution,
         )
-        result = _session_runtime_service(services, task, provider=provider).resume(session.id)
-    except (ContractError, KeyError, OSError, RuntimeError, TaskNotFoundError, ValueError) as exc:
+        result = _session_runtime_service(
+            services,
+            task,
+            provider=provider,
+            provider_event_observer=event_writer,
+        ).resume(session.id)
+    except (
+        ContractError,
+        KeyError,
+        OSError,
+        ProviderError,
+        RuntimeError,
+        TaskNotFoundError,
+        ValueError,
+    ) as exc:
         _command_error(exc)
     if result.report is not None:
         paths = ArtifactStore(_state_dir(repository) / "artifacts").save_report(result)
         for path in paths:
             services.store.record_artifact(task.id, path)
-    _echo_task_result(services, session.id, result, exit_for_state=True)
+    if events_jsonl:
+        assert isinstance(event_writer, _ProviderEventWriter)
+        event_writer.flush()
+        _echo_json_line(
+            {
+                "version": CLI_SCHEMA_VERSION,
+                "type": "result",
+                "request_id": None,
+                "attempt_id": None,
+                "sequence": services.session.get(session.id).event_sequence,
+                "data": _task_presentation(
+                    services,
+                    session.id,
+                    result,
+                    services.approval.list(result.id),
+                    services.recovery.pending(result.id),
+                ),
+            }
+        )
+        if (exit_code := _task_exit_code(result)) is not CliExitCode.SUCCESS:
+            raise typer.Exit(code=int(exit_code))
+    elif human:
+        assert isinstance(event_writer, _HumanProviderWriter)
+        event_writer.flush()
+        _echo_human_task(result)
+        if (exit_code := _task_exit_code(result)) is not CliExitCode.SUCCESS:
+            raise typer.Exit(code=int(exit_code))
+    else:
+        _echo_task_result(services, session.id, result, exit_for_state=True)
 
 
 @app.command("resume")
@@ -1978,22 +2392,41 @@ def resume_task(
         Path,
         typer.Option(exists=True, file_okay=False, resolve_path=True),
     ] = Path("."),
+    legacy_provider: Annotated[str | None, typer.Option("--legacy-provider")] = None,
+    provider_config: Annotated[Path | None, typer.Option("--provider-config")] = None,
+    env_file: Annotated[Path | None, typer.Option("--env-file")] = None,
 ) -> None:
     repository = repo.resolve()
     services = _workspace_services(repository)
     try:
-        provider = _provider_from_env()
-    except CliUsageError as exc:
-        _command_error(exc)
-    try:
         task = services.session.task(task_id)
-    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        provider = None
+        if legacy_provider is not None:
+            if task.execution.provider is not None:
+                raise CliUsageError("provider override is forbidden for a bound task")
+            provider, binding = _configured_provider(
+                legacy_provider,
+                config_path=provider_config,
+                env_file=env_file,
+            )
+            task = task.model_copy(
+                update={"execution": task.execution.model_copy(update={"provider": binding})}
+            )
+    except (ContractError, KeyError, ProviderError, TaskNotFoundError, ValueError) as exc:
         _command_error(exc)
     if task.status is not TaskStatus.RUNNING:
         _command_error(ValueError(f"task cannot resume from status: {task.status}"))
     try:
         result = _session_runtime_service(services, task, provider=provider).resume_task(task.id)
-    except (ContractError, KeyError, OSError, RuntimeError, TaskNotFoundError, ValueError) as exc:
+    except (
+        ContractError,
+        KeyError,
+        OSError,
+        ProviderError,
+        RuntimeError,
+        TaskNotFoundError,
+        ValueError,
+    ) as exc:
         _command_error(exc)
     if result.report is not None:
         paths = ArtifactStore(_state_dir(repository) / "artifacts").save_report(result)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeGuard
+from typing import Any, TypeGuard
 
 from patchloop.domain import ToolCall
 from patchloop.providers.base import (
@@ -23,10 +23,10 @@ from patchloop.providers.contracts import (
     ProviderContinuation,
     ProviderError,
     ProviderErrorKind,
-    ProviderPricing,
     ProviderProtocol,
 )
 from patchloop.providers.sse import SSEFrame
+from patchloop.providers.usage import UsageNormalizer
 
 
 class ChatCompletionsAdapter(ProviderAdapter):
@@ -544,78 +544,17 @@ def _parse_arguments(raw_arguments: Any) -> tuple[dict[str, Any], str | None]:
     return value, None
 
 
-def _parse_usage(raw_usage: Any, pricing: ProviderPricing | None) -> ModelUsage:
-    if raw_usage is None:
-        return _unknown_usage()
-    if not isinstance(raw_usage, dict):
-        raise _provider_error(ProviderErrorKind.PROTOCOL, "provider returned invalid usage data")
-
-    prompt_details = raw_usage.get("prompt_tokens_details", {})
-    if prompt_details is None:
-        prompt_details = {}
-    if not isinstance(prompt_details, dict):
-        raise _provider_error(
-            ProviderErrorKind.PROTOCOL, "provider returned invalid prompt usage details"
-        )
-
-    input_tokens = _usage_integer(raw_usage, "prompt_tokens")
-    output_tokens = _usage_integer(raw_usage, "completion_tokens")
-    cache_hit = _usage_integer(raw_usage, "prompt_cache_hit_tokens")
-    if cache_hit is None:
-        cache_hit = _usage_integer(prompt_details, "cached_tokens")
-    cache_miss = _usage_integer(raw_usage, "prompt_cache_miss_tokens")
-    cache_write = _usage_integer(raw_usage, "cache_write_tokens")
-    if cache_write is None:
-        cache_write = _usage_integer(raw_usage, "prompt_cache_write_tokens")
-
-    cost_status: Literal["estimated", "unknown"] = "unknown"
-    cost = 0.0
-    if pricing is not None and input_tokens is not None and output_tokens is not None:
-        if (
-            cache_hit is not None
-            and cache_miss is not None
-            and cache_hit + cache_miss == input_tokens
-        ):
-            cached_price = pricing.cached_input_per_million
-            input_cost = (
-                cache_hit
-                * (cached_price if cached_price is not None else pricing.input_per_million)
-                + cache_miss * pricing.input_per_million
-            )
-        else:
-            input_cost = input_tokens * pricing.input_per_million
-        cost = (input_cost + output_tokens * pricing.output_per_million) / 1_000_000
-        cost_status = "estimated"
-
-    return ModelUsage(
-        input_tokens=input_tokens or 0,
-        output_tokens=output_tokens or 0,
-        cost_usd=cost,
-        cache_hit_tokens=cache_hit,
-        cache_miss_tokens=cache_miss,
-        cache_write_tokens=cache_write,
-        input_tokens_reported=input_tokens is not None,
-        output_tokens_reported=output_tokens is not None,
-        cost_status=cost_status,
-        pricing_version=pricing.version if pricing is not None else None,
+def _parse_usage(raw_usage: Any, pricing: Any) -> ModelUsage:
+    return UsageNormalizer.normalize(
+        ProviderProtocol.CHAT_COMPLETIONS,
+        raw_usage,
+        pricing,
+        legacy_pricing=(pricing is not None and pricing.version == "legacy-deepseek-default"),
     )
-
-
-def _usage_integer(usage: dict[str, Any], field_name: str) -> int | None:
-    if field_name not in usage or usage[field_name] is None:
-        return None
-    value = usage[field_name]
-    if not _is_nonnegative_int(value):
-        raise _provider_error(ProviderErrorKind.PROTOCOL, "provider returned invalid token usage")
-    return value
 
 
 def _unknown_usage() -> ModelUsage:
-    return ModelUsage(
-        input_tokens_reported=False,
-        output_tokens_reported=False,
-        cost_status="unknown",
-    )
+    return UsageNormalizer.unknown()
 
 
 def _usage_was_reported(usage: ModelUsage) -> bool:

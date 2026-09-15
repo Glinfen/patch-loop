@@ -87,6 +87,8 @@ class _EventPublisher:
             response=response,
             error_kind=error.kind.value if error is not None else None,
             safe_message=error.safe_message if error is not None else None,
+            request_sent=error.request_sent if error is not None else None,
+            usage_unknown=error.usage_unknown if error is not None else None,
         )
         self._publish(event)
 
@@ -221,6 +223,11 @@ class ProviderGateway(ProviderGatewayPort):
                             deadline=deadline,
                         )
                     except ProviderError as error:
+                        publisher.emit(
+                            ProviderEventType.ATTEMPT_FAILED,
+                            attempt_id=attempt_id,
+                            error=error,
+                        )
                         if attempt_number < additional_attempts and self._should_retry(error):
                             delay = self._retry_delay(attempt_number, error.retry_after)
                             await self._wait_backoff(delay, control=control, deadline=deadline)
@@ -654,6 +661,7 @@ class LegacyProviderAdapter:
     ) -> ModelResponse:
         publisher = _EventPublisher(request.request_id, on_event)
         attempt_id = _attempt_id()
+        attempt_started = False
         try:
             publisher.emit(ProviderEventType.REQUEST_STARTED)
             if request.tools and request.output_schema is not None:
@@ -665,6 +673,7 @@ class LegacyProviderAdapter:
                 _check_schema(request.output_schema)
             _check_legacy_control(control)
             publisher.emit(ProviderEventType.ATTEMPT_STARTED, attempt_id=attempt_id)
+            attempt_started = True
             response = self.provider.complete(list(request.messages), list(request.tools))
             if self.check_control_after_complete:
                 _check_legacy_control(control)
@@ -725,6 +734,12 @@ class LegacyProviderAdapter:
         except ProviderError as error:
             if error.kind is ProviderErrorKind.OBSERVER:
                 raise
+            if attempt_started:
+                publisher.emit(
+                    ProviderEventType.ATTEMPT_FAILED,
+                    attempt_id=attempt_id,
+                    error=error,
+                )
             publisher.emit(ProviderEventType.REQUEST_FAILED, error=error)
             raise
         except Exception:
@@ -734,6 +749,12 @@ class LegacyProviderAdapter:
                 request_sent=True,
                 usage_unknown=True,
             )
+            if attempt_started:
+                publisher.emit(
+                    ProviderEventType.ATTEMPT_FAILED,
+                    attempt_id=attempt_id,
+                    error=legacy_error,
+                )
             publisher.emit(ProviderEventType.REQUEST_FAILED, error=legacy_error)
             raise legacy_error from None
 

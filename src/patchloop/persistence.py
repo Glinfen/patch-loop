@@ -754,6 +754,11 @@ class RuntimeCheckpoint(BaseModel):
     accounted_provider_request_ids: list[str] = Field(default_factory=list)
     accounted_provider_attempt_ids: list[str] = Field(default_factory=list)
     unknown_model_usage_steps: list[int] = Field(default_factory=list)
+    provider_requests: int = Field(default=0, ge=0)
+    provider_attempts: int = Field(default=0, ge=0)
+    unknown_usage_attempts: int = Field(default=0, ge=0)
+    cost_status: str = Field(default="legacy", pattern=r"^(estimated|unknown|legacy)$")
+    reserved_cost_usd: float = Field(default=0.0, ge=0.0)
     next_step_index: int = Field(ge=0)
     messages: list[ModelMessage]
     tool_specifications: list[ToolSpec] | None = None

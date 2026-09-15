@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeGuard
+from typing import Any, TypeGuard
 
 from patchloop.domain import ToolCall
 from patchloop.providers.base import (
@@ -22,11 +22,11 @@ from patchloop.providers.contracts import (
     ProviderContinuation,
     ProviderError,
     ProviderErrorKind,
-    ProviderPricing,
     ProviderProtocol,
     ValidatedResponseItem,
 )
 from patchloop.providers.sse import SSEFrame
+from patchloop.providers.usage import UsageNormalizer
 
 _ITEM_FIELDS: dict[str, frozenset[str]] = {
     "message": frozenset({"id", "type", "status", "role", "content"}),
@@ -660,59 +660,8 @@ def _item_type(item: dict[str, Any]) -> str:
     return item_type
 
 
-def _parse_usage(raw_usage: Any, pricing: ProviderPricing | None) -> ModelUsage:
-    if raw_usage is None:
-        return _unknown_usage()
-    if not isinstance(raw_usage, dict):
-        raise _error(ProviderErrorKind.PROTOCOL, "provider returned invalid usage data")
-    input_tokens = _usage_integer(raw_usage, "input_tokens")
-    output_tokens = _usage_integer(raw_usage, "output_tokens")
-    input_details = raw_usage.get("input_tokens_details", {})
-    if input_details is None:
-        input_details = {}
-    if not isinstance(input_details, dict):
-        raise _error(ProviderErrorKind.PROTOCOL, "provider returned invalid input usage details")
-    cache_hit = _usage_integer(input_details, "cached_tokens")
-    cache_write = _usage_integer(input_details, "cache_write_tokens")
-    cache_miss = None
-    if input_tokens is not None and cache_hit is not None and cache_hit <= input_tokens:
-        cache_miss = input_tokens - cache_hit
-
-    cost_status: Literal["estimated", "unknown"] = "unknown"
-    cost = 0.0
-    if pricing is not None and input_tokens is not None and output_tokens is not None:
-        cached_price = pricing.cached_input_per_million
-        if cache_hit is not None and cache_miss is not None:
-            input_cost = (
-                cache_hit
-                * (cached_price if cached_price is not None else pricing.input_per_million)
-                + cache_miss * pricing.input_per_million
-            )
-        else:
-            input_cost = input_tokens * pricing.input_per_million
-        cost = (input_cost + output_tokens * pricing.output_per_million) / 1_000_000
-        cost_status = "estimated"
-    return ModelUsage(
-        input_tokens=input_tokens or 0,
-        output_tokens=output_tokens or 0,
-        cost_usd=cost,
-        cache_hit_tokens=cache_hit,
-        cache_miss_tokens=cache_miss,
-        cache_write_tokens=cache_write,
-        input_tokens_reported=input_tokens is not None,
-        output_tokens_reported=output_tokens is not None,
-        cost_status=cost_status,
-        pricing_version=pricing.version if pricing is not None else None,
-    )
-
-
-def _usage_integer(usage: dict[str, Any], field: str) -> int | None:
-    value = usage.get(field)
-    if field not in usage or value is None:
-        return None
-    if not _is_nonnegative_int(value):
-        raise _error(ProviderErrorKind.PROTOCOL, "provider returned invalid token usage")
-    return value
+def _parse_usage(raw_usage: Any, pricing: Any) -> ModelUsage:
+    return UsageNormalizer.normalize(ProviderProtocol.RESPONSES, raw_usage, pricing)
 
 
 def _parse_arguments(raw_arguments: Any) -> tuple[dict[str, Any], str | None]:
@@ -795,9 +744,7 @@ def _event(
 
 
 def _unknown_usage() -> ModelUsage:
-    return ModelUsage(
-        input_tokens_reported=False, output_tokens_reported=False, cost_status="unknown"
-    )
+    return UsageNormalizer.unknown()
 
 
 def _is_nonnegative_int(value: Any) -> TypeGuard[int]:

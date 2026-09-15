@@ -285,8 +285,7 @@ def test_append_only_compression_reuses_submitted_source_and_preserves_unsent_su
     assert prepared.unsent_suffix == unsent_suffix
     assert all(message not in prepared.request.messages for message in unsent_suffix)
     assert all(
-        message not in prepared.request.messages
-        for message in candidate_publication.messages
+        message not in prepared.request.messages for message in candidate_publication.messages
     )
 
     coordinator.observe_compression_response(prepared, _usage())

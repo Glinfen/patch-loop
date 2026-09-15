@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "id": "fixture-chat",
+      "kind": "fixture",
+      "protocol": "chat_completions",
+      "implementation": "PatchLoop loopback HTTP fixture",
+      "implementation_version": "1",
+      "endpoint": "http://127.0.0.1:0",
+      "model": "fixture-chat-v1",
+      "pricing_version": "fixture-zero-v1",
+      "input_price_per_million": 0,
+      "output_price_per_million": 0,
+      "generation": {"temperature": 0, "max_output_tokens": 1024},
+      "tools_capability": true
+    },
+    {
+      "id": "fixture-responses",
+      "kind": "fixture",
+      "protocol": "responses",
+      "implementation": "PatchLoop loopback HTTP fixture",
+      "implementation_version": "1",
+      "endpoint": "http://127.0.0.1:0",
+      "model": "fixture-responses-v1",
+      "pricing_version": "fixture-zero-v1",
+      "input_price_per_million": 0,
+      "output_price_per_million": 0,
+      "generation": {"temperature": 0, "max_output_tokens": 1024},
+      "tools_capability": true
+    },
+    {
+      "id": "deepseek-chat-real",
+      "kind": "deepseek",
+      "protocol": "chat_completions",
+      "implementation": "DeepSeek Chat Completions",
+      "implementation_version_environment": "PGW_DEEPSEEK_IMPLEMENTATION_VERSION",
+      "endpoint_environment": "PGW_DEEPSEEK_ENDPOINT",
+      "model_environment": "PGW_DEEPSEEK_MODEL",
+      "pricing_version_environment": "PGW_DEEPSEEK_PRICING_VERSION",
+      "input_price_environment": "PGW_DEEPSEEK_INPUT_PER_MILLION",
+      "output_price_environment": "PGW_DEEPSEEK_OUTPUT_PER_MILLION",
+      "credential_environment": ["DEEPSEEK_API_KEY"],
+      "generation": {"temperature": 0, "max_output_tokens": 1024},
+      "tools_capability": true
+    },
+    {
+      "id": "openai-responses-real",
+      "kind": "openai_responses",
+      "protocol": "responses",
+      "implementation": "OpenAI Responses",
+      "implementation_version_environment": "PGW_OPENAI_IMPLEMENTATION_VERSION",
+      "endpoint_environment": "PGW_OPENAI_ENDPOINT",
+      "model_environment": "PGW_OPENAI_MODEL",
+      "pricing_version_environment": "PGW_OPENAI_PRICING_VERSION",
+      "input_price_environment": "PGW_OPENAI_INPUT_PER_MILLION",
+      "output_price_environment": "PGW_OPENAI_OUTPUT_PER_MILLION",
+      "credential_environment": ["OPENAI_API_KEY"],
+      "generation": {"temperature": 0, "max_output_tokens": 1024},
+      "tools_capability": true
+    },
+    {
+      "id": "local-openai-compatible-real",
+      "kind": "local",
+      "protocol": "chat_completions",
+      "implementation": "User-managed OpenAI-compatible local service",
+      "implementation_version_environment": "PGW_LOCAL_IMPLEMENTATION_VERSION",
+      "endpoint_environment": "PGW_LOCAL_ENDPOINT",
+      "model_environment": "PGW_LOCAL_MODEL",
+      "pricing_version_environment": "PGW_LOCAL_PRICING_VERSION",
+      "input_price_environment": "PGW_LOCAL_INPUT_PER_MILLION",
+      "output_price_environment": "PGW_LOCAL_OUTPUT_PER_MILLION",
+      "credential_environment": [],
+      "generation": {"temperature": 0, "max_output_tokens": 1024},
+      "tools_capability": true
+    }
+  ],
+  "cases": [
+    {
+      "id": "fixture-chat-core",
+      "profile_id": "fixture-chat",
+      "scenarios": ["text", "multiple_tools", "bad_arguments", "permission_denial"],
+      "expected_outcomes": ["completed", "correctly_rejected"],
+      "test_nodeids": [
+        "tests/e2e/test_provider_session.py::test_loopback_http_session_core[chat]"
+      ],
+      "repetitions": 1
+    },
+    {
+      "id": "fixture-chat-recovery",
+      "profile_id": "fixture-chat",
+      "scenarios": [
+        "approval_restart",
+        "confirmed_result_replay",
+        "new_constraint",
+        "truncation",
+        "disconnect",
+        "cancellation",
+        "lease_lost"
+      ],
+      "expected_outcomes": ["completed", "correctly_rejected", "correctly_paused"],
+      "test_nodeids": [
+        "tests/e2e/test_approval_recovery.py",
+        "tests/e2e/test_effect_recovery.py",
+        "tests/integration/test_provider_runtime.py::test_response_ready_is_reused_without_another_provider_call",
+        "tests/integration/test_provider_runtime.py::test_partial_provider_output_pauses_without_persisting_effects",
+        "tests/integration/test_session_runtime.py::test_new_input_during_provider_call_cancels_stale_write",
+        "tests/integration/test_runtime_ownership.py::test_renew_failure_stops_before_tool_and_terminal_write",
+        "tests/integration/test_provider_transport.py::test_control_cancellation_closes_connection_before_return[/stream-block-stream]",
+        "tests/integration/test_provider_transport.py::test_transport_reports_truncated_response_without_exposing_http_details"
+      ],
+      "repetitions": 3
+    },
+    {
+      "id": "fixture-chat-context",
+      "profile_id": "fixture-chat",
+      "scenarios": ["compression", "reasoning_round_trip", "unknown_usage"],
+      "expected_outcomes": ["completed"],
+      "test_nodeids": [
+        "tests/e2e/test_prompt_prefix_runtime.py::test_runtime_compression_request_is_recorded_with_its_source_history",
+        "tests/unit/test_provider_chat.py::test_deepseek_adapter_sends_and_replays_reasoning_continuation_without_tools",
+        "tests/unit/test_provider_chat.py::test_chat_stream_requires_finish_and_done_and_allows_unknown_usage"
+      ],
+      "repetitions": 1
+    },
+    {
+      "id": "fixture-responses-core",
+      "profile_id": "fixture-responses",
+      "scenarios": ["text", "multiple_tools", "bad_arguments", "permission_denial"],
+      "expected_outcomes": ["completed", "correctly_rejected"],
+      "test_nodeids": [
+        "tests/e2e/test_provider_session.py::test_loopback_http_session_core[responses]"
+      ],
+      "repetitions": 1
+    },
+    {
+      "id": "fixture-responses-recovery",
+      "profile_id": "fixture-responses",
+      "scenarios": [
+        "approval_restart",
+        "confirmed_result_replay",
+        "new_constraint",
+        "truncation",
+        "disconnect",
+        "cancellation",
+        "lease_lost"
+      ],
+      "expected_outcomes": ["completed", "correctly_rejected", "correctly_paused"],
+      "test_nodeids": [
+        "tests/e2e/test_approval_recovery.py",
+        "tests/e2e/test_effect_recovery.py",
+        "tests/integration/test_provider_runtime.py::test_response_ready_is_reused_without_another_provider_call",
+        "tests/integration/test_provider_runtime.py::test_partial_provider_output_pauses_without_persisting_effects",
+        "tests/integration/test_session_runtime.py::test_new_input_during_provider_call_cancels_stale_write",
+        "tests/integration/test_runtime_ownership.py::test_renew_failure_stops_before_tool_and_terminal_write",
+        "tests/integration/test_provider_transport.py::test_control_cancellation_closes_connection_before_return[/stream-block-stream]",
+        "tests/integration/test_provider_transport.py::test_transport_reports_truncated_response_without_exposing_http_details"
+      ],
+      "repetitions": 3
+    },
+    {
+      "id": "fixture-responses-context",
+      "profile_id": "fixture-responses",
+      "scenarios": ["compression", "reasoning_round_trip", "unknown_usage"],
+      "expected_outcomes": ["completed"],
+      "test_nodeids": [
+        "tests/e2e/test_prompt_prefix_runtime.py::test_runtime_compression_request_is_recorded_with_its_source_history",
+        "tests/unit/test_provider_responses.py::test_responses_stream_matches_json_and_emits_text_tool_and_reasoning_deltas",
+        "tests/unit/test_provider_responses.py::test_responses_stream_requires_terminal_completion_and_cross_checks_deltas"
+      ],
+      "repetitions": 1
+    },
+    {
+      "id": "deepseek-chat-real-session",
+      "profile_id": "deepseek-chat-real",
+      "scenarios": ["text", "multiple_tools"],
+      "expected_outcomes": ["completed"],
+      "test_nodeids": ["tests/e2e/test_provider_session.py::test_real_provider_session_trial"],
+      "repetitions": 3
+    },
+    {
+      "id": "openai-responses-real-session",
+      "profile_id": "openai-responses-real",
+      "scenarios": ["text", "multiple_tools"],
+      "expected_outcomes": ["completed"],
+      "test_nodeids": ["tests/e2e/test_provider_session.py::test_real_provider_session_trial"],
+      "repetitions": 3
+    },
+    {
+      "id": "local-openai-compatible-real-session",
+      "profile_id": "local-openai-compatible-real",
+      "scenarios": ["text", "multiple_tools"],
+      "expected_outcomes": ["completed"],
+      "test_nodeids": ["tests/e2e/test_provider_session.py::test_real_provider_session_trial"],
+      "repetitions": 3
+    }
+  ]
+}

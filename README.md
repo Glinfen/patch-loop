@@ -192,6 +192,22 @@ patchloop provider check local --provider-config /path/to/providers.toml --conne
 用量未知时预留不会释放。机器输出默认或 `--json` 为单个对象；流式消费者使用
 `--events-jsonl`，终端查看可使用 `--human`，三者不能组合。
 
+### Provider 验收
+
+PGW 的离线验收通过真实 loopback HTTP 同时运行 Chat Completions 与 Responses，并对恢复、取消、
+审批和 lease 场景各保留 3 次结果：
+
+```bash
+python -m patchloop.evaluation.provider \
+  --manifest tests/fixtures/providers/acceptance.json \
+  --output benchmarks/results/provider_gateway_acceptance.json
+```
+
+真实验收必须先在环境中显式提供 `.env.example` 所列的 `PGW_DEEPSEEK_*`、`PGW_OPENAI_*` 或
+`PGW_LOCAL_*` 锁定值，再增加 `--real` 并使用独立输出文件。Runner 不会下载模型、启动本地服务，
+也不会把缺凭据、缺服务或 pytest skip 计为通过；这些结果会保留为 `unverified`。API Key 只经环境
+传给对应子进程，不写入报告。
+
 ## 快速开始
 
 先准备一个独立 Git 仓库。不要把第一次试运行指向 PatchLoop 自身或包含重要未提交改动的目录：

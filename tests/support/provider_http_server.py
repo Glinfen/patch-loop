@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import select
 import socket
 import threading
 import time
+from collections import defaultdict, deque
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+
+@dataclass(frozen=True)
+class ScriptedHTTPResponse:
+    status: int
+    body: bytes
+    content_type: str = "application/json"
 
 
 class _Server(ThreadingHTTPServer):
@@ -31,8 +41,17 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
-        _ = self.rfile.read(length)
-        self.owner.record_request(self.path, self.client_address[1], dict(self.headers.items()))
+        body = self.rfile.read(length)
+        self.owner.record_request(
+            self.path,
+            self.client_address[1],
+            dict(self.headers.items()),
+            body,
+        )
+
+        if scripted := self.owner.take_response(self.path):
+            self._write_response(scripted.status, scripted.body, scripted.content_type)
+            return
 
         if self.path == "/redirect":
             self.send_response(307)
@@ -130,6 +149,7 @@ class ProviderHTTPServer:
         self.disconnected = threading.Event()
         self._lock = threading.Lock()
         self.requests: list[dict[str, Any]] = []
+        self._responses: defaultdict[str, deque[ScriptedHTTPResponse]] = defaultdict(deque)
         self._server = _Server(("127.0.0.1", 0), self)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -148,9 +168,32 @@ class ProviderHTTPServer:
         self._server.server_close()
         self._thread.join(timeout=2)
 
-    def record_request(self, path: str, client_port: int, headers: dict[str, str]) -> None:
+    def enqueue_json(self, path: str, body: dict[str, object], *, status: int = 200) -> None:
+        encoded = json.dumps(body, separators=(",", ":")).encode("utf-8")
         with self._lock:
-            self.requests.append({"path": path, "client_port": client_port, "headers": headers})
+            self._responses[path].append(ScriptedHTTPResponse(status=status, body=encoded))
+
+    def take_response(self, path: str) -> ScriptedHTTPResponse | None:
+        with self._lock:
+            queue = self._responses[path]
+            return queue.popleft() if queue else None
+
+    def record_request(
+        self,
+        path: str,
+        client_port: int,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> None:
+        with self._lock:
+            self.requests.append(
+                {
+                    "path": path,
+                    "client_port": client_port,
+                    "headers": headers,
+                    "body": body,
+                }
+            )
 
     def wait_for(self, event: threading.Event, timeout: float = 2) -> bool:
         return event.wait(timeout)

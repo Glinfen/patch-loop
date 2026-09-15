@@ -309,8 +309,7 @@ def validate_compression_summary(
         )
         if estimated > max_summary_tokens:
             raise ValueError(
-                f"compression summary requires {estimated} tokens, "
-                f"budget is {max_summary_tokens}"
+                f"compression summary requires {estimated} tokens, budget is {max_summary_tokens}"
             )
     return normalized
 

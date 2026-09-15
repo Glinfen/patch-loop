@@ -29,8 +29,7 @@ def _request_is_prefix(
     if previous_tools != current_tools or len(previous_messages) > len(current_messages):
         return False
     return [message.model_dump(mode="json") for message in previous_messages] == [
-        message.model_dump(mode="json")
-        for message in current_messages[: len(previous_messages)]
+        message.model_dump(mode="json") for message in current_messages[: len(previous_messages)]
     ]
 
 
@@ -125,10 +124,13 @@ def test_append_only_coordinator_accepts_an_unchanged_prefix_with_appended_suffi
     next_messages = [*submitted, ModelMessage(role="user", content="continue")]
     projection = "ignored by the append-only coordinator"
 
-    assert coordinator.materialize_messages(
-        next_messages,
-        memory_projection=projection,
-    ) == next_messages
+    assert (
+        coordinator.materialize_messages(
+            next_messages,
+            memory_projection=projection,
+        )
+        == next_messages
+    )
     assert coordinator.publication_snapshot is None
 
     prepared = coordinator.prepare_request(

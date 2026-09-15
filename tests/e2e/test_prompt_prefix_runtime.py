@@ -114,10 +114,7 @@ def test_real_runtime_reproduces_legacy_system_rewrite_and_stable_memory_inserti
     stable_third = stable_provider.requests[2][0]
     assert _messages_are_prefix(stable_provider.requests[0][0], stable_second)
     assert not _messages_are_prefix(stable_second, stable_third)
-    assert all(
-        stable_provider.requests[0][1] == tools
-        for _, tools in stable_provider.requests
-    )
+    assert all(stable_provider.requests[0][1] == tools for _, tools in stable_provider.requests)
     tool_outputs = [
         json.loads(message.content)
         for messages, _ in stable_provider.requests

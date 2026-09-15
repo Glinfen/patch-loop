@@ -156,7 +156,7 @@ class HttpxTransport:
         self._transport_factory = transport_factory
         self._clock = clock
         self._client: httpx.AsyncClient | None = None
-        self._scope_task: asyncio.Task[Any] | None = None
+        self._scope_loop: asyncio.AbstractEventLoop | None = None
 
     @asynccontextmanager
     async def client_scope(self) -> AsyncIterator[None]:
@@ -184,12 +184,12 @@ class HttpxTransport:
             follow_redirects=False,
         )
         self._client = client
-        self._scope_task = asyncio.current_task()
+        self._scope_loop = asyncio.get_running_loop()
         try:
             yield
         finally:
             self._client = None
-            self._scope_task = None
+            self._scope_loop = None
             try:
                 await client.aclose()
             except Exception:
@@ -221,8 +221,8 @@ class HttpxTransport:
             ):
                 yield response
             return
-        if self._scope_task is not asyncio.current_task():
-            raise RuntimeError("HTTP transport scope must be used by its owning task")
+        if self._scope_loop is not asyncio.get_running_loop():
+            raise RuntimeError("HTTP transport scope must be used by its owning event loop")
         async with self._open_in_scope(encoded, timeouts, control=control) as response:
             yield response
 

@@ -367,10 +367,7 @@ def test_store_task_decode_pins_old_rows_to_legacy(tmp_path: Path) -> None:
             )
 
     assert store.get_task("task-old").execution.prompt_cache_layout is PromptCacheLayout.LEGACY
-    assert (
-        store.get_task("task-new").execution.prompt_cache_layout
-        is PromptCacheLayout.APPEND_ONLY
-    )
+    assert store.get_task("task-new").execution.prompt_cache_layout is PromptCacheLayout.APPEND_ONLY
 
 
 def test_session_and_runtime_checkpoints_project_the_same_append_only_state(
@@ -435,6 +432,9 @@ def test_session_and_runtime_checkpoints_project_the_same_append_only_state(
         append_only_state=restored_session.append_only_state,
     )
     assert runtime_checkpoint.append_only_state == restored_session.append_only_state
-    assert RuntimeCheckpoint.model_validate_json(
-        runtime_checkpoint.model_dump_json()
-    ).append_only_state == state
+    assert (
+        RuntimeCheckpoint.model_validate_json(
+            runtime_checkpoint.model_dump_json()
+        ).append_only_state
+        == state
+    )

@@ -71,10 +71,7 @@ class PromptPrefixViolation(PromptCacheCoordinatorError):
         if message_index is not None:
             detail += f" at message {message_index}"
         if expected_fingerprint is not None and actual_fingerprint is not None:
-            detail += (
-                f" (expected {expected_fingerprint[:12]}, "
-                f"got {actual_fingerprint[:12]})"
-            )
+            detail += f" (expected {expected_fingerprint[:12]}, got {actual_fingerprint[:12]})"
         super().__init__(detail)
 
 
@@ -218,22 +215,14 @@ class AppendOnlyPromptState(BaseModel):
     last_submitted_message_fingerprints: list[str] = Field(default_factory=list)
     last_submitted_epoch_generation: int = Field(default=0, ge=0, le=1_000_000_000)
     last_submitted_tool_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    last_submitted_binding_fingerprint: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
+    last_submitted_binding_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     last_submitted_request_id: str | None = Field(default=None, min_length=1, max_length=128)
     epoch_generation: int = Field(default=0, ge=0, le=1_000_000_000)
-    compression_source_request_id: str | None = Field(
-        default=None, min_length=1, max_length=128
-    )
+    compression_source_request_id: str | None = Field(default=None, min_length=1, max_length=128)
     compression_source_message_count: int | None = Field(default=None, ge=0)
-    compression_source_epoch_generation: int | None = Field(
-        default=None, ge=0, le=1_000_000_000
-    )
+    compression_source_epoch_generation: int | None = Field(default=None, ge=0, le=1_000_000_000)
     compression_request_id: str | None = Field(default=None, min_length=1, max_length=128)
-    deferred_compression_fingerprint: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
+    deferred_compression_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_submission_contract(self) -> Self:
@@ -249,9 +238,7 @@ class AppendOnlyPromptState(BaseModel):
             and self.compression_source_epoch_generation in {None, self.epoch_generation}
             and self.compression_source_message_count > self.last_submitted_message_count
         ):
-            raise ValueError(
-                "compression source cannot exceed the last submitted message boundary"
-            )
+            raise ValueError("compression source cannot exceed the last submitted message boundary")
         if self.last_submitted_epoch_generation > self.epoch_generation:
             raise ValueError("last submitted epoch generation cannot exceed current generation")
         if (
@@ -267,9 +254,7 @@ class AppendOnlyPromptState(BaseModel):
         if message_count < self.root_prefix_message_count:
             raise ValueError("append-only transcript is shorter than its declared root prefix")
         if message_count < self.last_submitted_message_count:
-            raise ValueError(
-                "append-only transcript is shorter than its last submitted request"
-            )
+            raise ValueError("append-only transcript is shorter than its last submitted request")
 
 
 class PromptCacheCoordinatorSnapshot(BaseModel):
@@ -299,9 +284,7 @@ class PromptCacheCoordinatorSnapshot(BaseModel):
         if self.layout is PromptCacheLayout.LEGACY and self.cache_epoch_state is not None:
             raise ValueError("legacy prompt-cache coordinator cannot carry an epoch snapshot")
         if self.layout is PromptCacheLayout.APPEND_ONLY and self.append_only_state is None:
-            raise ValueError(
-                "append_only prompt-cache coordinator requires append-only state"
-            )
+            raise ValueError("append_only prompt-cache coordinator requires append-only state")
         if self.layout is not PromptCacheLayout.APPEND_ONLY and self.append_only_state is not None:
             raise ValueError("only the append_only layout can carry append-only state")
         return self
@@ -402,9 +385,7 @@ class PromptCacheCoordinator:
         if layout is PromptCacheLayout.LEGACY and cache_epoch is not None:
             raise ValueError("legacy prompt-cache coordinator cannot carry an epoch")
         if layout is PromptCacheLayout.APPEND_ONLY and append_only_state is None:
-            raise ValueError(
-                "append_only prompt-cache coordinator requires append-only state"
-            )
+            raise ValueError("append_only prompt-cache coordinator requires append-only state")
         if (
             layout is PromptCacheLayout.APPEND_ONLY
             and cache_epoch is not None
@@ -461,8 +442,7 @@ class PromptCacheCoordinator:
                 redactor=redactor,
                 root_prefix_message_count=(
                     append_only_state.root_prefix_message_count
-                    if layout is PromptCacheLayout.APPEND_ONLY
-                    and append_only_state is not None
+                    if layout is PromptCacheLayout.APPEND_ONLY and append_only_state is not None
                     else None
                 ),
             )
@@ -551,8 +531,7 @@ class PromptCacheCoordinator:
                     redactor=redactor,
                     root_prefix_message_count=(
                         append_only_state.root_prefix_message_count
-                        if layout is PromptCacheLayout.APPEND_ONLY
-                        and append_only_state is not None
+                        if layout is PromptCacheLayout.APPEND_ONLY and append_only_state is not None
                         else None
                     ),
                 )
@@ -926,10 +905,9 @@ class PromptCacheCoordinator:
             )
         if not source_messages:
             raise ContextBudgetError("there is no submitted request available to compress")
-        estimated_candidate = (
-            ContextEngine.estimate_messages(candidate_messages)
-            + ContextEngine.estimate_tools(self._frozen_tools)
-        )
+        estimated_candidate = ContextEngine.estimate_messages(
+            candidate_messages
+        ) + ContextEngine.estimate_tools(self._frozen_tools)
         validation_budget = max(1, estimated_candidate)
         ContextEngine(
             max_tokens=256,
@@ -1143,9 +1121,7 @@ class PromptCacheCoordinator:
                 ),
                 max_summary_tokens=prepared.summary_limit,
             )
-            publication_source = (
-                prepared.candidate_publication_state or self._publication.snapshot
-            )
+            publication_source = prepared.candidate_publication_state or self._publication.snapshot
             rebased_publication = MemoryDeltaPublisher(
                 publication_source,
                 max_delta_tokens=self._max_delta_tokens,
@@ -1372,8 +1348,7 @@ class PromptCacheCoordinator:
             for message in messages[: self._epoch.prefix_message_count]
         ]
         frozen_fingerprints = [
-            _message_fingerprint(message)
-            for message in self._epoch.frozen_prefix
+            _message_fingerprint(message) for message in self._epoch.frozen_prefix
         ]
         for index, (actual, expected) in enumerate(
             zip(request_prefix_fingerprints, frozen_fingerprints, strict=True)

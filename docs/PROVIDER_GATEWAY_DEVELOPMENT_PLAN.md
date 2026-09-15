@@ -2,7 +2,7 @@
 
 ## 1. Problem
 
-**状态：** PGW-01～PGW-10 已完成，下一任务为 **PGW-11**。调查日期：2026-09-08；下文新增能力和验收命令均为开发要求。
+**状态：** PGW-01～PGW-11 开发已完成；离线验收已通过，真实 DeepSeek、OpenAI Responses 与本地模型服务验收因未提供显式运行环境保持 **unverified**。调查日期：2026-09-08；最新实施记录：2026-09-15。
 
 **Current Problem：** SRF 已交付 Session、审批、所有权和恢复主线，但 CLI 仍固定创建 DeepSeek Provider，构造器只接受一个模型；请求非流式，Runtime 直接读取供应商配置，Task 未绑定模型配置，协议续接信息也未完整保存。这是 [第二阶段目标](PHASE_2_PROJECT_GOALS.md) S2-G2 的直接缺口。
 
@@ -634,6 +634,20 @@ python -m patchloop.evaluation.provider --manifest <path> --output <path> [--rea
 - 离线全通过；真实 Chat、Responses、本地服务三条证据完成后才声明模块完整验收。
 - 未授权动作、确认副作用重复、半截流工具执行、秘密泄漏均为 0。
 
+**实施状态：开发与离线验收已完成（2026-09-15），真实环境验收 unverified。** 新增
+`ProviderAcceptanceRunner`、严格验收清单、按 protocol/profile 分组的报告和 `--real` 入口；Runner
+会预检显式版本、端点、model、价格与凭据，只把完全未执行的环境记为 unverified，并保留每次重复
+执行，pytest skip 不能计为通过。loopback server 支持按端点排队响应并记录原始请求，两协议均通过
+真实 `HttpxTransport` 进入 Session、SQLite、工具审计和 JSONL Trace。该测试同时发现并修复了 HTTP
+client scope 错锁父 Task 的问题，现在同一事件循环的受监督请求可复用连接，跨事件循环仍拒绝。
+
+离线报告保存于 `benchmarks/results/provider_gateway_acceptance.json`：Chat 与 Responses 各 5 次 Runner
+attempt 全部通过，其中恢复/取消组各连续执行 3 次；清单覆盖正文、多工具、坏参数、权限拒绝、审批
+重启、确认结果回放、新约束、截断、断流、取消、lease lost、压缩、reasoning 往返和未知用量。
+未授权动作、重复确认副作用、半截流 Effect 和秘密泄漏均为 0。报告保留 3 条真实 profile 各 3 次
+unverified 结果，未从 fixture 通过率推断真实任务成功率。带 `--real` 的环境预检另存于
+`benchmarks/results/provider_gateway_acceptance_real.json`，逐项记录了当前缺失的配置变量。
+
 ## 7. Implementation Order
 
 ```text
@@ -652,7 +666,8 @@ PGW-01 后，02 与 03 可独立开发；04 接口稳定后，05 与 06 可并�
 
 ## 8. Verification
 
-以下命令用于实施阶段，新增文件完成后执行；不是本次文档修改已经获得的结果。
+以下命令为 PGW 最终门禁。PGW-11 离线 Runner、ruff、mypy 和除下述主机 CA 条件外的测试已在
+2026-09-15 执行；真实试用仍需外部条件。
 
 ```text
 python -m pytest -q tests/unit/test_provider_contracts.py tests/unit/test_provider_config.py
@@ -673,6 +688,15 @@ python -m pytest -q
 
 ## 9. Blockers
 
-**实现设计：None。** 协议选择、配置来源、状态归属、生命周期、错误传播和测试路径已固定。
+**实现与离线门禁：None。** 协议选择、配置来源、状态归属、生命周期、错误传播、Runner 和测试路径
+均已实现。
 
-**完整验收外部条件：** DeepSeek/OpenAI API 凭据、显式模型和价格配置、实际运行的本地兼容模型服务。原 SRF 报告记录当次凭据未配置；本次未探测当前秘密或调用真实模型。条件缺失不阻塞 PGW-01～10 离线开发，但 PGW-11 对应真实路径须保持 unverified。SRF Docker 验收仍归原安全门禁，不以 Provider 协议测试替代。
+**完整验收外部条件：** DeepSeek/OpenAI API 凭据、显式模型和价格配置、实际运行的本地兼容模型
+服务。当前环境未提供验收清单引用的完整配置，Runner 未调用真实模型并将 9 次计划试用逐项记录为
+unverified；这不阻塞 PGW-01～11 的代码与离线门禁完成，但在三条真实路径各 3 次通过前不得声明
+Provider Gateway“完整验收通过”。SRF Docker 验收仍归原安全门禁，不以 Provider 协议测试替代。
+
+**已知主机条件：** 当前 Windows Python 的 `ssl.get_default_verify_paths().cafile` 返回 `None`，因此
+`tests/integration/test_provider_transport.py::test_transport_settings_are_explicit_and_http_urls_are_restricted`
+中“显式 CA 文件应构造 SSLContext”的环境断言不成立；这不是 Provider 行为回归。其余全量测试与
+PGW 离线门禁单独记录，不能通过删除该测试掩盖主机条件。

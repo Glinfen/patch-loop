@@ -233,19 +233,14 @@ def test_v2_delta_chunks_are_deterministic_and_replay_as_one_update() -> None:
     items = [_item(f"value-{index}: " + ("x" * 70)) for index in range(5)]
     projection = _projection({"facts": items})
 
-    first = publisher.preview(
-        "epoch-1", projection, invalidated_values=[], max_message_tokens=256
-    )
-    second = publisher.preview(
-        "epoch-1", projection, invalidated_values=[], max_message_tokens=256
-    )
+    first = publisher.preview("epoch-1", projection, invalidated_values=[], max_message_tokens=256)
+    second = publisher.preview("epoch-1", projection, invalidated_values=[], max_message_tokens=256)
 
     assert len(first.messages) > 1
     assert first.messages == second.messages
     assert first.next_state == second.next_state
     assert all(
-        (len(message.content.encode("utf-8")) + 2) // 3 + 4 <= 256
-        for message in first.messages
+        (len(message.content.encode("utf-8")) + 2) // 3 + 4 <= 256 for message in first.messages
     )
     assert MemoryDeltaPublisher.replay(first.next_state) == first.next_state.current_payload
     assert first.next_state.delta_count == len(first.next_state.messages) - 1

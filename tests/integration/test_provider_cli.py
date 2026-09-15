@@ -80,6 +80,39 @@ def test_run_rejects_json_and_events_jsonl_together(tmp_path: Path) -> None:
     assert "mutually exclusive" in result.output
 
 
+def test_provider_check_recognizes_env_file_credentials_without_exposing_them(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = provider_config(tmp_path)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'auth = "none"', 'auth = "bearer"\ncredential_env = "PATCHLOOP_TEST_KEY"'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PATCHLOOP_TEST_KEY", raising=False)
+    env_file = tmp_path / ".env"
+    secret = "fixture-credential-only-in-env-file"
+    env_file.write_text(f"PATCHLOOP_TEST_KEY={secret}\n", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "provider",
+            "check",
+            "local",
+            "--provider-config",
+            str(config),
+            "--env-file",
+            str(env_file),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["provider"]["credential_configured"] is True
+    assert payload["connected"] is False
+    assert secret not in result.output
+
+
 def test_events_jsonl_redacts_a_secret_split_across_deltas(capsys: object) -> None:
     writer = _ProviderEventWriter()
     for sequence, delta in enumerate(("sk-proj-", "abcdefghijklmnopqrstuvwxyz123456")):

@@ -844,3 +844,11 @@ PGW adapter 契约测试随其文件落地加入 targeted 集合，不用尚不�
 - append_only 的 34 个同 epoch 普通请求比较全部保持前缀；18 次压缩 source 复用检查通过；真实中断/恢复及审批后恢复的前缀检查通过。合同迁移遗漏纯空白 order_id 的拒绝要求，表明结构正确尚不足以保证摘要后的任务质量。长输出的较低输入量来自任务未完成，不能宣称节省。
 - 原始响应提供 input/output 和 cache hit，但未提供 cache miss；本批严格缓存命中率仍不可验证。没有非零成本基线，不能证明费用下降 20%。本批未提供完整质量/安全与离线故障矩阵证据文件，相关缺项保持 unverified；已证实的任务成功率退化明确为 fail。
 - 结果文件：`benchmarks/results/pps_server_pilot01_*`、`pps_server_pilot02_*`、`pps_server_pilot03_*`。最新正式评估输出为 `pps_server_pilot03_acceptance.json`，passed=false、rollout=legacy。下一步应先改进摘要约束保真及压缩开销，再安排同一修订下的三次配对验收。
+
+### PGW/PPS 联合修复与暂停点（2026-09-15）
+
+- 修复提交 `c426f33`：V2 发布预算计入消息序列化开销；新工作记忆按字段和列表项发布增量，忽略 revision，保留旧 V2 消息体与指纹的兼容性。压缩指令保留实际约束、边界值和精确错误文本，并说明已完成探索不会因压缩重置。Trace 补充压缩前后的预算证据。真实质量和费用改善尚待验证。
+- 标准 Chat 返回有效 `prompt_tokens_details.cached_tokens` 且与所选命中计数一致时，由输入量减去命中量得到 miss，标记为 derived。自定义计数、冲突或缺失输入仍为 unknown，不回填历史试跑。字段语义参考 [OpenAI Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)。零价格配置无法验证费用下降目标。
+- 本地全量回归：766 passed、2 skipped、1 failed；唯一失败为沙箱禁止恢复测试终止子进程，同一测试在具备进程权限后单独复验通过。随后 Session 验收启动路径修复 `dbc7f04` 的相关回归 40 passed、1 skipped；CLI env-file 凭据状态修复回归 17 passed。ruff、mypy 和 diff 检查通过。
+- 修复后的离线 Runtime 三次重复生成 `benchmarks/results/pps_joint_offline_runtime.json` 和 `pps_joint_offline_acceptance.json`：普通前缀、压缩 source、场景覆盖与有界 epoch 检查通过；未附完整离线恢复证据，真实配对、质量、恢复及收益仍为 unverified。离线结果不等于真实 A/B。
+- 用户因 AutoDL 余额不足暂停服务器测试，待充值完成后通知恢复。当前配置 PGW 两次真实 Session 试用通过，第三次因 SSH 中断尚未取回结果；新 PPS 真实配对尚未开始。恢复后先读取已有结果，再补齐 PGW 复验，执行两场景各一对小规模试跑；质量通过后再进行同一修订各三次正式配对。默认布局保持 legacy。

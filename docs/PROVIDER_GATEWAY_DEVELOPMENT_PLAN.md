@@ -700,3 +700,11 @@ Provider Gateway“完整验收通过”。SRF Docker 验收仍归原安全门�
 `tests/integration/test_provider_transport.py::test_transport_settings_are_explicit_and_http_urls_are_restricted`
 中“显式 CA 文件应构造 SSLContext”的环境断言不成立；这不是 Provider 行为回归。其余全量测试与
 PGW 离线门禁单独记录，不能通过删除该测试掩盖主机条件。
+
+### 当前配置联合复验（2026-09-15）
+
+- 用户授权使用根目录 `.env` 的 `gpt-5.6-luna`、high 配置，通过 SSH 加密上传到 AutoDL 独立目录；凭据文件权限为 600，未进入 Git。
+- `c426f33` 增加显式配置的真实 Session 验收入口并完善标准 Chat 缓存 usage；`dbc7f04` 修复 created Session 尚无 Runtime checkpoint 时的验收启动路径，使用既有 SessionService 分派，并增加双协议 loopback 回归。
+- AutoDL 在 `dbc7f04` 上使用当前 Chat profile 完成两次真实 Session/工具往返验收，退出码均为 0；第三次尚未取回结果。原始结果位于 `/root/autodl-tmp/pgw-pps-20260915-r2/pgw-profile-v2`。这仅覆盖当前 profile，不能替代三条 Provider 路径各三次的完整矩阵。
+- CLI 修复显式 `--env-file` 可连接但诊断误报 credential_configured=false 的问题，测试确认仅输出是否配置，不输出密钥。
+- 服务器因余额不足中断，用户要求等待充值完成通知。恢复后先检查第三次持久化结果和代码版本，再继续必要复验与 PPS 配对，避免重复启动已有试用。完整 PGW 验收状态仍为未完成。

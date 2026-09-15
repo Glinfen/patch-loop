@@ -874,9 +874,17 @@ def check_provider(
 
     try:
         binding = ProfileResolver().resolve(profile, model, provider_config, env_file)
+        projection = _provider_projection(binding)
+        if env_file is not None:
+            try:
+                CredentialResolver().resolve(binding, env_file=env_file)
+            except ProviderError:
+                projection["credential_configured"] = False
+            else:
+                projection["credential_configured"] = True
         data: dict[str, object] = {
             "schema_version": CLI_SCHEMA_VERSION,
-            "provider": _provider_projection(binding),
+            "provider": projection,
             "connected": False,
         }
         if connect:

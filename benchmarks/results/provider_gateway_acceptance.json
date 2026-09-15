@@ -1,0 +1,760 @@
+{
+  "schema_version": 1,
+  "manifest_schema_version": 1,
+  "status": "unverified",
+  "offline_status": "passed",
+  "real_status": "unverified",
+  "real_requested": false,
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python_version": "3.12.13",
+  "revision": "bc7b3effcb26caf639e70bb932f4dfe4d115c072",
+  "source_dirty": false,
+  "probes": [
+    {
+      "profile_id": "fixture-chat",
+      "kind": "fixture",
+      "protocol": "chat_completions",
+      "available": true,
+      "detail": "deterministic loopback fixture is available",
+      "required_environment": [],
+      "configured_environment": [],
+      "implementation": "PatchLoop loopback HTTP fixture",
+      "implementation_version": "1",
+      "endpoint": "http://127.0.0.1:0",
+      "model": "fixture-chat-v1",
+      "pricing_version": "fixture-zero-v1",
+      "input_price_per_million": 0.0,
+      "output_price_per_million": 0.0,
+      "generation": {
+        "temperature": 0,
+        "max_output_tokens": 1024
+      },
+      "tools_capability": true
+    },
+    {
+      "profile_id": "fixture-responses",
+      "kind": "fixture",
+      "protocol": "responses",
+      "available": true,
+      "detail": "deterministic loopback fixture is available",
+      "required_environment": [],
+      "configured_environment": [],
+      "implementation": "PatchLoop loopback HTTP fixture",
+      "implementation_version": "1",
+      "endpoint": "http://127.0.0.1:0",
+      "model": "fixture-responses-v1",
+      "pricing_version": "fixture-zero-v1",
+      "input_price_per_million": 0.0,
+      "output_price_per_million": 0.0,
+      "generation": {
+        "temperature": 0,
+        "max_output_tokens": 1024
+      },
+      "tools_capability": true
+    },
+    {
+      "profile_id": "deepseek-chat-real",
+      "kind": "deepseek",
+      "protocol": "chat_completions",
+      "available": false,
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "required_environment": [
+        "PGW_DEEPSEEK_IMPLEMENTATION_VERSION",
+        "PGW_DEEPSEEK_ENDPOINT",
+        "PGW_DEEPSEEK_MODEL",
+        "PGW_DEEPSEEK_PRICING_VERSION",
+        "PGW_DEEPSEEK_INPUT_PER_MILLION",
+        "PGW_DEEPSEEK_OUTPUT_PER_MILLION",
+        "DEEPSEEK_API_KEY"
+      ],
+      "configured_environment": [],
+      "implementation": "DeepSeek Chat Completions",
+      "implementation_version": null,
+      "endpoint": null,
+      "model": null,
+      "pricing_version": null,
+      "input_price_per_million": null,
+      "output_price_per_million": null,
+      "generation": {
+        "temperature": 0,
+        "max_output_tokens": 1024
+      },
+      "tools_capability": true
+    },
+    {
+      "profile_id": "openai-responses-real",
+      "kind": "openai_responses",
+      "protocol": "responses",
+      "available": false,
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "required_environment": [
+        "PGW_OPENAI_IMPLEMENTATION_VERSION",
+        "PGW_OPENAI_ENDPOINT",
+        "PGW_OPENAI_MODEL",
+        "PGW_OPENAI_PRICING_VERSION",
+        "PGW_OPENAI_INPUT_PER_MILLION",
+        "PGW_OPENAI_OUTPUT_PER_MILLION",
+        "OPENAI_API_KEY"
+      ],
+      "configured_environment": [],
+      "implementation": "OpenAI Responses",
+      "implementation_version": null,
+      "endpoint": null,
+      "model": null,
+      "pricing_version": null,
+      "input_price_per_million": null,
+      "output_price_per_million": null,
+      "generation": {
+        "temperature": 0,
+        "max_output_tokens": 1024
+      },
+      "tools_capability": true
+    },
+    {
+      "profile_id": "local-openai-compatible-real",
+      "kind": "local",
+      "protocol": "chat_completions",
+      "available": false,
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "required_environment": [
+        "PGW_LOCAL_IMPLEMENTATION_VERSION",
+        "PGW_LOCAL_ENDPOINT",
+        "PGW_LOCAL_MODEL",
+        "PGW_LOCAL_PRICING_VERSION",
+        "PGW_LOCAL_INPUT_PER_MILLION",
+        "PGW_LOCAL_OUTPUT_PER_MILLION"
+      ],
+      "configured_environment": [],
+      "implementation": "User-managed OpenAI-compatible local service",
+      "implementation_version": null,
+      "endpoint": null,
+      "model": null,
+      "pricing_version": null,
+      "input_price_per_million": null,
+      "output_price_per_million": null,
+      "generation": {
+        "temperature": 0,
+        "max_output_tokens": 1024
+      },
+      "tools_capability": true
+    }
+  ],
+  "attempts": [
+    {
+      "case_id": "fixture-chat-core",
+      "profile_id": "fixture-chat",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "text",
+        "multiple_tools",
+        "bad_arguments",
+        "permission_denial"
+      ],
+      "expected_outcomes": [
+        "completed",
+        "correctly_rejected"
+      ],
+      "repetition": 1,
+      "status": "passed",
+      "duration_ms": 3109.9521999713033,
+      "exit_code": 0,
+      "stdout": ".                                                                        [100%]\n1 passed in 2.23s\n",
+      "stderr": "",
+      "detail": "acceptance assertions passed",
+      "request_count_checked": true,
+      "sqlite_checked": true,
+      "trace_checked": true,
+      "tool_audit_checked": true,
+      "unauthorized_actions": 0,
+      "duplicate_confirmed_effects": 0,
+      "partial_stream_effects": 0,
+      "secret_leaks": 0
+    },
+    {
+      "case_id": "fixture-chat-recovery",
+      "profile_id": "fixture-chat",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "approval_restart",
+        "confirmed_result_replay",
+        "new_constraint",
+        "truncation",
+        "disconnect",
+        "cancellation",
+        "lease_lost"
+      ],
+      "expected_outcomes": [
+        "completed",
+        "correctly_rejected",
+        "correctly_paused"
+      ],
+      "repetition": 1,
+      "status": "passed",
+      "duration_ms": 13728.977999999188,
+      "exit_code": 0,
+      "stdout": "..................                                                       [100%]\n18 passed in 12.64s\n",
+      "stderr": "",
+      "detail": "acceptance assertions passed",
+      "request_count_checked": true,
+      "sqlite_checked": true,
+      "trace_checked": true,
+      "tool_audit_checked": true,
+      "unauthorized_actions": 0,
+      "duplicate_confirmed_effects": 0,
+      "partial_stream_effects": 0,
+      "secret_leaks": 0
+    },
+    {
+      "case_id": "fixture-chat-recovery",
+      "profile_id": "fixture-chat",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "approval_restart",
+        "confirmed_result_replay",
+        "new_constraint",
+        "truncation",
+        "disconnect",
+        "cancellation",
+        "lease_lost"
+      ],
+      "expected_outcomes": [
+        "completed",
+        "correctly_rejected",
+        "correctly_paused"
+      ],
+      "repetition": 2,
+      "status": "passed",
+      "duration_ms": 17176.80780001683,
+      "exit_code": 0,
+      "stdout": "..................                                                       [100%]\n18 passed in 15.53s\n",
+      "stderr": "",
+      "detail": "acceptance assertions passed",
+      "request_count_checked": true,
+      "sqlite_checked": true,
+      "trace_checked": true,
+      "tool_audit_checked": true,
+      "unauthorized_actions": 0,
+      "duplicate_confirmed_effects": 0,
+      "partial_stream_effects": 0,
+      "secret_leaks": 0
+    },
+    {
+      "case_id": "fixture-chat-recovery",
+      "profile_id": "fixture-chat",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "approval_restart",
+        "confirmed_result_replay",
+        "new_constraint",
+        "truncation",
+        "disconnect",
+        "cancellation",
+        "lease_lost"
+      ],
+      "expected_outcomes": [
+        "completed",
+        "correctly_rejected",
+        "correctly_paused"
+      ],
+      "repetition": 3,
+      "status": "passed",
+      "duration_ms": 13349.84020004049,
+      "exit_code": 0,
+      "stdout": "..................                                                       [100%]\n18 passed in 12.27s\n",
+      "stderr": "",
+      "detail": "acceptance assertions passed",
+      "request_count_checked": true,
+      "sqlite_checked": true,
+      "trace_checked": true,
+      "tool_audit_checked": true,
+      "unauthorized_actions": 0,
+      "duplicate_confirmed_effects": 0,
+      "partial_stream_effects": 0,
+      "secret_leaks": 0
+    },
+    {
+      "case_id": "fixture-chat-context",
+      "profile_id": "fixture-chat",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "compression",
+        "reasoning_round_trip",
+        "unknown_usage"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 1,
+      "status": "passed",
+      "duration_ms": 2117.626300023403,
+      "exit_code": 0,
+      "stdout": "...                                                                      [100%]\n3 passed in 0.86s\n",
+      "stderr": "",
+      "detail": "acceptance assertions passed",
+      "request_count_checked": true,
+      "sqlite_checked": true,
+      "trace_checked": true,
+      "tool_audit_checked": true,
+      "unauthorized_actions": 0,
+      "duplicate_confirmed_effects": 0,
+      "partial_stream_effects": 0,
+      "secret_leaks": 0
+    },
+    {
+      "case_id": "fixture-responses-core",
+      "profile_id": "fixture-responses",
+      "protocol": "responses",
+      "scenarios": [
+        "text",
+        "multiple_tools",
+        "bad_arguments",
+        "permission_denial"
+      ],
+      "expected_outcomes": [
+        "completed",
+        "correctly_rejected"
+      ],
+      "repetition": 1,
+      "status": "passed",
+      "duration_ms": 2786.4510999643244,
+      "exit_code": 0,
+      "stdout": ".                                                                        [100%]\n1 passed in 1.86s\n",
+      "stderr": "",
+      "detail": "acceptance assertions passed",
+      "request_count_checked": true,
+      "sqlite_checked": true,
+      "trace_checked": true,
+      "tool_audit_checked": true,
+      "unauthorized_actions": 0,
+      "duplicate_confirmed_effects": 0,
+      "partial_stream_effects": 0,
+      "secret_leaks": 0
+    },
+    {
+      "case_id": "fixture-responses-recovery",
+      "profile_id": "fixture-responses",
+      "protocol": "responses",
+      "scenarios": [
+        "approval_restart",
+        "confirmed_result_replay",
+        "new_constraint",
+        "truncation",
+        "disconnect",
+        "cancellation",
+        "lease_lost"
+      ],
+      "expected_outcomes": [
+        "completed",
+        "correctly_rejected",
+        "correctly_paused"
+      ],
+      "repetition": 1,
+      "status": "passed",
+      "duration_ms": 13040.166500024498,
+      "exit_code": 0,
+      "stdout": "..................                                                       [100%]\n18 passed in 12.14s\n",
+      "stderr": "",
+      "detail": "acceptance assertions passed",
+      "request_count_checked": true,
+      "sqlite_checked": true,
+      "trace_checked": true,
+      "tool_audit_checked": true,
+      "unauthorized_actions": 0,
+      "duplicate_confirmed_effects": 0,
+      "partial_stream_effects": 0,
+      "secret_leaks": 0
+    },
+    {
+      "case_id": "fixture-responses-recovery",
+      "profile_id": "fixture-responses",
+      "protocol": "responses",
+      "scenarios": [
+        "approval_restart",
+        "confirmed_result_replay",
+        "new_constraint",
+        "truncation",
+        "disconnect",
+        "cancellation",
+        "lease_lost"
+      ],
+      "expected_outcomes": [
+        "completed",
+        "correctly_rejected",
+        "correctly_paused"
+      ],
+      "repetition": 2,
+      "status": "passed",
+      "duration_ms": 16825.746899994556,
+      "exit_code": 0,
+      "stdout": "..................                                                       [100%]\n18 passed in 15.68s\n",
+      "stderr": "",
+      "detail": "acceptance assertions passed",
+      "request_count_checked": true,
+      "sqlite_checked": true,
+      "trace_checked": true,
+      "tool_audit_checked": true,
+      "unauthorized_actions": 0,
+      "duplicate_confirmed_effects": 0,
+      "partial_stream_effects": 0,
+      "secret_leaks": 0
+    },
+    {
+      "case_id": "fixture-responses-recovery",
+      "profile_id": "fixture-responses",
+      "protocol": "responses",
+      "scenarios": [
+        "approval_restart",
+        "confirmed_result_replay",
+        "new_constraint",
+        "truncation",
+        "disconnect",
+        "cancellation",
+        "lease_lost"
+      ],
+      "expected_outcomes": [
+        "completed",
+        "correctly_rejected",
+        "correctly_paused"
+      ],
+      "repetition": 3,
+      "status": "passed",
+      "duration_ms": 13836.648199998308,
+      "exit_code": 0,
+      "stdout": "..................                                                       [100%]\n18 passed in 12.73s\n",
+      "stderr": "",
+      "detail": "acceptance assertions passed",
+      "request_count_checked": true,
+      "sqlite_checked": true,
+      "trace_checked": true,
+      "tool_audit_checked": true,
+      "unauthorized_actions": 0,
+      "duplicate_confirmed_effects": 0,
+      "partial_stream_effects": 0,
+      "secret_leaks": 0
+    },
+    {
+      "case_id": "fixture-responses-context",
+      "profile_id": "fixture-responses",
+      "protocol": "responses",
+      "scenarios": [
+        "compression",
+        "reasoning_round_trip",
+        "unknown_usage"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 1,
+      "status": "passed",
+      "duration_ms": 1677.3267000098713,
+      "exit_code": 0,
+      "stdout": "...                                                                      [100%]\n3 passed in 0.75s\n",
+      "stderr": "",
+      "detail": "acceptance assertions passed",
+      "request_count_checked": true,
+      "sqlite_checked": true,
+      "trace_checked": true,
+      "tool_audit_checked": true,
+      "unauthorized_actions": 0,
+      "duplicate_confirmed_effects": 0,
+      "partial_stream_effects": 0,
+      "secret_leaks": 0
+    },
+    {
+      "case_id": "deepseek-chat-real-session",
+      "profile_id": "deepseek-chat-real",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "text",
+        "multiple_tools"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 1,
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "request_count_checked": false,
+      "sqlite_checked": false,
+      "trace_checked": false,
+      "tool_audit_checked": false,
+      "unauthorized_actions": null,
+      "duplicate_confirmed_effects": null,
+      "partial_stream_effects": null,
+      "secret_leaks": null
+    },
+    {
+      "case_id": "deepseek-chat-real-session",
+      "profile_id": "deepseek-chat-real",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "text",
+        "multiple_tools"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 2,
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "request_count_checked": false,
+      "sqlite_checked": false,
+      "trace_checked": false,
+      "tool_audit_checked": false,
+      "unauthorized_actions": null,
+      "duplicate_confirmed_effects": null,
+      "partial_stream_effects": null,
+      "secret_leaks": null
+    },
+    {
+      "case_id": "deepseek-chat-real-session",
+      "profile_id": "deepseek-chat-real",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "text",
+        "multiple_tools"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 3,
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "request_count_checked": false,
+      "sqlite_checked": false,
+      "trace_checked": false,
+      "tool_audit_checked": false,
+      "unauthorized_actions": null,
+      "duplicate_confirmed_effects": null,
+      "partial_stream_effects": null,
+      "secret_leaks": null
+    },
+    {
+      "case_id": "openai-responses-real-session",
+      "profile_id": "openai-responses-real",
+      "protocol": "responses",
+      "scenarios": [
+        "text",
+        "multiple_tools"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 1,
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "request_count_checked": false,
+      "sqlite_checked": false,
+      "trace_checked": false,
+      "tool_audit_checked": false,
+      "unauthorized_actions": null,
+      "duplicate_confirmed_effects": null,
+      "partial_stream_effects": null,
+      "secret_leaks": null
+    },
+    {
+      "case_id": "openai-responses-real-session",
+      "profile_id": "openai-responses-real",
+      "protocol": "responses",
+      "scenarios": [
+        "text",
+        "multiple_tools"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 2,
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "request_count_checked": false,
+      "sqlite_checked": false,
+      "trace_checked": false,
+      "tool_audit_checked": false,
+      "unauthorized_actions": null,
+      "duplicate_confirmed_effects": null,
+      "partial_stream_effects": null,
+      "secret_leaks": null
+    },
+    {
+      "case_id": "openai-responses-real-session",
+      "profile_id": "openai-responses-real",
+      "protocol": "responses",
+      "scenarios": [
+        "text",
+        "multiple_tools"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 3,
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "request_count_checked": false,
+      "sqlite_checked": false,
+      "trace_checked": false,
+      "tool_audit_checked": false,
+      "unauthorized_actions": null,
+      "duplicate_confirmed_effects": null,
+      "partial_stream_effects": null,
+      "secret_leaks": null
+    },
+    {
+      "case_id": "local-openai-compatible-real-session",
+      "profile_id": "local-openai-compatible-real",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "text",
+        "multiple_tools"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 1,
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "request_count_checked": false,
+      "sqlite_checked": false,
+      "trace_checked": false,
+      "tool_audit_checked": false,
+      "unauthorized_actions": null,
+      "duplicate_confirmed_effects": null,
+      "partial_stream_effects": null,
+      "secret_leaks": null
+    },
+    {
+      "case_id": "local-openai-compatible-real-session",
+      "profile_id": "local-openai-compatible-real",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "text",
+        "multiple_tools"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 2,
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "request_count_checked": false,
+      "sqlite_checked": false,
+      "trace_checked": false,
+      "tool_audit_checked": false,
+      "unauthorized_actions": null,
+      "duplicate_confirmed_effects": null,
+      "partial_stream_effects": null,
+      "secret_leaks": null
+    },
+    {
+      "case_id": "local-openai-compatible-real-session",
+      "profile_id": "local-openai-compatible-real",
+      "protocol": "chat_completions",
+      "scenarios": [
+        "text",
+        "multiple_tools"
+      ],
+      "expected_outcomes": [
+        "completed"
+      ],
+      "repetition": 3,
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "real acceptance was not requested; environment remains unverified",
+      "request_count_checked": false,
+      "sqlite_checked": false,
+      "trace_checked": false,
+      "tool_audit_checked": false,
+      "unauthorized_actions": null,
+      "duplicate_confirmed_effects": null,
+      "partial_stream_effects": null,
+      "secret_leaks": null
+    }
+  ],
+  "profiles": [
+    {
+      "profile_id": "fixture-chat",
+      "kind": "fixture",
+      "protocol": "chat_completions",
+      "status": "passed",
+      "passed": 5,
+      "failed": 0,
+      "unverified": 0
+    },
+    {
+      "profile_id": "fixture-responses",
+      "kind": "fixture",
+      "protocol": "responses",
+      "status": "passed",
+      "passed": 5,
+      "failed": 0,
+      "unverified": 0
+    },
+    {
+      "profile_id": "deepseek-chat-real",
+      "kind": "deepseek",
+      "protocol": "chat_completions",
+      "status": "unverified",
+      "passed": 0,
+      "failed": 0,
+      "unverified": 3
+    },
+    {
+      "profile_id": "openai-responses-real",
+      "kind": "openai_responses",
+      "protocol": "responses",
+      "status": "unverified",
+      "passed": 0,
+      "failed": 0,
+      "unverified": 3
+    },
+    {
+      "profile_id": "local-openai-compatible-real",
+      "kind": "local",
+      "protocol": "chat_completions",
+      "status": "unverified",
+      "passed": 0,
+      "failed": 0,
+      "unverified": 3
+    }
+  ],
+  "unauthorized_actions": 0,
+  "duplicate_confirmed_effects": 0,
+  "partial_stream_effects": 0,
+  "secret_leaks": 0,
+  "security_evidence_unverified": 9,
+  "generated_at": "2026-09-15T05:17:41.089291+00:00"
+}

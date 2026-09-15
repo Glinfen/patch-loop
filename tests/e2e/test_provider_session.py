@@ -371,6 +371,33 @@ def _real_provider_configuration() -> tuple[ProviderBinding, SecretStr | None]:
     return binding, SecretStr(api_key) if api_key else None
 
 
+@pytest.mark.parametrize("protocol", list(ProviderProtocol))
+def test_real_trial_harness_restores_a_created_session_without_a_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, protocol: ProviderProtocol
+) -> None:
+    from tests.support.provider_http_server import ProviderHTTPServer
+
+    path = "/chat/completions" if protocol is ProviderProtocol.CHAT_COMPLETIONS else "/responses"
+    response = _tool_response(protocol)
+    if protocol is ProviderProtocol.CHAT_COMPLETIONS:
+        response["choices"][0]["message"]["tool_calls"] = response["choices"][0]["message"][
+            "tool_calls"
+        ][:1]
+    else:
+        response["output"] = response["output"][:1]
+    with ProviderHTTPServer() as server:
+        server.enqueue_json(path, response)
+        server.enqueue_json(path, _final_response(protocol))
+        binding = _binding(protocol, base_url=server.base_url)
+        monkeypatch.setitem(
+            test_real_provider_session_trial.__globals__,
+            "_real_provider_configuration",
+            lambda: (binding, None),
+        )
+        test_real_provider_session_trial(tmp_path)
+        assert len(server.requests) == 2
+
+
 @pytest.mark.skipif(
     os.environ.get("PATCHLOOP_ACCEPTANCE_ACTIVE") != "1"
     or (
@@ -391,8 +418,9 @@ def test_real_provider_session_trial(tmp_path: Path) -> None:
     (repository / "acceptance.txt").write_text("PGW-11", encoding="utf-8")
     store = SQLiteStore(tmp_path / "real-provider.sqlite")
 
-    # Persist the Task first, then rebuild Runtime/Gateway before any request. This
-    # makes every runner repetition a clean workspace plus an explicit restore.
+    # Persist the Task first, then rebuild Runtime/Gateway before any request.
+    # A CREATED task has no Runtime checkpoint yet; SessionService selects the
+    # initial run path when restoring this persisted Session.
     initial_runtime = AgentRuntime(
         ProviderGateway(
             binding,
@@ -432,7 +460,7 @@ def test_real_provider_session_trial(tmp_path: Path) -> None:
         state_store=store,
     )
 
-    result = restored_runtime.resume(store.get_task(task.id), store.get_checkpoint(task.id))
+    result = SessionService(store, restored_runtime).resume(session.id)
 
     assert result.status is TaskStatus.COMPLETED, result.report
     assert len(restored_tools.history) == 1

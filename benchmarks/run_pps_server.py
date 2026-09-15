@@ -165,7 +165,8 @@ def main() -> None:
                         )
                         resume_code = resumed.returncode
                 # Act as the operator only for the explicitly scoped fixture change
-                # and its standard test command. Keep all normal approval records.
+                # its standard test command, and read-only status inspection.
+                # Keep all normal approval records.
                 approved_ids = []
                 if traces:
                     store = SQLiteStore(repo / ".patchloop/patchloop.db")
@@ -184,6 +185,12 @@ def main() -> None:
                                     effect.tool_name == "apply_patch"
                                     and approval.resource_summary
                                     == f"workspace={repo}; paths=order_service.py"
+                                )
+                                or (
+                                    effect.tool_name == "run_command"
+                                    and approval.resource_summary == f"workspace={repo}"
+                                    and effect.arguments_summary.get("command")
+                                    == ["git", "status", "--short"]
                                 )
                                 or (
                                     effect.tool_name == "run_tests"

@@ -708,3 +708,7 @@ PGW 离线门禁单独记录，不能通过删除该测试掩盖主机条件。
 - AutoDL 在 `dbc7f04` 上使用当前 Chat profile 完成两次真实 Session/工具往返验收，退出码均为 0；第三次尚未取回结果。原始结果位于 `/root/autodl-tmp/pgw-pps-20260915-r2/pgw-profile-v2`。这仅覆盖当前 profile，不能替代三条 Provider 路径各三次的完整矩阵。
 - CLI 修复显式 `--env-file` 可连接但诊断误报 credential_configured=false 的问题，测试确认仅输出是否配置，不输出密钥。
 - 服务器因余额不足中断，用户要求等待充值完成通知。恢复后先检查第三次持久化结果和代码版本，再继续必要复验与 PPS 配对，避免重复启动已有试用。完整 PGW 验收状态仍为未完成。
+
+### 恢复后的当前 profile 结果（2026-09-15）
+
+服务器恢复后，以 `8fecd4f` 在独立 `pgw-profile-v3` 目录重新运行当前 profile 三次真实试用，均通过（13.603、11.817、13.728 秒）。六次完成请求的缓存 miss 均有明确 derived 来源。最新服务器 PGW 离线验收通过，完整三 Provider 真实矩阵仍为 unverified，不能将当前 profile 通过扩展为完整验收通过。脱敏结果见 `benchmarks/results/pgw_configured_profile_r2.json` 和 `pgw_joint_offline_acceptance.json`；之前的中断批次保留。

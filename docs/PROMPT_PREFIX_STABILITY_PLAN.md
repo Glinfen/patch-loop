@@ -852,3 +852,20 @@ PGW adapter 契约测试随其文件落地加入 targeted 集合，不用尚不�
 - 本地全量回归：766 passed、2 skipped、1 failed；唯一失败为沙箱禁止恢复测试终止子进程，同一测试在具备进程权限后单独复验通过。随后 Session 验收启动路径修复 `dbc7f04` 的相关回归 40 passed、1 skipped；CLI env-file 凭据状态修复回归 17 passed。ruff、mypy 和 diff 检查通过。
 - 修复后的离线 Runtime 三次重复生成 `benchmarks/results/pps_joint_offline_runtime.json` 和 `pps_joint_offline_acceptance.json`：普通前缀、压缩 source、场景覆盖与有界 epoch 检查通过；未附完整离线恢复证据，真实配对、质量、恢复及收益仍为 unverified。离线结果不等于真实 A/B。
 - 用户因 AutoDL 余额不足暂停服务器测试，待充值完成后通知恢复。当前配置 PGW 两次真实 Session 试用通过，第三次因 SSH 中断尚未取回结果；新 PPS 真实配对尚未开始。恢复后先读取已有结果，再补齐 PGW 复验，执行两场景各一对小规模试跑；质量通过后再进行同一修订各三次正式配对。默认布局保持 legacy。
+
+### 充值恢复后的联合复验结果（2026-09-15）
+
+- 服务器恢复后在同一代码修订 `8fecd4f` 完成当前 `gpt-5.6-luna` profile 三次真实 Session/工具往返，全部通过；完整 PGW 离线矩阵也通过。结果为 `pgw_configured_profile_r2.json`、`pgw_joint_offline_acceptance.json`。完整三 Provider 真实矩阵仍为 unverified。
+- pilot-04 两场景各一对均完成，公开检查 4/4、隐藏测试 20/20 通过，仅修改 order_service.py。合同迁移 append_only 和长输出 legacy 曾停在只读 `git status --short` 审批，已按相同规则补充批准、恢复及复测；初始 results.json 和补充 supplemental-results.json 分开保留。试跑脚本现只增加该精确命令的自动审批，保留正常审批记录。
+
+| 场景与布局 | 完成耗时（秒） | 输入 token | 压缩次数 | 重复证据读取 | 隐藏测试 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 合同迁移 legacy | 96.68 | 189494 | 0 | 0 | 5/5 |
+| 合同迁移 append_only | 223.34 | 245830 | 5 | 0 | 5/5 |
+| 长输出 legacy | 177.71 | 375211 | 0 | 5 | 5/5 |
+| 长输出 append_only | 248.42 | 232714 | 6 | 0 | 5/5 |
+
+- 34 次普通前缀比较、11 次压缩 source 检查和真实恢复前缀检查通过。候选压缩调用分别耗时 82.21、105.62 秒，质量改善尚未带来耗时改善。
+- 完成请求的 hit/miss 全部完整，但主动 SIGINT 取消一次在途请求，缺少该 attempt 的 usage，严格缓存与费用门禁必须为 unverified。仅对已知普通请求计算的加权 warm 命中率为 58.82%，不含未知 attempt，不能替代正式指标，也低于 70% 目标。
+- 结果保存为 `benchmarks/results/pps_server_pilot04_{cache,diagnosis,quality,acceptance,provenance}.json`。原始 trace、SQLite、审批与测试日志保存在服务器 `/root/autodl-tmp/pgw-pps-20260915-r2/pilot-04`，本地副本在忽略目录 `.patchloop/pgw-pps-r2/pilot-04`。
+- 本批仅一对且含补充人工操作，不能视为正式三次配对。基于已知 warm 指标与压缩开销，暂不启动正式 12 任务批次。下一步降低 epoch 压缩开销并改善命中率；完整质量/安全、故障矩阵汇总及非零费用证据仍待补齐。默认继续 legacy。

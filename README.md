@@ -233,7 +233,7 @@ python -m patchloop.evaluation.provider \
 ## Prompt 前缀稳定性（PPS）
 
 `run` 和 `session start` 都支持 `--prompt-cache-layout legacy|stable|append_only`。
-当前新任务默认仍为 `legacy`；真实 Provider A/B 验收尚未执行，默认切换等待 PPS 发布门禁。
+当前新任务默认仍为 `legacy`；真实 Provider 配对试跑已执行，质量修复已通过最新小样本验证，正式收益验收仍未通过，默认切换等待 PPS 发布门禁。
 `append_only` 在同一 epoch 内保持已发送消息及工具顺序，新输入和记忆增量只追加到末尾；
 预算压缩会显式创建新 epoch，保留固定根前缀和最新摘要。
 

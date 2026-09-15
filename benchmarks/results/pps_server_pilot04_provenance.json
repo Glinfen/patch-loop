@@ -1,0 +1,109 @@
+{
+  "revision": "8fecd4ff5fd51de1bd9a6f16a4b80e477db1b027",
+  "batch": "pilot-04",
+  "scope": "two scenarios, one pair each; not formal acceptance",
+  "model": "gpt-5.6-luna",
+  "reasoning_effort": "high",
+  "default_layout": "legacy",
+  "supplemental_operations": "Two pending git status --short approvals were granted after the four initial trials; resume and public/hidden validation repeated; original results preserved.",
+  "unknown_usage_attempts": 1,
+  "observed_known_ordinary_warm_rate": 0.5881778346437735,
+  "formal_batch_started": false,
+  "reason": "Known ordinary warm rate below 70 percent and compression overhead remains; unknown cancelled attempt usage cannot be inferred.",
+  "initial_results": [
+    {
+      "approved_ids": [
+        "approval-87b7e3a536b95e238e85b637f288faab",
+        "approval-277324c3c72c5e02b49a02457986e7f0"
+      ],
+      "trial": "contract-migration-1-legacy",
+      "exit_code": 10,
+      "resume_code": 0,
+      "pause_requested": false,
+      "validation": {
+        "public": 0,
+        "hidden": 0
+      },
+      "changed_files": [
+        "order_service.py"
+      ]
+    },
+    {
+      "approved_ids": [
+        "approval-cc79b398bdba596192d4b0f7bcdb6b21",
+        "approval-d7ac59452a7854119ff4b8ea0e3261ef"
+      ],
+      "trial": "contract-migration-1-append_only",
+      "exit_code": 130,
+      "resume_code": 10,
+      "pause_requested": true,
+      "validation": {
+        "public": 0,
+        "hidden": 0
+      },
+      "changed_files": [
+        "order_service.py"
+      ]
+    },
+    {
+      "approved_ids": [
+        "approval-0570a095f85d57e0b8453470d292eaa8",
+        "approval-03c0b7ad90575c689fcdb3b063b37a5a"
+      ],
+      "trial": "long-tool-output-1-legacy",
+      "exit_code": 10,
+      "resume_code": 10,
+      "pause_requested": false,
+      "validation": {
+        "public": 0,
+        "hidden": 0
+      },
+      "changed_files": [
+        "order_service.py"
+      ]
+    },
+    {
+      "approved_ids": [
+        "approval-9427465174085fc4ac14173bef7a257f",
+        "approval-e0c47b867a7b5f669c9f8fc936205312"
+      ],
+      "trial": "long-tool-output-1-append_only",
+      "exit_code": 10,
+      "resume_code": 0,
+      "pause_requested": false,
+      "validation": {
+        "public": 0,
+        "hidden": 0
+      },
+      "changed_files": [
+        "order_service.py"
+      ]
+    }
+  ],
+  "supplemental_results": [
+    {
+      "trial": "contract-migration-1-append_only",
+      "approved_ids": [
+        "approval-dca0a772decf5618ad986f284fae2ef3"
+      ],
+      "resume_code": 0,
+      "status": "completed",
+      "validation": {
+        "public": 0,
+        "hidden": 0
+      }
+    },
+    {
+      "trial": "long-tool-output-1-legacy",
+      "approved_ids": [
+        "approval-6409b4d39a905a819501b6265728e4b4"
+      ],
+      "resume_code": 0,
+      "status": "completed",
+      "validation": {
+        "public": 0,
+        "hidden": 0
+      }
+    }
+  ]
+}

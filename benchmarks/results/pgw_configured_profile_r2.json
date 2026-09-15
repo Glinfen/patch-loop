@@ -1,0 +1,183 @@
+{
+  "scope": "configured Chat profile: persisted Session restore and one real tool round trip; not the complete three-provider PGW matrix",
+  "revision": "8fecd4ff5fd51de1bd9a6f16a4b80e477db1b027",
+  "binding": {
+    "schema_version": 1,
+    "profile_id": "local-openai",
+    "protocol": "chat_completions",
+    "dialect": "standard",
+    "model": "gpt-5.6-luna",
+    "base_url": "http://localhost:49314/v1",
+    "auth": "bearer",
+    "credential_env": "OPENAI_API_KEY",
+    "capabilities": {
+      "tools": true,
+      "multiple_tool_calls": true,
+      "streaming": false,
+      "reasoning_transport": "chat_internal",
+      "structured_output": false,
+      "context_window_tokens": 128000,
+      "max_output_tokens": 8192,
+      "usage_supported": true,
+      "cache_usage_supported": false
+    },
+    "generation": {
+      "max_output_tokens": 8192,
+      "temperature": null,
+      "reasoning_enabled": true,
+      "reasoning_effort": "high",
+      "token_limit_field": "max_completion_tokens"
+    },
+    "transport": {
+      "streaming": false,
+      "connect_timeout_seconds": 10.0,
+      "write_timeout_seconds": 30.0,
+      "idle_timeout_seconds": 60.0,
+      "total_timeout_seconds": 120.0,
+      "max_retries": 0,
+      "max_sse_frame_bytes": 1048576,
+      "max_response_bytes": 16777216,
+      "proxy_url": null,
+      "ca_bundle": null
+    },
+    "pricing": {
+      "version": "local-proxy-zero-v1",
+      "input_per_million": 0.0,
+      "output_per_million": 0.0,
+      "cached_input_per_million": 0.0
+    },
+    "fingerprint": "5aae378641dccb4e5b886489ac15a4d4a38f6aaae85b0d9983035904e6121c40"
+  },
+  "trials": [
+    {
+      "repeat": 1,
+      "exit_code": 0,
+      "duration_seconds": 13.603,
+      "requests": [
+        {
+          "purpose": "agent_step",
+          "status": "completed",
+          "usage": {
+            "cache_hit_tokens": 0,
+            "cache_hit_tokens_source": "reported",
+            "cache_miss_tokens": 833,
+            "cache_miss_tokens_source": "derived",
+            "cache_write_tokens": null,
+            "cost_status": "estimated",
+            "cost_usd": 0.0,
+            "input_tokens": 833,
+            "input_tokens_reported": true,
+            "output_tokens": 94,
+            "output_tokens_reported": true,
+            "pricing_version": "local-proxy-zero-v1"
+          }
+        },
+        {
+          "purpose": "agent_step",
+          "status": "completed",
+          "usage": {
+            "cache_hit_tokens": 0,
+            "cache_hit_tokens_source": "reported",
+            "cache_miss_tokens": 1563,
+            "cache_miss_tokens_source": "derived",
+            "cache_write_tokens": null,
+            "cost_status": "estimated",
+            "cost_usd": 0.0,
+            "input_tokens": 1563,
+            "input_tokens_reported": true,
+            "output_tokens": 44,
+            "output_tokens_reported": true,
+            "pricing_version": "local-proxy-zero-v1"
+          }
+        }
+      ]
+    },
+    {
+      "repeat": 2,
+      "exit_code": 0,
+      "duration_seconds": 11.817,
+      "requests": [
+        {
+          "purpose": "agent_step",
+          "status": "completed",
+          "usage": {
+            "cache_hit_tokens": 0,
+            "cache_hit_tokens_source": "reported",
+            "cache_miss_tokens": 833,
+            "cache_miss_tokens_source": "derived",
+            "cache_write_tokens": null,
+            "cost_status": "estimated",
+            "cost_usd": 0.0,
+            "input_tokens": 833,
+            "input_tokens_reported": true,
+            "output_tokens": 88,
+            "output_tokens_reported": true,
+            "pricing_version": "local-proxy-zero-v1"
+          }
+        },
+        {
+          "purpose": "agent_step",
+          "status": "completed",
+          "usage": {
+            "cache_hit_tokens": 0,
+            "cache_hit_tokens_source": "reported",
+            "cache_miss_tokens": 1561,
+            "cache_miss_tokens_source": "derived",
+            "cache_write_tokens": null,
+            "cost_status": "estimated",
+            "cost_usd": 0.0,
+            "input_tokens": 1561,
+            "input_tokens_reported": true,
+            "output_tokens": 76,
+            "output_tokens_reported": true,
+            "pricing_version": "local-proxy-zero-v1"
+          }
+        }
+      ]
+    },
+    {
+      "repeat": 3,
+      "exit_code": 0,
+      "duration_seconds": 13.728,
+      "requests": [
+        {
+          "purpose": "agent_step",
+          "status": "completed",
+          "usage": {
+            "cache_hit_tokens": 0,
+            "cache_hit_tokens_source": "reported",
+            "cache_miss_tokens": 833,
+            "cache_miss_tokens_source": "derived",
+            "cache_write_tokens": null,
+            "cost_status": "estimated",
+            "cost_usd": 0.0,
+            "input_tokens": 833,
+            "input_tokens_reported": true,
+            "output_tokens": 83,
+            "output_tokens_reported": true,
+            "pricing_version": "local-proxy-zero-v1"
+          }
+        },
+        {
+          "purpose": "agent_step",
+          "status": "completed",
+          "usage": {
+            "cache_hit_tokens": 0,
+            "cache_hit_tokens_source": "reported",
+            "cache_miss_tokens": 1555,
+            "cache_miss_tokens_source": "derived",
+            "cache_write_tokens": null,
+            "cost_status": "estimated",
+            "cost_usd": 0.0,
+            "input_tokens": 1555,
+            "input_tokens_reported": true,
+            "output_tokens": 42,
+            "output_tokens_reported": true,
+            "pricing_version": "local-proxy-zero-v1"
+          }
+        }
+      ]
+    }
+  ],
+  "passed": true
+}

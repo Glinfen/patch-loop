@@ -1,0 +1,349 @@
+{
+  "batch": "pilot-04",
+  "trials": [
+    {
+      "trial": "contract-migration-1-append_only",
+      "status": "completed",
+      "outcome": "completed",
+      "summary": "Completed the plan and verified passing tests for: order_service.py.",
+      "steps": 24,
+      "elapsed_seconds": 223.34,
+      "provider_requests": 30,
+      "compression_count": 5,
+      "input_tokens": 245830,
+      "output_tokens": 6685,
+      "cache_hit_tokens": 172032,
+      "cache_miss_complete": true,
+      "provider_seconds_by_kind": {
+        "agent_step": 132.27,
+        "epoch_compression": 82.21
+      },
+      "evidence_read_attempts": 12,
+      "distinct_evidence_paths": 12,
+      "duplicate_evidence_attempts": 0,
+      "compression": [
+        {
+          "step": 7,
+          "request_id": "provider-request-ec071a2dbdf22d14dbee6ce2fd5136d856b2e012800682dd7408144484b6b086",
+          "source_request_id": "provider-request-00181d58c909f226953b7efb2aed7fdd6abdcacf84e4bb6adda9e2bf8e8603a5",
+          "source_message_count": 24,
+          "epoch_id": "initial",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 20865,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            1298,
+            1299
+          ]
+        },
+        {
+          "step": 12,
+          "request_id": "provider-request-bb5d4f910ddf8f0d236bd0516936a76153a91f150f7cbcc4ab6a370256cf8b42",
+          "source_request_id": "provider-request-ba88916bfedf3cf93dcd00a044e6588d318414155a2333bffe46b760538a9823",
+          "source_message_count": 22,
+          "epoch_id": "initial.g1",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 20688,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            1311,
+            1263
+          ]
+        },
+        {
+          "step": 18,
+          "request_id": "provider-request-679b0629c5dc8104d5953eded84a9d4a481ef4d74479545d7fdfe39677bf3593",
+          "source_request_id": "provider-request-5a9a3fd356d172b4177c6f40b4412d58eecd1ca17406d79668710da05370fc68",
+          "source_message_count": 24,
+          "epoch_id": "initial.g2",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 21747,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            1977,
+            495
+          ]
+        },
+        {
+          "step": 19,
+          "request_id": "provider-request-b8da5ab971d1dab342408ebe4e835638e0986bf77784d375b7b41e6e33ffb7e0",
+          "source_request_id": "provider-request-b637a938625116618a6ba8e0033c42b8363ddbfbe048b4cc2ab90be940f16457",
+          "source_message_count": 28,
+          "epoch_id": "initial.g2",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 25425,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            1795,
+            966
+          ]
+        },
+        {
+          "step": 23,
+          "request_id": "provider-request-70193d8f7f1b6ecc2e23e8f10c0faa389bb5838aa5a7fb8defeb2f7be7ce8532",
+          "source_request_id": "provider-request-88b8bf7eb4660015868c140a8a42fa2157fe1aa6adca0897af1fa517d74a771a",
+          "source_message_count": 17,
+          "epoch_id": "initial.g3",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 18907,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            1395,
+            1553
+          ]
+        }
+      ],
+      "summary_fact_presence": [
+        {
+          "step": 7,
+          "generation": 0,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        },
+        {
+          "step": 12,
+          "generation": 1,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        },
+        {
+          "step": 18,
+          "generation": 2,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        },
+        {
+          "step": 19,
+          "generation": 2,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        },
+        {
+          "step": 23,
+          "generation": 3,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        }
+      ],
+      "public_result": ".                                                                        [100%]",
+      "hidden_result": "5 passed in 0.01s"
+    },
+    {
+      "trial": "contract-migration-1-legacy",
+      "status": "completed",
+      "outcome": "completed",
+      "summary": "Completed the plan and verified passing tests for: order_service.py.",
+      "steps": 20,
+      "elapsed_seconds": 96.68,
+      "provider_requests": 21,
+      "compression_count": 0,
+      "input_tokens": 189494,
+      "output_tokens": 1595,
+      "cache_hit_tokens": 15360,
+      "cache_miss_complete": true,
+      "provider_seconds_by_kind": {
+        "agent_step": 89.28
+      },
+      "evidence_read_attempts": 12,
+      "distinct_evidence_paths": 12,
+      "duplicate_evidence_attempts": 0,
+      "compression": [],
+      "summary_fact_presence": [],
+      "public_result": ".                                                                        [100%]",
+      "hidden_result": "5 passed in 0.01s"
+    },
+    {
+      "trial": "long-tool-output-1-append_only",
+      "status": "completed",
+      "outcome": "completed",
+      "summary": "Completed the plan and verified passing tests for: order_service.py.",
+      "steps": 20,
+      "elapsed_seconds": 248.42,
+      "provider_requests": 27,
+      "compression_count": 6,
+      "input_tokens": 232714,
+      "output_tokens": 7483,
+      "cache_hit_tokens": 132096,
+      "cache_miss_complete": true,
+      "provider_seconds_by_kind": {
+        "agent_step": 116.17,
+        "epoch_compression": 105.62
+      },
+      "evidence_read_attempts": 12,
+      "distinct_evidence_paths": 12,
+      "duplicate_evidence_attempts": 0,
+      "compression": [
+        {
+          "step": 6,
+          "request_id": "provider-request-2b034aa6c2cad8fc5478b0db14c5182a4120b4a8df5f55dc7652f82d6e762b5a",
+          "source_request_id": "provider-request-5fa1b7c598b8484f1a6af037f4cec6a7e952496589162d7cc70808f22b4c8d21",
+          "source_message_count": 20,
+          "epoch_id": "initial",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 21989,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            1312,
+            1314
+          ]
+        },
+        {
+          "step": 8,
+          "request_id": "provider-request-8a7e2463fcd59a550f0d50b3267d3048f449d0c9ac9183b24501eb260a5091b1",
+          "source_request_id": "provider-request-bea6e6a802c0d0dc64fc601233e1f547788e4ffb495295883ed2b913d2f3f09a",
+          "source_message_count": 10,
+          "epoch_id": "initial.g1",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 24234,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            1317,
+            1190
+          ]
+        },
+        {
+          "step": 10,
+          "request_id": "provider-request-4d048aa5eb61be07f4186c86b567b01dced31e11a352f52f26b3c197b100fbc7",
+          "source_request_id": "provider-request-2e38c1289efc3533e1baa5077e80d5a5fe8d308d2e708e4fe01643e915a25797",
+          "source_message_count": 10,
+          "epoch_id": "initial.g2",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 24201,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            1320,
+            1233
+          ]
+        },
+        {
+          "step": 12,
+          "request_id": "provider-request-24b5ed0c7a8be04ec75c4bbbf00437d38b3abaf84201b0be90d5e5c686dcf035",
+          "source_request_id": "provider-request-98bb68e95c06890815cd03138011f7f2c8e49f90a5c17a8d5d16bb583988ac01",
+          "source_message_count": 10,
+          "epoch_id": "initial.g3",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 24324,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            1321,
+            1078
+          ]
+        },
+        {
+          "step": 14,
+          "request_id": "provider-request-fbf3dbab2ca917b7c7acde61c42c6e24744e48c015a62701ffb1e1de64c4711e",
+          "source_request_id": "provider-request-2721a8514160ca47ed67b712feedbbeb63070d653b34f00da6d0a80d07e91fa5",
+          "source_message_count": 10,
+          "epoch_id": "initial.g4",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 20593,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            2033,
+            839
+          ]
+        },
+        {
+          "step": 18,
+          "request_id": "provider-request-b77ac030a16d4fb86b005a618392b8881f1c096578d3642fb4812d9397adc131",
+          "source_request_id": "provider-request-d0d10dc90619d8e419354a9af938d550badf8fb45e9d37e0a8f65d5182650cc0",
+          "source_message_count": 19,
+          "epoch_id": "initial.g5",
+          "boundary": "context_threshold",
+          "candidate_input_tokens": 20462,
+          "ordinary_limit": 23525,
+          "soft_limit": 18820,
+          "memory_message_tokens": [
+            1317,
+            1484
+          ]
+        }
+      ],
+      "summary_fact_presence": [
+        {
+          "step": 6,
+          "generation": 0,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        },
+        {
+          "step": 8,
+          "generation": 1,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        },
+        {
+          "step": 10,
+          "generation": 2,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        },
+        {
+          "step": 12,
+          "generation": 3,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        },
+        {
+          "step": 14,
+          "generation": 4,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        },
+        {
+          "step": 18,
+          "generation": 5,
+          "contains_whitespace_rule": true,
+          "contains_identifier_error": true,
+          "contains_negative_attempt_error": true
+        }
+      ],
+      "public_result": ".                                                                        [100%]",
+      "hidden_result": "5 passed in 0.01s"
+    },
+    {
+      "trial": "long-tool-output-1-legacy",
+      "status": "completed",
+      "outcome": "completed",
+      "summary": "Completed the plan and verified passing tests for: order_service.py.",
+      "steps": 26,
+      "elapsed_seconds": 177.71,
+      "provider_requests": 27,
+      "compression_count": 0,
+      "input_tokens": 375211,
+      "output_tokens": 4207,
+      "cache_hit_tokens": 38400,
+      "cache_miss_complete": true,
+      "provider_seconds_by_kind": {
+        "agent_step": 164.8
+      },
+      "evidence_read_attempts": 17,
+      "distinct_evidence_paths": 12,
+      "duplicate_evidence_attempts": 5,
+      "compression": [],
+      "summary_fact_presence": [],
+      "public_result": ".                                                                        [100%]",
+      "hidden_result": "5 passed in 0.01s"
+    }
+  ]
+}

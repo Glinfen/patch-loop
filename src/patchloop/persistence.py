@@ -930,6 +930,14 @@ class SQLiteStore:
     def save_task(self, task: Task, *, lease_guard: LeaseGuard | None = None) -> None:
         with connect_write(self.path) as connection:
             self._assert_legacy_write_guard(connection, task.id, lease_guard)
+            existing = connection.execute(
+                "SELECT payload_json FROM tasks WHERE id = ?", (task.id,)
+            ).fetchone()
+            if existing is not None:
+                self._validate_task_optimization(
+                    _decode_task_payload(existing["payload_json"]),
+                    task,
+                )
             connection.execute(
                 """
                 INSERT INTO tasks (
@@ -3694,6 +3702,7 @@ class SQLiteStore:
 
     @staticmethod
     def _validate_task_update(current: Task, requested: Task) -> None:
+        SQLiteStore._validate_task_optimization(current, requested)
         if current.session_id != requested.session_id:
             raise ValueError("task session binding is immutable")
         if current.outcome is not TaskOutcome.ACTIVE and requested.outcome is not current.outcome:
@@ -3703,6 +3712,14 @@ class SQLiteStore:
             and requested.runtime_condition is not TaskRuntimeCondition.RECOVERY_REQUIRED
         ):
             raise RecoveryRequired(current.id)
+
+    @staticmethod
+    def _validate_task_optimization(current: Task, requested: Task) -> None:
+        if (
+            current.execution.append_only_optimization
+            != requested.execution.append_only_optimization
+        ):
+            raise ValueError("task append_only optimization is immutable")
 
     @staticmethod
     def _validate_checkpoint_references(

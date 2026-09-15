@@ -107,6 +107,28 @@ def test_sqlite_store_round_trips_runtime_state(tmp_path: Path) -> None:
     assert store.list_artifacts(task.id) == [artifact]
 
 
+def test_sqlite_store_rejects_switching_append_only_optimization_for_existing_task(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "patchloop.db")
+    task = Task(
+        goal="Persist strategy",
+        repository=str(tmp_path),
+        execution=TaskExecutionConfig(prompt_cache_layout=PromptCacheLayout.APPEND_ONLY),
+    )
+    store.save_task(task)
+    switched = task.model_copy(
+        update={
+            "execution": task.execution.model_copy(
+                update={"append_only_optimization": "balanced_v1"}
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="optimization is immutable"):
+        store.save_task(switched)
+
+
 def test_sqlite_tool_call_ids_are_scoped_to_task(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "patchloop.db")
     first_task = Task(goal="First", repository=str(tmp_path))

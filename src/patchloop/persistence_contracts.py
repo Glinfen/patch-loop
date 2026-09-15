@@ -889,6 +889,11 @@ class FakeStore:
         current = self.get_task(task.id)
         self._check_version(task.id, current.version, expected_version)
         self._require_session_guard(current, lease_guard)
+        if (
+            current.execution.append_only_optimization
+            != task.execution.append_only_optimization
+        ):
+            raise ValueError("task append_only optimization is immutable")
         if current.session_id != task.session_id:
             raise ValueError("task session binding is immutable")
         if current.outcome is not TaskOutcome.ACTIVE and task.outcome is not current.outcome:

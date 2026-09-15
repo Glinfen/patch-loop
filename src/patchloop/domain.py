@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Self
+from typing import Any, Literal, Self
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from patchloop.providers.contracts import ProviderBinding
+
+type AppendOnlyOptimizationVersion = Literal["baseline_v1", "balanced_v1"]
 
 
 def utc_now() -> datetime:
@@ -207,9 +209,19 @@ class TaskExecutionConfig(BaseModel):
         pattern=r"^[A-Za-z0-9._/:@-]+$",
     )
     prompt_cache_layout: PromptCacheLayout = DEFAULT_PROMPT_CACHE_LAYOUT
+    append_only_optimization: AppendOnlyOptimizationVersion = "baseline_v1"
     project_instructions: str = ""
     cache_epoch: str = Field(default="initial", min_length=1, max_length=128)
     provider: ProviderBinding | None = None
+
+    @model_validator(mode="after")
+    def validate_append_only_optimization(self) -> Self:
+        if (
+            self.append_only_optimization == "balanced_v1"
+            and self.prompt_cache_layout is not PromptCacheLayout.APPEND_ONLY
+        ):
+            raise ValueError("balanced_v1 optimization requires append_only prompt layout")
+        return self
 
 
 class Task(BaseModel):

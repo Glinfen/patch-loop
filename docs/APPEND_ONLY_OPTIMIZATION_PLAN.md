@@ -1,6 +1,6 @@
 # append_only 开销优化开发方案
 
-调研日期：2026-09-15。代码基线：`69738d2`；真实证据执行修订：`8fecd4f`。状态：方案已完成；AOP-01 已完成，AOP-02～08 待开发。离线优化阶段不执行真实模型评测。
+调研日期：2026-09-15。代码基线：`69738d2`；真实证据执行修订：`8fecd4f`。状态：方案已完成；AOP-01、AOP-02 已完成，AOP-03～08 待开发。离线优化阶段不执行真实模型评测。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，承接 [PPS 方案](PROMPT_PREFIX_STABILITY_PLAN.md)，服务于 [第二阶段总路线](PHASE_2_DEVELOPMENT_PLAN.md)。用户已明确：真实评测等 append_only 优化后再进行。
 
@@ -247,6 +247,8 @@ tests/unit/test_cache_gates.py
 
 ### AOP-02：固定优化策略与恢复契约
 
+**状态：已完成（2026-09-15）。** Task 和 append-only Checkpoint 已固定 baseline_v1/balanced_v1 策略；Coordinator 提供冻结策略工厂并持久化软压缩退避位置；`run` 与 `session start` 支持显式选择，非法布局组合在加载 Provider 前拒绝；Runtime 恢复和持久化更新均拒绝同一 Task 静默切换策略。旧 Task 与旧快照缺字段时保持 baseline_v1。
+
 **Goal**：让候选策略可选择、可审计，恢复时不能静默改变配置。
 
 **Files / Symbols**
@@ -473,4 +475,4 @@ git diff --check
 
 **设计未决：None。** 关键模块、接口、状态归属、兼容路径、错误传播、任务边界和离线出口已确定。
 
-**实施/验收条件：** AOP-01～08 尚未实现；L0 未完成前所有真实模型评测暂停。真实命中和摘要质量只能在之后 L1/L2 确认；当前零价格无法证明费用下降，完整 Provider/Docker/SRF 和第二阶段验收也仍未完成。这些外部证据限制不阻塞本方案的离线开发。
+**实施/验收条件：** AOP-01、AOP-02 已实现，AOP-03～08 尚未实现；L0 未完成前所有真实模型评测暂停。真实命中和摘要质量只能在之后 L1/L2 确认；当前零价格无法证明费用下降，完整 Provider/Docker/SRF 和第二阶段验收也仍未完成。这些外部证据限制不阻塞本方案的离线开发。

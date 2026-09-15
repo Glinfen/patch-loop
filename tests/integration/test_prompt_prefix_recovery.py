@@ -17,8 +17,9 @@ from patchloop.domain import (
     TaskStatus,
     ToolCall,
 )
-from patchloop.persistence import SQLiteStore
+from patchloop.persistence import CheckpointSchemaError, RuntimeCheckpoint, SQLiteStore
 from patchloop.persistence_contracts import LeaseLost
+from patchloop.prompt_cache import PromptCacheCoordinator
 from patchloop.prompt_cache.coordinator import compute_prefix_budget
 from patchloop.providers import FakeProvider, ModelResponse
 from patchloop.providers.base import ModelUsage, ProviderRequestPurpose
@@ -94,6 +95,55 @@ class _CrashToolRuntime(AgentRuntime):
         if call.id == "call-0":
             raise KeyboardInterrupt("after first tool committed")
         return result
+
+
+def test_restore_rejects_task_and_checkpoint_optimization_version_conflict(
+    tmp_path: Path,
+) -> None:
+    task = Task(
+        id="optimization-conflict",
+        repository=str(tmp_path),
+        goal="Inspect the repository.",
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+            append_only_optimization="balanced_v1",
+        ),
+    )
+    messages = PromptCacheCoordinator.initial_messages(
+        "system",
+        task.goal,
+        layout=PromptCacheLayout.APPEND_ONLY,
+    )
+    coordinator = PromptCacheCoordinator.bootstrap(
+        messages,
+        [],
+        layout=PromptCacheLayout.APPEND_ONLY,
+        optimization_version="balanced_v1",
+    )
+    checkpoint = RuntimeCheckpoint(
+        task_id=task.id,
+        next_step_index=0,
+        messages=messages,
+        tool_specifications=[],
+        **coordinator.checkpoint_fields(),
+    )
+    runtime = AgentRuntime(
+        FakeProvider([ModelResponse(content="done")]),
+        ToolGateway(ToolContext(tmp_path), []),
+    )
+
+    restored = runtime._restore_prompt_cache(task, checkpoint)
+    assert restored.append_only_state.optimization_version == "balanced_v1"
+    conflicting = task.model_copy(
+        update={
+            "execution": TaskExecutionConfig(
+                prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+                append_only_optimization="baseline_v1",
+            )
+        }
+    )
+    with pytest.raises(CheckpointSchemaError, match="optimization version conflicts"):
+        runtime._restore_prompt_cache(conflicting, checkpoint)
 
 
 @pytest.mark.parametrize("boundary", ["before_request", "response_ready", "usage", "tool"])

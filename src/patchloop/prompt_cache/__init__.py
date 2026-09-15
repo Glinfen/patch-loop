@@ -6,6 +6,8 @@ provider I/O, persistence, tracing, or runtime orchestration.
 """
 
 from patchloop.prompt_cache.coordinator import (
+    AppendOnlyOptimizationPolicy,
+    AppendOnlyOptimizationVersion,
     AppendOnlyPromptState,
     CompressionFailureAction,
     PrefixBudget,
@@ -69,6 +71,8 @@ __all__ = [
     "MEMORY_SNAPSHOT_V2_PREFIX",
     "PROJECT_INSTRUCTIONS_PREFIX",
     "SUMMARY_PREFIX",
+    "AppendOnlyOptimizationPolicy",
+    "AppendOnlyOptimizationVersion",
     "AppendOnlyPromptState",
     "CacheCompressionRequest",
     "CacheDiagnostics",

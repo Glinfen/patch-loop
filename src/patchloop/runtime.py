@@ -288,6 +288,7 @@ class AgentRuntime:
             layout=task.execution.prompt_cache_layout,
             epoch_id=task.execution.cache_epoch,
             prefix_message_count=prefix_message_count,
+            optimization_version=task.execution.append_only_optimization,
         )
         frozen_tools = self._prompt_cache.frozen_tools
         self._persist_task(task)
@@ -419,6 +420,15 @@ class AgentRuntime:
     ) -> PromptCacheCoordinator:
         """Rebuild the coordinator from checkpoint fields without guessing layouts."""
 
+        if (
+            task.execution.prompt_cache_layout is PromptCacheLayout.APPEND_ONLY
+            and checkpoint.append_only_state is not None
+            and checkpoint.append_only_state.optimization_version
+            != task.execution.append_only_optimization
+        ):
+            raise CheckpointSchemaError(
+                "append_only optimization version conflicts with the task configuration"
+            )
         try:
             return PromptCacheCoordinator.from_legacy_state(
                 layout=task.execution.prompt_cache_layout,
@@ -2598,7 +2608,7 @@ class AgentRuntime:
         )
         memory_diagnostics = _append_only_memory_diagnostics(publication)
         cache_diagnostics: dict[str, object] = {
-            "optimization_version": "baseline_v1",
+            "optimization_version": prefix.optimization_version,
             "projection_format": projection_format,
             "projection_fallback_reason": projection_fallback_reason,
             "new_memory_tokens": sum(

@@ -18,6 +18,7 @@ import typer
 from patchloop.context import ContextDebug
 from patchloop.domain import (
     DEFAULT_PROMPT_CACHE_LAYOUT,
+    AppendOnlyOptimizationVersion,
     PromptCacheLayout,
     Task,
     TaskBudget,
@@ -304,6 +305,20 @@ def _command_error(exc: Exception) -> Never:
         }
     )
     raise typer.Exit(code=int(exit_code)) from None
+
+
+def _parse_append_only_optimization(
+    value: str,
+    layout: PromptCacheLayout,
+) -> AppendOnlyOptimizationVersion:
+    if value not in {"baseline_v1", "balanced_v1"}:
+        raise CliUsageError(
+            "append_only_optimization must be baseline_v1 or balanced_v1"
+        )
+    optimization = cast(AppendOnlyOptimizationVersion, value)
+    if optimization == "balanced_v1" and layout is not PromptCacheLayout.APPEND_ONLY:
+        raise CliUsageError("balanced_v1 optimization requires append_only prompt layout")
+    return optimization
 
 
 def _provider_from_env() -> RuntimeProvider:
@@ -600,6 +615,8 @@ def _execution_projection(services: WorkspaceServices, task: Task) -> dict[str, 
         "id": execution.id,
         "status": execution.status.value,
         "generation": execution.generation,
+        "prompt_cache_layout": task.execution.prompt_cache_layout.value,
+        "append_only_optimization": task.execution.append_only_optimization,
         "owner": lease_owner_summary(execution.owner_id),
         "lease_expires_at": execution.lease_expires_at.isoformat(),
         "active": active,
@@ -1009,6 +1026,13 @@ def start_session_task(
     prompt_cache_layout: Annotated[
         str, typer.Option(help="Prompt layout: legacy, stable or append_only.")
     ] = DEFAULT_PROMPT_CACHE_LAYOUT.value,
+    append_only_optimization: Annotated[
+        str,
+        typer.Option(
+            "--append-only-optimization",
+            help="Append-only optimization: baseline_v1 or balanced_v1.",
+        ),
+    ] = "baseline_v1",
     allow_write: Annotated[bool, typer.Option()] = False,
     allow_execute: Annotated[bool, typer.Option()] = False,
     sandbox: Annotated[
@@ -1029,6 +1053,11 @@ def start_session_task(
         permissions.append(PermissionLevel.EXECUTE.value)
     event_writer = None if services.json_output else _HumanProviderWriter()
     try:
+        cache_layout = PromptCacheLayout(prompt_cache_layout)
+        optimization = _parse_append_only_optimization(
+            append_only_optimization,
+            cache_layout,
+        )
         active_task = services.session.active_task(session_id)
         if active_task is not None:
             raise LeaseConflict(session_id, active_task.id)
@@ -1042,7 +1071,8 @@ def start_session_task(
             session_id,
             goal,
             execution=TaskExecutionConfig(
-                prompt_cache_layout=PromptCacheLayout(prompt_cache_layout),
+                prompt_cache_layout=cache_layout,
+                append_only_optimization=optimization,
                 allowed_permissions=permissions,
                 non_interactive=True,
                 sandbox_backend=sandbox,
@@ -2368,6 +2398,13 @@ def run_task(
         str,
         typer.Option(help="Prompt layout: legacy (rollback), stable, or append_only (PPS)."),
     ] = DEFAULT_PROMPT_CACHE_LAYOUT.value,
+    append_only_optimization: Annotated[
+        str,
+        typer.Option(
+            "--append-only-optimization",
+            help="Append-only optimization: baseline_v1 or balanced_v1.",
+        ),
+    ] = "baseline_v1",
     provider_profile: Annotated[str | None, typer.Option("--provider")] = None,
     model: Annotated[str | None, typer.Option("--model")] = None,
     provider_config: Annotated[Path | None, typer.Option("--provider-config")] = None,
@@ -2387,6 +2424,13 @@ def run_task(
     except ValueError:
         typer.echo("prompt_cache_layout must be legacy, stable or append_only", err=True)
         raise typer.Exit(code=2) from None
+    try:
+        optimization = _parse_append_only_optimization(
+            append_only_optimization,
+            cache_layout,
+        )
+    except CliUsageError as exc:
+        _command_error(exc)
     services = _workspace_services(repository)
     try:
         if sum((json_output, events_jsonl, human)) > 1:
@@ -2416,6 +2460,7 @@ def run_task(
         sandbox_backend=sandbox,
         sandbox_image=sandbox_image,
         prompt_cache_layout=cache_layout,
+        append_only_optimization=optimization,
         provider=binding,
     )
     event_writer: ProviderEventObserver | None

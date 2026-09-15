@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from patchloop.domain import PromptCacheLayout, ToolCall
 from patchloop.prompt_cache import (
     MEMORY_SNAPSHOT_PREFIX,
+    AppendOnlyOptimizationPolicy,
     AppendOnlyPromptState,
     CacheEpoch,
     CacheEpochBoundary,
@@ -489,6 +490,52 @@ def _append_only_state(**overrides: object) -> AppendOnlyPromptState:
     }
     values.update(overrides)
     return AppendOnlyPromptState(**values)  # type: ignore[arg-type]
+
+
+def test_append_only_optimization_policy_versions_are_frozen_and_repeatable() -> None:
+    baseline = AppendOnlyOptimizationPolicy.for_version("baseline_v1")
+    balanced = AppendOnlyOptimizationPolicy.for_version("balanced_v1")
+
+    assert baseline == AppendOnlyOptimizationPolicy.for_version("baseline_v1")
+    assert baseline.projection_mode == "legacy"
+    assert baseline.soft_limit_ratio == 0.8
+    assert baseline.soft_compression_backoff_steps == 0
+    assert baseline.summary_target_max_tokens is None
+    assert baseline.fixed_projection_budget is False
+    assert balanced == AppendOnlyOptimizationPolicy.for_version("balanced_v1")
+    assert balanced.projection_mode == "structured_v1"
+    assert balanced.soft_limit_ratio == 0.95
+    assert balanced.soft_compression_backoff_steps == 3
+    assert balanced.summary_target_max_tokens == 1_024
+    assert balanced.fixed_projection_budget is True
+    with pytest.raises(ValidationError, match="frozen"):
+        balanced.soft_limit_ratio = 0.5
+
+
+def test_old_append_only_state_defaults_to_baseline_policy() -> None:
+    state = AppendOnlyPromptState.model_validate({"root_prefix_message_count": 2})
+
+    assert state.optimization_version == "baseline_v1"
+    assert state.last_compression_attempt_step is None
+
+
+def test_balanced_policy_and_backoff_state_round_trip_without_changing_pending_request() -> None:
+    state = _append_only_state(
+        optimization_version="balanced_v1",
+        last_compression_attempt_step=7,
+        compression_request_id="compression-1",
+        compression_max_output_tokens=321,
+    )
+    coordinator = _append_only_coordinator(state=state)
+
+    assert coordinator.optimization_policy == AppendOnlyOptimizationPolicy.for_version(
+        "balanced_v1"
+    )
+    restored = PromptCacheCoordinator.from_snapshot(coordinator.snapshot())
+    assert restored.append_only_state == state
+    assert restored.append_only_state.compression_request_id == "compression-1"
+    assert restored.append_only_state.compression_max_output_tokens == 321
+    assert restored.append_only_state.last_compression_attempt_step == 7
 
 
 _UNSET: object = object()

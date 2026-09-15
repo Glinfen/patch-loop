@@ -35,6 +35,81 @@ def test_cli_task_entries_share_layout_selection(tmp_path, monkeypatch, layout, 
         assert any("PATCHLOOP_MEMORY_SNAPSHOT_V2" in m.content for m in provider.requests[0][0])
 
 
+@pytest.mark.parametrize("entry", ["run", "session"])
+def test_cli_creates_balanced_append_only_tasks_without_changing_resume_options(
+    tmp_path, monkeypatch, entry
+):
+    provider = FakeProvider([ModelResponse(content="done")])
+    monkeypatch.setattr("patchloop.cli._provider_from_env", lambda: provider)
+    runner = CliRunner()
+    if entry == "run":
+        arguments = ["run", "Inspect the repository", "--repo", str(tmp_path)]
+    else:
+        prefix = ["session", "--repo", str(tmp_path)]
+        created = runner.invoke(app, [*prefix, "create"])
+        assert created.exit_code == 0, created.output
+        session_id = json.loads(created.stdout)["id"]
+        arguments = [*prefix, "start", session_id, "Inspect the repository"]
+    arguments.extend(
+        [
+            "--prompt-cache-layout",
+            "append_only",
+            "--append-only-optimization",
+            "balanced_v1",
+        ]
+    )
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["execution"]["append_only_optimization"] == "balanced_v1"
+    task = SQLiteStore(tmp_path / ".patchloop" / "patchloop.db").get_task(payload["id"])
+    assert task.execution.prompt_cache_layout is PromptCacheLayout.APPEND_ONLY
+    assert task.execution.append_only_optimization == "balanced_v1"
+
+
+@pytest.mark.parametrize("entry", ["run", "session"])
+@pytest.mark.parametrize(
+    ("layout", "optimization"),
+    [("legacy", "balanced_v1"), ("append_only", "unknown_v1")],
+)
+def test_cli_rejects_invalid_append_only_optimization_before_loading_provider(
+    tmp_path, monkeypatch, entry, layout, optimization
+):
+    provider_loaded = False
+
+    def provider():
+        nonlocal provider_loaded
+        provider_loaded = True
+        return FakeProvider([ModelResponse(content="done")])
+
+    monkeypatch.setattr("patchloop.cli._provider_from_env", provider)
+    runner = CliRunner()
+    if entry == "run":
+        arguments = ["run", "Inspect the repository", "--repo", str(tmp_path)]
+    else:
+        prefix = ["session", "--repo", str(tmp_path)]
+        created = runner.invoke(app, [*prefix, "create"])
+        assert created.exit_code == 0, created.output
+        session_id = json.loads(created.stdout)["id"]
+        arguments = [*prefix, "start", session_id, "Inspect the repository"]
+    arguments.extend(
+        [
+            "--prompt-cache-layout",
+            layout,
+            "--append-only-optimization",
+            optimization,
+        ]
+    )
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 2, result.output
+    assert json.loads(result.stdout)["error_category"] == "usage_error"
+    assert provider_loaded is False
+
+
 def test_pps_gate_cli_writes_unverified_report_and_cannot_enable_simulated_rollout(tmp_path):
     from tests.unit.test_prefix_acceptance import _evidence
 

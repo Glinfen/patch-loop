@@ -12,7 +12,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from patchloop.context.engine import ContextBudgetError, ContextEngine
-from patchloop.domain import PromptCacheLayout, TaskBudget
+from patchloop.domain import AppendOnlyOptimizationVersion, PromptCacheLayout, TaskBudget
 from patchloop.prompt_cache.diagnostics import (
     CacheDiagnostics,
     CacheDiagnosticsSnapshot,
@@ -46,6 +46,41 @@ _SHA256_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 
 # Layouts whose coordinator owns a frozen cache epoch; legacy keeps none.
 _FROZEN_EPOCH_LAYOUTS = frozenset({PromptCacheLayout.STABLE, PromptCacheLayout.APPEND_ONLY})
+
+
+class AppendOnlyOptimizationPolicy(BaseModel):
+    """Frozen parameters owned by one append-only optimization version."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: AppendOnlyOptimizationVersion
+    projection_mode: Literal["legacy", "structured_v1"]
+    soft_limit_ratio: float = Field(gt=0.0, le=1.0)
+    soft_compression_backoff_steps: int = Field(ge=0)
+    summary_target_max_tokens: int | None = Field(default=None, ge=1)
+    fixed_projection_budget: bool = False
+
+    @classmethod
+    def for_version(
+        cls, version: AppendOnlyOptimizationVersion
+    ) -> AppendOnlyOptimizationPolicy:
+        if version == "baseline_v1":
+            return cls(
+                version=version,
+                projection_mode="legacy",
+                soft_limit_ratio=0.80,
+                soft_compression_backoff_steps=0,
+            )
+        if version == "balanced_v1":
+            return cls(
+                version=version,
+                projection_mode="structured_v1",
+                soft_limit_ratio=0.95,
+                soft_compression_backoff_steps=3,
+                summary_target_max_tokens=1_024,
+                fixed_projection_budget=True,
+            )
+        raise ValueError(f"unsupported append-only optimization version: {version}")
 
 
 class PromptCacheCoordinatorError(ValueError):
@@ -210,6 +245,8 @@ class AppendOnlyPromptState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal["1.0"] = "1.0"
+    optimization_version: AppendOnlyOptimizationVersion = "baseline_v1"
+    last_compression_attempt_step: int | None = Field(default=None, ge=0)
     root_prefix_message_count: int = Field(ge=2)
     last_submitted_message_count: int = Field(default=0, ge=0)
     last_submitted_message_fingerprints: list[str] = Field(default_factory=list)
@@ -407,6 +444,13 @@ class PromptCacheCoordinator:
         self._append_only_state = (
             append_only_state.model_copy(deep=True) if append_only_state is not None else None
         )
+        self._optimization_policy = (
+            AppendOnlyOptimizationPolicy.for_version(
+                self._append_only_state.optimization_version
+            )
+            if self._append_only_state is not None
+            else None
+        )
         self._diagnostics = diagnostics or CacheDiagnostics(
             redactor=redactor,
             miss_threshold_tokens=miss_threshold_tokens,
@@ -431,10 +475,27 @@ class PromptCacheCoordinator:
         miss_threshold_tokens: int = 70_000,
         max_delta_tokens: int = 2_048,
         append_only_state: AppendOnlyPromptState | None = None,
+        optimization_version: AppendOnlyOptimizationVersion | None = None,
     ) -> PromptCacheCoordinator:
         prefix_count = len(messages) if prefix_message_count is None else prefix_message_count
+        selected_optimization = (
+            optimization_version
+            or (
+                append_only_state.optimization_version
+                if append_only_state is not None
+                else "baseline_v1"
+            )
+        )
         if layout is PromptCacheLayout.APPEND_ONLY and append_only_state is None:
-            append_only_state = AppendOnlyPromptState(root_prefix_message_count=prefix_count)
+            append_only_state = AppendOnlyPromptState(
+                root_prefix_message_count=prefix_count,
+                optimization_version=selected_optimization,
+            )
+        if (
+            append_only_state is not None
+            and append_only_state.optimization_version != selected_optimization
+        ):
+            raise ValueError("append-only state optimization version does not match bootstrap")
         epoch = (
             CacheEpoch.bootstrap(
                 messages,
@@ -639,6 +700,14 @@ class PromptCacheCoordinator:
     @property
     def append_only_state(self) -> AppendOnlyPromptState | None:
         return self._append_only_state
+
+    @property
+    def optimization_policy(self) -> AppendOnlyOptimizationPolicy | None:
+        return (
+            self._optimization_policy.model_copy(deep=True)
+            if self._optimization_policy is not None
+            else None
+        )
 
     @property
     def usage(self) -> CacheUsageAccumulator:
@@ -1491,6 +1560,8 @@ class PromptCacheCoordinator:
 
 
 __all__ = [
+    "AppendOnlyOptimizationPolicy",
+    "AppendOnlyOptimizationVersion",
     "AppendOnlyPromptState",
     "PrefixBudget",
     "PromptCacheCheckpointFields",

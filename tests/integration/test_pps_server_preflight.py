@@ -368,6 +368,7 @@ def test_approval_scope_allows_only_fixture_read_commands(tmp_path):
 
     for command in (
         ["git", "status", "--short"],
+        ["git", "diff", "--name-only"],
         ["git", "diff", "--", "order_service.py"],
     ):
         effect = SimpleNamespace(tool_name="run_command", arguments_summary={"command": command})

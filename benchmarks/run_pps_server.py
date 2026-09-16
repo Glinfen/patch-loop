@@ -590,6 +590,7 @@ def _approval_is_permitted(approval: Any, effect: Any, repo: Path) -> bool:
             and effect.arguments_summary.get("command")
             in (
                 ["git", "status", "--short"],
+                ["git", "diff", "--name-only"],
                 ["git", "diff", "--", "order_service.py"],
             )
         )
@@ -702,6 +703,7 @@ def _execute_trial(
             "write_scope": ["order_service.py"],
             "allowed_read_only_commands": [
                 ["git", "status", "--short"],
+                ["git", "diff", "--name-only"],
                 ["git", "diff", "--", "order_service.py"],
             ],
             "allowed_test_commands": [

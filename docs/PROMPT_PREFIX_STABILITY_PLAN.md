@@ -2,7 +2,7 @@
 
 调研日期：2026-09-13。状态：PPS-01～07 已完成；PPS-08 验收工具与离线套件已实现，服务器真实试跑已执行但未通过发布门禁；PPS-09 入口及回退已准备，默认仍为 legacy。任务前缀：PPS。
 
-2026-09-15 后续开发：按 [append_only 开销优化方案](APPEND_ONLY_OPTIMIZATION_PLAN.md) 推进 AOP-01～08。用户要求真实评测后置，优化实现与离线 L0 未完成前，不启动新的真实模型试跑。历史 PPS 结构与发布门禁保留，AOP 前置通过不等于默认切换或第二阶段完成。
+2026-09-16 后续开发：按 [append_only 开销优化方案](APPEND_ONLY_OPTIMIZATION_PLAN.md) 完成 AOP-01～08。优化实现、离线 L0 和有预算真实入口已经交付；本轮未启动真实模型试跑。历史 PPS 结构与发布门禁保留，AOP 前置通过只允许后续显式进入 L1，不等于默认切换或第二阶段完成。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，基于当前工作区实际代码（含尚未提交的 Provider 契约改动）。不把其他计划中的接口当作已经完成的实现。
 
@@ -871,3 +871,10 @@ PGW adapter 契约测试随其文件落地加入 targeted 集合，不用尚不�
 - 完成请求的 hit/miss 全部完整，但主动 SIGINT 取消一次在途请求，缺少该 attempt 的 usage，严格缓存与费用门禁必须为 unverified。仅对已知普通请求计算的加权 warm 命中率为 58.82%，不含未知 attempt，不能替代正式指标，也低于 70% 目标。
 - 结果保存为 `benchmarks/results/pps_server_pilot04_{cache,diagnosis,quality,acceptance,provenance}.json`。原始 trace、SQLite、审批与测试日志保存在服务器 `/root/autodl-tmp/pgw-pps-20260915-r2/pilot-04`，本地副本在忽略目录 `.patchloop/pgw-pps-r2/pilot-04`。
 - 本批仅一对且含补充人工操作，不能视为正式三次配对。基于已知 warm 指标与压缩开销，暂不启动正式 12 任务批次。下一步降低 epoch 压缩开销并改善命中率；完整质量/安全、故障矩阵汇总及非零费用证据仍待补齐。默认继续 legacy。
+
+### AOP 后续真实入口（2026-09-16）
+
+- AOP-01～08 已完成。`append-only-overhead` 与 `aop` profile 负责 L0；`benchmarks/run_pps_server.py` 默认只进行报告、源码、fixture、证据摘要、场景和预算预检，输出模型请求数 0，且不加载凭据。
+- 真实执行必须显式提供 `--execute-real` 和三项批次预算。runner 按剩余预算顺序启动，固定策略写入每个 trial manifest；中断、未知 usage、预算不足、真实 Task 状态未完成或验证失败都会保存 partial 原因并停止扩量。
+- 正常成本样本只在无在途 Provider attempt 的静止边界进行持久化 pause/resume；`--inject-inflight-cancel` 是独立故障入口，产生的未知用量不得并入成本样本或通过补跑覆盖。
+- 当前停在 L0 归档完成、L1 尚未执行的边界。进入 L1 前须在提交后的同一源码修订重新生成 readiness；L1 两场景各一对通过后才能进入 L2 三次正式配对，PPS 发布门禁通过后才允许评估默认切换。具体命令与恢复步骤见 README。

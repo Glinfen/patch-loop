@@ -71,6 +71,28 @@ def test_cli_creates_balanced_append_only_tasks_without_changing_resume_options(
     assert task.execution.append_only_optimization == "balanced_v1"
 
 
+def test_run_cli_persists_explicit_time_budget(tmp_path, monkeypatch):
+    provider = FakeProvider([ModelResponse(content="done")])
+    monkeypatch.setattr("patchloop.cli._provider_from_env", lambda: provider)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "Inspect the repository",
+            "--repo",
+            str(tmp_path),
+            "--max-seconds",
+            "12.5",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    task_id = json.loads(result.stdout)["id"]
+    task = SQLiteStore(tmp_path / ".patchloop" / "patchloop.db").get_task(task_id)
+    assert task.budget.max_seconds == 12.5
+
+
 @pytest.mark.parametrize("entry", ["run", "session"])
 @pytest.mark.parametrize(
     ("layout", "optimization"),

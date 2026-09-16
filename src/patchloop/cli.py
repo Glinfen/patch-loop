@@ -2448,6 +2448,7 @@ def run_task(
         typer.Option(help="Allow restricted pytest or unittest execution."),
     ] = False,
     max_steps: Annotated[int, typer.Option(min=1, max=1_000)] = 20,
+    max_seconds: Annotated[float, typer.Option(min=0.001)] = 300.0,
     max_input_tokens: Annotated[int, typer.Option(min=1)] = 500_000,
     max_output_tokens: Annotated[int, typer.Option(min=1)] = 100_000,
     max_context_tokens: Annotated[int, typer.Option(min=256)] = 32_000,
@@ -2519,6 +2520,7 @@ def run_task(
         _command_error(exc)
     budget = TaskBudget(
         max_steps=max_steps,
+        max_seconds=max_seconds,
         max_input_tokens=max_input_tokens,
         max_output_tokens=max_output_tokens,
         max_context_tokens=max_context_tokens,

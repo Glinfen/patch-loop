@@ -1,6 +1,6 @@
 # append_only 开销优化开发方案
 
-调研日期：2026-09-15。代码基线：`69738d2`；真实证据执行修订：`8fecd4f`。状态：方案已完成；AOP-01～07 已完成，AOP-08 待开发。离线优化阶段不执行真实模型评测。
+调研日期：2026-09-15。代码基线：`69738d2`；真实证据执行修订：`8fecd4f`。状态：方案已完成；AOP-01～08 已完成。离线优化阶段未执行真实模型评测，后续 L1 仍须显式授权启动。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，承接 [PPS 方案](PROMPT_PREFIX_STABILITY_PLAN.md)，服务于 [第二阶段总路线](PHASE_2_DEVELOPMENT_PLAN.md)。用户已明确：真实评测等 append_only 优化后再进行。
 
@@ -426,6 +426,10 @@ tests/integration/test_prefix_cli.py
 
 ### AOP-08：准备有预算的后续真实验收入口
 
+**状态：已完成（2026-09-16）。** 真实 runner 默认只复验 `aop.v1` 报告、源码/fixture/证据摘要、场景和预算配置，输出 `model_requests=0`，既不读取凭据也不创建工作目录。只有显式增加 `--execute-real` 才按剩余批次预算顺序启动任务；中断、真实任务未完成、未知用量或预算不足均写入 partial 原因并停止扩量。每轮 manifest 固化布局、优化版本、Provider/模型、场景、完整 Task 预算、精确审批范围、验证要求和实际执行状态。正常成本路径使用无在途 attempt 的持久化 pause/resume，主动取消保留为独立故障入口。
+
+**实施验证：** runner/CLI/gate 定向集合 57 项通过，AOP Runtime/记忆/恢复集合 141 项通过；ruff、mypy 和 diff 检查通过。全量测试为 846 passed、2 skipped、1 个既有 Windows 默认 CA 路径失败，该项用 certifi 只作用于复验进程后单独通过。`append-only-overhead` 三次固定重复和 `aop` L0 的 13 项检查全部通过；默认预检返回 `preflight_only`、`model_requests=0` 且未创建工作目录。本轮没有使用 `--execute-real`。
+
 **Goal**：使优化后才能启动真实试跑，并在异常时停止扩量。
 
 **Files / Symbols**
@@ -464,7 +468,7 @@ AOP-01 的报告统计与 AOP-02 的配置模型可由独立实现工作并行�
 
 ## 8. Verification
 
-以下命令是后续实现时的验证入口；本规划轮仅核验文档链接、符号和设计一致性。
+以下命令是 AOP 实现和后续源码变更后的验证入口：
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q tests/unit/test_working_memory.py tests/unit/test_layered_memory_retrieval.py tests/unit/test_memory_publication.py
@@ -485,4 +489,4 @@ git diff --check
 
 **设计未决：None。** 关键模块、接口、状态归属、兼容路径、错误传播、任务边界和离线出口已确定。
 
-**实施/验收条件：** AOP-01～07 已实现，AOP-08 尚未实现；L0 已达到结构与开销门槛，但在 AOP-08 完成显式启动、报告复验和批次预算保护前仍暂停真实模型评测。真实命中和摘要质量只能在之后 L1/L2 确认；当前零价格无法证明费用下降，完整 Provider/Docker/SRF 和第二阶段验收也仍未完成。这些外部证据限制不阻塞本方案的离线开发。
+**实施/验收条件：** AOP-01～08 已实现，L0 已达到结构与开销门槛，且后续真实入口具备显式启动、报告复验和批次预算保护。本轮没有增加 `--execute-real`，模型请求数为 0；提交后的源码修订变化会使旧 readiness 失效，进入 L1 前必须先在目标修订重新生成并归档 L0 产物。真实命中和摘要质量只能在之后 L1/L2 确认；当前零价格无法证明费用下降，完整 Provider/Docker/SRF 和第二阶段验收也仍未完成。这些外部证据限制不阻塞后续离线开发。

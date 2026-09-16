@@ -1246,6 +1246,7 @@ def _single_item_update_diagnostics() -> tuple[int, int]:
 
 
 AOP_SOURCE_PATHS: tuple[str, ...] = (
+    "benchmarks/run_pps_server.py",
     "src/patchloop/cli.py",
     "src/patchloop/domain.py",
     "src/patchloop/runtime.py",

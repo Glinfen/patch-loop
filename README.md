@@ -258,7 +258,30 @@ patchloop validate-cache-gates --profile pps --report benchmarks/results/pps_pre
 [Runtime 结构报告](benchmarks/results/pps_prefix_runtime.json) 和
 [PPS 验收报告](benchmarks/results/pps_prefix_acceptance.json)。
 
-配置好 Provider 后，在独立工作副本中对同样的两类任务各执行三次 legacy/append_only 配对实验，
+append_only 优化的分层门禁为：L0 是 Fake/loopback 固定动作开销与恢复检查；L1 是两场景各一对的有限真实验收；L2 是同一修订下两场景各三对的 PPS 正式配对；L3 才是第二阶段至少 5 个仓库、30 个任务、每项至少 3 次的端到端验收。L0 只授权进入 L1，不等于真实收益、费用或默认发布已经通过。
+
+每次源码变更后先重新生成 L0 产物。下面的 runner 命令故意不带 `--execute-real`，只复验报告、源码、fixture、证据文件和预算；它不会读取 `.env`、创建任务或发出模型请求：
+
+```powershell
+.venv\Scripts\python.exe -m patchloop benchmark-cache --suite append-only-overhead --output benchmarks/results/aop_overhead_runtime.json
+.venv\Scripts\python.exe -m patchloop validate-cache-gates --profile aop --report benchmarks/results/aop_overhead_runtime.json --output benchmarks/results/aop_readiness.json
+.venv\Scripts\python.exe benchmarks/run_pps_server.py --work-root .patchloop/pps-l1-preflight --env-file .env --readiness-report benchmarks/results/aop_readiness.json --repeats 1 --max-batch-input-tokens 1600000 --max-batch-output-tokens 320000 --max-batch-cost-usd 4
+```
+
+预检输出必须为 `status=preflight_only`、`model_requests=0`。归档实现提交和这两份 L0 产物后，后续获准的 L1 执行轮复用同一命令及全新 `--work-root`，并显式增加 `--execute-real`；可用 `--provider`、`--model` 锁定配置。runner 为每项任务分配批次剩余预算，任何中断、未知 usage、预算不足、任务/隐藏测试失败都会保存 `manifest.json` 的 `partial_reason` 并停止新任务。`--inject-inflight-cancel` 仅用于独立取消故障批次，不得混入成本样本。
+
+暂停任务由 runner 在无在途 Provider attempt 的边界持久化并自动恢复。若进程意外退出，先检查 partial 证据，不要在原目录直接扩量：
+
+```powershell
+Get-Content .patchloop/pps-l1-*/manifest.json
+$trialRepo = "D:\path\to\pps-l1-batch\contract-migration-1-append_only\workspace"
+$sessionId = "session-id-from-manifest"
+.venv\Scripts\python.exe -m patchloop session --repo $trialRepo --json resume $sessionId
+```
+
+恢复仅用于收敛已存在的持久化任务。未知用量或取消故障不能通过补跑覆盖；应保留原目录，重新生成 readiness，并在明确批准后用新目录启动新批次。
+
+L1 通过后，配置好 Provider，在新的独立工作目录将 `--repeats` 调为 `3`，对同样的两类任务各执行三次 legacy/append_only 配对实验，
 按配对交错运行，并锁定模型、端点、工具、输入预算及价格版本。每轮任务必须设置费用预算；
 缓存是服务端 best-effort，交错运行也不能保证严格冷缓存隔离。把真实任务的 JSONL 路径写入 manifest：
 

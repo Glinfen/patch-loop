@@ -5,9 +5,10 @@ from __future__ import annotations
 import statistics
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from pathlib import PurePosixPath
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from patchloop.domain import PromptCacheLayout
 from patchloop.evaluation.cache import (
@@ -34,6 +35,59 @@ class CacheGateCheck(BaseModel):
     actual: Any = None
     target: str
     detail: str
+
+
+class AopEvidenceFile(BaseModel):
+    """One content-addressed input relative to the readiness report directory."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_relative_path(self) -> AopEvidenceFile:
+        path = PurePosixPath(self.path)
+        if path.is_absolute() or ".." in path.parts or ":" in self.path or "\\" in self.path:
+            raise ValueError("AOP evidence path must be a portable relative path")
+        return self
+
+
+class AopOptimizationEvidence(BaseModel):
+    """Provenance supplied by the CLI for an offline optimization report."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    revision: str = Field(min_length=1)
+    source_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    fixture_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    optimization_version: Literal["balanced_v1"] = "balanced_v1"
+    baseline_version: Literal["baseline_v1"] = "baseline_v1"
+    evidence_files: list[AopEvidenceFile] = Field(min_length=1)
+
+
+class AopReadinessReport(BaseModel):
+    """L0 result. Passing authorizes only a bounded real validation run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["aop.v1"] = "aop.v1"
+    revision: str = Field(min_length=1)
+    source_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    fixture_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    optimization_version: Literal["balanced_v1"] = "balanced_v1"
+    baseline_version: Literal["baseline_v1"] = "baseline_v1"
+    checks: list[CacheGateCheck] = Field(min_length=1)
+    evidence_files: list[AopEvidenceFile] = Field(min_length=1)
+    ready_for_bounded_validation: bool
+
+    def human_summary(self) -> str:
+        state = "READY" if self.ready_for_bounded_validation else "BLOCKED"
+        lines = [f"AOP L0 readiness: {state}"]
+        lines.extend(
+            f"{check.status.value.upper():10} {check.name}: {check.detail}" for check in self.checks
+        )
+        return "\n".join(lines)
 
 
 class MemoryQualityEvidence(BaseModel):
@@ -189,6 +243,226 @@ class CacheAcceptanceEvaluator:
             checks=checks,
             blocking_checks=blocking,
             provider_reported=provider_reported,
+        )
+
+    def evaluate_optimization(
+        self,
+        report: CacheEvaluationReport,
+        *,
+        evidence: AopOptimizationEvidence,
+    ) -> AopReadinessReport:
+        """Evaluate AOP L0 structure and overhead without approving real benefits."""
+
+        checks: list[CacheGateCheck] = []
+
+        def check(name: str, passed: bool, actual: Any, target: str) -> None:
+            checks.append(self._check(name, passed, actual, target))
+
+        check(
+            "append_only_overhead_suite",
+            report.schema_version == "aop-overhead.v1"
+            and report.suite_id == "append-only-overhead",
+            {"schema_version": report.schema_version, "suite_id": report.suite_id},
+            "dedicated append-only-overhead report; stress/PPS fixtures are not interchangeable",
+        )
+        check(
+            "fixture_binding",
+            report.fixture_fingerprint == evidence.fixture_fingerprint,
+            {
+                "report": report.fixture_fingerprint,
+                "evidence": evidence.fixture_fingerprint,
+            },
+            "report fixture fingerprint equals the readiness evidence fingerprint",
+        )
+        check(
+            "source_binding",
+            report.revision == evidence.revision
+            and report.source_fingerprint == evidence.source_fingerprint,
+            {
+                "report_revision": report.revision,
+                "current_revision": evidence.revision,
+                "report_source": report.source_fingerprint,
+                "current_source": evidence.source_fingerprint,
+            },
+            "report revision and source fingerprint match the current checkout",
+        )
+        runs = report.runs
+        baseline = [run for run in runs if run.optimization_version == evidence.baseline_version]
+        candidate = [
+            run for run in runs if run.optimization_version == evidence.optimization_version
+        ]
+        cases = {"contract-migration", "long-output"}
+        expected_repeats = {1, 2, 3}
+        repeat_shape = (
+            report.repeats == 3
+            and len(runs) == 12
+            and all(
+                {run.repeat for run in selected if run.task_case == case} == expected_repeats
+                and len([run for run in selected if run.task_case == case]) == 3
+                for selected in (baseline, candidate)
+                for case in cases
+            )
+            and {run.task_case for run in runs} == cases
+        )
+        check(
+            "three_fixed_repeats",
+            repeat_shape,
+            {
+                "baseline": len(baseline),
+                "candidate": len(candidate),
+                "declared_repeats": report.repeats,
+            },
+            "baseline_v1 and balanced_v1 each run both scenarios exactly three times",
+        )
+        deterministic = bool(runs) and all(
+            run.source == "deterministic"
+            and run.provider == "fake"
+            and run.input_tokens is None
+            and run.cache_hit_tokens is None
+            and run.cache_miss_tokens is None
+            and run.cost_usd is None
+            and all(
+                step.cache_hit_tokens is None
+                and step.cache_miss_tokens is None
+                and step.cost_usd is None
+                for step in run.steps
+            )
+            for run in runs
+        )
+        check(
+            "offline_evidence_identity",
+            deterministic,
+            sorted({(run.source, run.provider) for run in runs}),
+            "fixed-action data remains deterministic/fake and never claims provider-reported usage",
+        )
+        paired_actions = bool(baseline and candidate)
+        for case in cases:
+            for repeat in expected_repeats:
+                pair = [run for run in runs if run.task_case == case and run.repeat == repeat]
+                paired_actions = (
+                    paired_actions
+                    and len(pair) == 2
+                    and pair[0].fixed_action_fingerprint is not None
+                    and pair[0].fixed_action_fingerprint == pair[1].fixed_action_fingerprint
+                )
+        check(
+            "fixed_actions",
+            paired_actions,
+            len({run.fixed_action_fingerprint for run in runs}),
+            "each baseline/candidate pair uses the same fixed action fingerprint",
+        )
+        structured = bool(candidate) and all(
+            run.projection_format == "structured_v1"
+            and run.opaque_working_blob_count == 0
+            and (run.working_item_count or 0) > 0
+            for run in candidate
+        )
+        check(
+            "structured_working_memory",
+            structured,
+            {
+                "formats": sorted(str(run.projection_format) for run in candidate),
+                "opaque_blobs": sum(run.opaque_working_blob_count or 0 for run in candidate),
+            },
+            "balanced_v1 uses structured_v1 with zero opaque working blobs",
+        )
+        update_stream = (
+            report.offline_checks.get("single_item_updates") is True
+            and bool(candidate)
+            and all(
+                run.working_update_count == 100 and run.unrelated_working_republication_count == 0
+                for run in candidate
+            )
+        )
+        check(
+            "single_item_update_stream",
+            update_stream,
+            {
+                "updates": [run.working_update_count for run in candidate],
+                "unrelated": [run.unrelated_working_republication_count for run in candidate],
+            },
+            "100 updates publish no unrelated working entries, including read_file insertion",
+        )
+        prefix_recovery = (
+            report.offline_checks.get("prefix_invariants") is True
+            and report.offline_checks.get("recovery") is True
+        )
+        check(
+            "prefix_and_recovery",
+            prefix_recovery,
+            report.offline_checks,
+            "ordinary/compression prefix invariants and checkpoint recovery pass",
+        )
+
+        baseline_memory = sum(run.new_memory_tokens or 0 for run in baseline)
+        candidate_memory = sum(run.new_memory_tokens or 0 for run in candidate)
+        memory_complete = all(
+            run.compression_request_count == 0 or run.new_memory_tokens is not None for run in runs
+        )
+        memory_reduction = (
+            (baseline_memory - candidate_memory) / baseline_memory
+            if memory_complete and baseline_memory > 0
+            else None
+        )
+        check(
+            "new_memory_token_reduction",
+            memory_reduction is not None and memory_reduction >= 0.50,
+            {
+                "baseline": baseline_memory,
+                "candidate": candidate_memory,
+                "reduction": memory_reduction,
+            },
+            "combined estimated new-memory tokens decrease by at least 50%",
+        )
+        baseline_compressions = sum(run.compression_request_count or 0 for run in baseline)
+        candidate_compressions = sum(run.compression_request_count or 0 for run in candidate)
+        per_case_nonincrease = all(
+            sum(run.compression_request_count or 0 for run in candidate if run.task_case == case)
+            <= sum(run.compression_request_count or 0 for run in baseline if run.task_case == case)
+            for case in cases
+        )
+        compression_reduction = (
+            (baseline_compressions - candidate_compressions) / baseline_compressions
+            if baseline_compressions > 0
+            else None
+        )
+        check(
+            "compression_call_reduction",
+            per_case_nonincrease
+            and compression_reduction is not None
+            and compression_reduction >= 0.25,
+            {
+                "baseline": baseline_compressions,
+                "candidate": candidate_compressions,
+                "reduction": compression_reduction,
+            },
+            "no scenario increases compressions and combined calls decrease by at least 25%",
+        )
+        input_complete = all(run.total_estimated_input_tokens is not None for run in runs)
+        baseline_input = sum(run.total_estimated_input_tokens or 0 for run in baseline)
+        candidate_input = sum(run.total_estimated_input_tokens or 0 for run in candidate)
+        check(
+            "estimated_input_nonincrease",
+            input_complete and candidate_input <= baseline_input,
+            {"baseline": baseline_input, "candidate": candidate_input},
+            "combined total estimated input does not increase",
+        )
+        check(
+            "bounded_validation_only",
+            True,
+            "l0-offline",
+            "readiness authorizes bounded validation only, not PPS benefit or rollout",
+        )
+        ready = all(item.status is GateStatus.PASS for item in checks)
+        return AopReadinessReport(
+            revision=evidence.revision,
+            source_fingerprint=evidence.source_fingerprint,
+            fixture_fingerprint=evidence.fixture_fingerprint,
+            optimization_version=evidence.optimization_version,
+            baseline_version=evidence.baseline_version,
+            checks=checks,
+            evidence_files=evidence.evidence_files,
+            ready_for_bounded_validation=ready,
         )
 
     def _evaluate_prefix(
@@ -469,13 +743,15 @@ class CacheAcceptanceEvaluator:
             if cost_complete
             else {}
         )
+        cost_verifiable = (
+            cost_complete
+            and bool(cost_by_case)
+            and all(values["baseline"] > 0 for values in cost_by_case.values())
+        )
         check(
             "total_cost_reduction",
-            all(
-                v["baseline"] > 0 and v["candidate"] <= v["baseline"] * 0.8
-                for v in cost_by_case.values()
-            )
-            if cost_complete
+            all(v["candidate"] <= v["baseline"] * 0.8 for v in cost_by_case.values())
+            if cost_verifiable
             else None,
             cost_by_case,
             "each task's median total known cost decreases >= 20%, including compression/attempts",
@@ -800,6 +1076,9 @@ def _unexpected_prefix_changes(run: CacheRunReport) -> int:
 
 
 __all__ = [
+    "AopEvidenceFile",
+    "AopOptimizationEvidence",
+    "AopReadinessReport",
     "CacheAcceptanceEvaluator",
     "CacheAcceptanceReport",
     "CacheGateCheck",

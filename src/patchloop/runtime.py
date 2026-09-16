@@ -2680,6 +2680,7 @@ class AgentRuntime:
             {
                 "step": state.next_step_index,
                 **decision.model_dump(mode="json"),
+                **cache_diagnostics,
                 "recovering_compression": recovering_compression,
                 "oversized_delta": oversized_delta,
             },

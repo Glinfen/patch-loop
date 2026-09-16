@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import subprocess
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,6 +29,8 @@ from patchloop.domain import (
     TaskStatus,
 )
 from patchloop.evaluation import (
+    AopEvidenceFile,
+    AopOptimizationEvidence,
     CacheAcceptanceEvaluator,
     CacheBenchmarkRunner,
     CacheEvaluationReport,
@@ -43,6 +47,8 @@ from patchloop.evaluation import (
     MemoryQualityEvidence,
     RealProviderCacheCollector,
     RetrievalBaseline,
+    aop_source_fingerprint,
+    append_only_overhead_fixture_fingerprint,
     load_coding_manifest,
     load_evaluation_manifest,
     load_memory_manifest,
@@ -1857,10 +1863,27 @@ def benchmark_memory(
     typer.echo(report.model_dump_json(indent=2))
 
 
+def _git_revision(repository: Path) -> str:
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout.strip()
+    if not revision:
+        raise ValueError("git revision is unavailable")
+    return revision
+
+
 @app.command("benchmark-cache")
 def benchmark_cache(
     mode: Annotated[str, typer.Option(help="deterministic or provider.")] = "deterministic",
-    suite: Annotated[str, typer.Option(help="cache-matrix or prefix-runtime.")] = "cache-matrix",
+    suite: Annotated[
+        str,
+        typer.Option(help="cache-matrix, prefix-runtime or append-only-overhead."),
+    ] = "cache-matrix",
     trace_manifest: Annotated[
         str, typer.Option(help="JSON manifest of paired Provider trace runs.")
     ] = "",
@@ -1873,14 +1896,28 @@ def benchmark_cache(
     repeats: Annotated[int, typer.Option(min=3, max=20)] = 3,
 ) -> None:
     try:
-        if suite not in {"cache-matrix", "prefix-runtime"}:
-            raise ValueError("suite must be cache-matrix or prefix-runtime")
+        if suite not in {"cache-matrix", "prefix-runtime", "append-only-overhead"}:
+            raise ValueError("suite must be cache-matrix, prefix-runtime or append-only-overhead")
+        if suite == "append-only-overhead" and repeats != 3:
+            raise ValueError("append-only-overhead requires exactly three repeats")
         if mode == "deterministic":
             runner = CacheBenchmarkRunner(repeats=repeats)
-            report = (
-                runner.run_prefix_suite(repository) if suite == "prefix-runtime" else runner.run()
-            )
+            if suite == "prefix-runtime":
+                report = runner.run_prefix_suite(repository)
+            elif suite == "append-only-overhead":
+                report = runner.run_append_only_overhead_suite(repository)
+                source_root = Path(__file__).resolve().parents[2]
+                report = report.model_copy(
+                    update={
+                        "revision": _git_revision(source_root),
+                        "source_fingerprint": aop_source_fingerprint(source_root),
+                    }
+                )
+            else:
+                report = runner.run()
         elif mode == "provider":
+            if suite == "append-only-overhead":
+                raise ValueError("append-only-overhead is an offline deterministic suite")
             if suite == "prefix-runtime" and not trace_manifest:
                 raise ValueError(
                     "PPS provider evaluation requires --trace-manifest with paired runs"
@@ -1970,7 +2007,7 @@ def _provider_prefix_manifest(path: Path) -> CacheEvaluationReport:
 
 @app.command("validate-cache-gates")
 def validate_cache_gates(
-    profile: Annotated[str, typer.Option(help="pco or pps acceptance profile.")] = "pco",
+    profile: Annotated[str, typer.Option(help="pco, pps or aop acceptance profile.")] = "pco",
     baseline_report: Annotated[
         str, typer.Option(help="Same-batch legacy baseline report for PPS.")
     ] = "",
@@ -2004,6 +2041,43 @@ def validate_cache_gates(
 ) -> None:
     try:
         cache_report = CacheEvaluationReport.model_validate_json(report.read_text(encoding="utf-8"))
+        if profile == "aop":
+            repository_root = Path(__file__).resolve().parents[2]
+            report_root = output.parent.resolve()
+            report_path = report.resolve()
+            if report_path == output.resolve():
+                raise ValueError("AOP readiness output must not overwrite its evidence report")
+            try:
+                relative_report = report_path.relative_to(report_root).as_posix()
+            except ValueError as exc:
+                raise ValueError(
+                    "AOP evidence report must be inside the readiness report directory"
+                ) from exc
+            aop_acceptance = CacheAcceptanceEvaluator().evaluate_optimization(
+                cache_report,
+                evidence=AopOptimizationEvidence(
+                    revision=_git_revision(repository_root),
+                    source_fingerprint=aop_source_fingerprint(repository_root),
+                    fixture_fingerprint=append_only_overhead_fixture_fingerprint(
+                        cache_report.repeats
+                    ),
+                    evidence_files=[
+                        AopEvidenceFile(
+                            path=relative_report,
+                            sha256=hashlib.sha256(report_path.read_bytes()).hexdigest(),
+                        )
+                    ],
+                ),
+            )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(aop_acceptance.model_dump_json(indent=2), encoding="utf-8")
+            typer.echo(aop_acceptance.human_summary())
+            typer.echo(f"machine_report={output}")
+            if not aop_acceptance.ready_for_bounded_validation:
+                raise typer.Exit(code=1)
+            return
+        if profile not in {"pco", "pps"}:
+            raise ValueError("cache gate profile must be pco, pps or aop")
         deterministic_report = (
             CacheEvaluationReport.model_validate_json(
                 Path(local_report).read_text(encoding="utf-8")
@@ -2037,7 +2111,7 @@ def validate_cache_gates(
                 else PromptCacheLayout.STABLE,
             ),
         )
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
     output.parent.mkdir(parents=True, exist_ok=True)

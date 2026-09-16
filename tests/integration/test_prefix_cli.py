@@ -1,10 +1,12 @@
 import json
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from patchloop.cli import app
 from patchloop.domain import DEFAULT_PROMPT_CACHE_LAYOUT, PromptCacheLayout
+from patchloop.evaluation import aop_source_fingerprint
 from patchloop.persistence import SQLiteStore
 from patchloop.providers import FakeProvider, ModelResponse
 
@@ -136,6 +138,43 @@ def test_pps_gate_cli_writes_unverified_report_and_cannot_enable_simulated_rollo
     assert saved["schema_version"] == "pps.v1"
     assert saved["rollout"]["enabled"] is False
     assert any(c["status"] == "unverified" for c in saved["checks"])
+
+
+def test_aop_gate_cli_writes_bounded_readiness_report(tmp_path):
+    from patchloop.cli import _git_revision
+    from tests.unit.test_prefix_acceptance import _aop_evidence_report
+
+    report, _ = _aop_evidence_report()
+    repository = Path(__file__).parents[2]
+    report = report.model_copy(
+        update={
+            "revision": _git_revision(repository),
+            "source_fingerprint": aop_source_fingerprint(repository),
+        }
+    )
+    report_path = tmp_path / "overhead.json"
+    report_path.write_text(report.model_dump_json(), encoding="utf-8")
+    output = tmp_path / "readiness.json"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "validate-cache-gates",
+            "--profile",
+            "aop",
+            "--report",
+            str(report_path),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    saved = json.loads(output.read_text(encoding="utf-8"))
+    assert saved["schema_version"] == "aop.v1"
+    assert saved["ready_for_bounded_validation"] is True
+    assert saved["evidence_files"][0]["path"] == "overhead.json"
+    assert len(saved["evidence_files"][0]["sha256"]) == 64
 
 
 def test_paused_compression_report_does_not_write_artifacts_after_lease_release(

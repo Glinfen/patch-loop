@@ -4,14 +4,18 @@ import pytest
 
 from patchloop.domain import PromptCacheLayout
 from patchloop.evaluation.cache import (
+    CacheBenchmarkRunner,
     CacheEvaluationReport,
     CacheEvaluationScenario,
     CacheEvaluationVariant,
     CacheRunReport,
     CacheSimulationStep,
+    append_only_overhead_fixture_fingerprint,
     summarize_cache_run,
 )
 from patchloop.evaluation.gates import (
+    AopEvidenceFile,
+    AopOptimizationEvidence,
     CacheAcceptanceEvaluator,
     CacheRolloutPolicy,
     GateStatus,
@@ -133,6 +137,75 @@ def _evidence():
     return real, local, quality
 
 
+def _aop_evidence_report():
+    runs = []
+    fixture = append_only_overhead_fixture_fingerprint()
+    for version in ("baseline_v1", "balanced_v1"):
+        candidate = version == "balanced_v1"
+        for case in ("contract-migration", "long-output"):
+            for repeat in (1, 2, 3):
+                step = CacheSimulationStep(
+                    step=0,
+                    scenario=CacheEvaluationScenario.WARM_CONTINUATION,
+                    request_fingerprint="a" * 64,
+                    comparison_kind="ordinary",
+                    metric_basis="normalized_messages_v1",
+                    previous_request_is_prefix=True,
+                    tools_unchanged=True,
+                    binding_unchanged=True,
+                )
+                runs.append(
+                    CacheRunReport(
+                        variant=CacheEvaluationVariant.APPEND_ONLY,
+                        repeat=repeat,
+                        source="deterministic",
+                        provider="fake",
+                        task_case=case,
+                        steps=[step],
+                        optimization_version=version,
+                        projection_format="structured_v1" if candidate else "legacy_v1",
+                        new_memory_tokens=80 if candidate else 200,
+                        working_item_count=4 if candidate else 1,
+                        opaque_working_blob_count=0 if candidate else 1,
+                        compression_count=2 if candidate else 4,
+                        compression_request_count=2 if candidate else 4,
+                        total_estimated_input_tokens=900 if candidate else 1_000,
+                        fixed_action_fingerprint=(case[0] + str(repeat))
+                        .encode()
+                        .hex()
+                        .ljust(64, "0"),
+                        working_update_count=100,
+                        unrelated_working_republication_count=0,
+                    )
+                )
+    report = CacheEvaluationReport(
+        schema_version="aop-overhead.v1",
+        suite_id="append-only-overhead",
+        repeats=3,
+        variants=(CacheEvaluationVariant.APPEND_ONLY,),
+        scenarios=(),
+        fixture_fingerprint=fixture,
+        deterministic_fingerprint="b" * 64,
+        compression_prefix_reusable=True,
+        runs=runs,
+        summaries=[summarize_cache_run(runs[0])],
+        offline_checks={
+            "prefix_invariants": True,
+            "recovery": True,
+            "single_item_updates": True,
+        },
+        revision="revision-a",
+        source_fingerprint="c" * 64,
+    )
+    evidence = AopOptimizationEvidence(
+        revision="revision-a",
+        source_fingerprint="c" * 64,
+        fixture_fingerprint=fixture,
+        evidence_files=[AopEvidenceFile(path="overhead.json", sha256="d" * 64)],
+    )
+    return report, evidence
+
+
 def _evaluate(report, local, quality):
     return CacheAcceptanceEvaluator(require_provider_reported=False).evaluate(
         report,
@@ -230,6 +303,117 @@ def test_missing_fault_matrix_evidence_is_unverified():
     assert check.status is GateStatus.UNVERIFIED
 
 
+def test_aop_gate_accepts_only_complete_offline_overhead_evidence():
+    report, evidence = _aop_evidence_report()
+
+    result = CacheAcceptanceEvaluator().evaluate_optimization(report, evidence=evidence)
+
+    assert result.schema_version == "aop.v1"
+    assert result.ready_for_bounded_validation
+    assert result.optimization_version == "balanced_v1"
+    assert next(c for c in result.checks if c.name == "bounded_validation_only").status is (
+        GateStatus.PASS
+    )
+
+
+@pytest.mark.parametrize("path", ["../outside.json", "/absolute.json", "C:/report.json"])
+def test_aop_evidence_paths_must_be_portable_and_relative(path):
+    with pytest.raises(ValueError, match="portable relative path"):
+        AopEvidenceFile(path=path, sha256="d" * 64)
+
+
+@pytest.mark.parametrize(
+    ("report_change", "evidence_change", "failed_check"),
+    [
+        ({"runs": None}, {}, "three_fixed_repeats"),
+        ({}, {"fixture_fingerprint": "e" * 64}, "fixture_binding"),
+        ({}, {"source_fingerprint": "e" * 64}, "source_binding"),
+        ({"suite_id": "pps-prefix-runtime"}, {}, "append_only_overhead_suite"),
+    ],
+)
+def test_aop_gate_rejects_missing_performance_and_provenance_drift(
+    report_change, evidence_change, failed_check
+):
+    report, evidence = _aop_evidence_report()
+    if report_change.get("runs") is None and "runs" in report_change:
+        report_change = {"runs": report.runs[:-1]}
+    report = report.model_copy(update=report_change)
+    evidence = evidence.model_copy(update=evidence_change)
+
+    result = CacheAcceptanceEvaluator().evaluate_optimization(report, evidence=evidence)
+
+    assert not result.ready_for_bounded_validation
+    assert next(c for c in result.checks if c.name == failed_check).status is GateStatus.FAIL
+
+
+def test_aop_fixed_actions_cannot_masquerade_as_provider_reported_usage():
+    report, evidence = _aop_evidence_report()
+    report = report.model_copy(
+        update={
+            "runs": [
+                report.runs[0].model_copy(update={"source": "provider_reported"}),
+                *report.runs[1:],
+            ]
+        }
+    )
+
+    result = CacheAcceptanceEvaluator().evaluate_optimization(report, evidence=evidence)
+
+    assert not result.ready_for_bounded_validation
+    check = next(c for c in result.checks if c.name == "offline_evidence_identity")
+    assert check.status is GateStatus.FAIL
+
+
+def test_pps_zero_price_cost_reduction_is_unverified():
+    report, local, quality = _evidence()
+    report = report.model_copy(
+        update={
+            "runs": [
+                run.model_copy(
+                    update={
+                        "cost_usd": 0,
+                        "steps": [step.model_copy(update={"cost_usd": 0}) for step in run.steps],
+                    }
+                )
+                for run in report.runs
+            ]
+        }
+    )
+
+    result = _evaluate(report, local, quality)
+
+    check = next(c for c in result.checks if c.name == "total_cost_reduction")
+    assert check.status is GateStatus.UNVERIFIED
+
+
+def test_append_only_overhead_fixture_uses_structured_memory_and_fixed_actions(tmp_path):
+    baseline = CacheBenchmarkRunner().run_runtime_fixture(
+        tmp_path,
+        layout=PromptCacheLayout.APPEND_ONLY,
+        prefix_suite=True,
+        optimization_version="baseline_v1",
+        overhead_case="long-output",
+    )
+    candidate = CacheBenchmarkRunner().run_runtime_fixture(
+        tmp_path,
+        layout=PromptCacheLayout.APPEND_ONLY,
+        prefix_suite=True,
+        optimization_version="balanced_v1",
+        overhead_case="long-output",
+    )
+
+    assert baseline.fixed_action_fingerprint == candidate.fixed_action_fingerprint
+    assert baseline.projection_format == "legacy_v1"
+    assert baseline.opaque_working_blob_count == 1
+    assert candidate.projection_format == "structured_v1"
+    assert candidate.opaque_working_blob_count == 0
+    assert candidate.working_item_count == 4
+    assert candidate.working_update_count == 100
+    assert candidate.unrelated_working_republication_count == 0
+    assert candidate.compression_request_count <= baseline.compression_request_count
+    assert candidate.total_estimated_input_tokens <= baseline.total_estimated_input_tokens
+
+
 @pytest.mark.parametrize("case", ["ordinary", "compression", "restore"])
 def test_prefix_fixture_uses_runtime_without_a_cache_simulator(tmp_path, monkeypatch, case):
     from patchloop.evaluation.cache import CacheBenchmarkRunner
@@ -241,15 +425,21 @@ def test_prefix_fixture_uses_runtime_without_a_cache_simulator(tmp_path, monkeyp
         "patchloop.evaluation.cache.DeterministicPrefixCacheSimulator", reject_simulator
     )
     run = CacheBenchmarkRunner().run_runtime_fixture(
-        tmp_path, layout=PromptCacheLayout.APPEND_ONLY, prefix_suite=True,
-        compress=case == "compression", restore=case == "restore",
+        tmp_path,
+        layout=PromptCacheLayout.APPEND_ONLY,
+        prefix_suite=True,
+        compress=case == "compression",
+        restore=case == "restore",
     )
     assert run.source == "deterministic"
     assert run.restored_request_count == (1 if case == "restore" else 0)
     assert run.input_tokens is run.cache_hit_tokens is run.cost_usd is None
     assert run.ordinary_budget_respected
-    assert all(s.previous_request_is_prefix is True and s.tools_unchanged and s.binding_unchanged
-               for s in run.steps if s.comparison_kind in {"ordinary", "compression"})
+    assert all(
+        s.previous_request_is_prefix is True and s.tools_unchanged and s.binding_unchanged
+        for s in run.steps
+        if s.comparison_kind in {"ordinary", "compression"}
+    )
     if case == "compression":
         assert run.compression_count >= 10
         assert run.max_summary_messages == 1

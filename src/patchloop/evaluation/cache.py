@@ -20,7 +20,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from patchloop.context import ContextEngine
 from patchloop.domain import (
+    AppendOnlyOptimizationVersion,
     PromptCacheLayout,
     Task,
     TaskBudget,
@@ -207,6 +209,10 @@ class CacheRunReport(BaseModel):
     summary_estimated_tokens: int | None = Field(default=None, ge=0)
     freed_input_tokens: int | None = Field(default=None, ge=0)
     headroom_after_rebase: int | None = None
+    total_estimated_input_tokens: int | None = Field(default=None, ge=0)
+    fixed_action_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    working_update_count: int | None = Field(default=None, ge=0)
+    unrelated_working_republication_count: int | None = Field(default=None, ge=0)
 
 
 class CacheVariantSummary(BaseModel):
@@ -303,6 +309,9 @@ class CacheEvaluationReport(BaseModel):
     compression_prefix_reusable: bool = False
     runs: list[CacheRunReport] = Field(min_length=1)
     summaries: list[CacheVariantSummary] = Field(min_length=1)
+    offline_checks: dict[str, bool] = Field(default_factory=dict)
+    revision: str | None = None
+    source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_runs(self) -> CacheEvaluationReport:
@@ -312,9 +321,13 @@ class CacheEvaluationReport(BaseModel):
 
     def human_summary(self) -> str:
         lines = [
-            "PPS prompt-prefix evaluation"
-            if self.schema_version.startswith("pps")
-            else "PCO-06 cache matrix",
+            (
+                "PPS prompt-prefix evaluation"
+                if self.schema_version.startswith("pps")
+                else "AOP append-only overhead evaluation"
+                if self.schema_version.startswith("aop")
+                else "PCO-06 cache matrix"
+            ),
             f"source={'deterministic' if self.deterministic_fingerprint else 'provider-reported'} "
             f"repeats={self.repeats} fixture={self.fixture_fingerprint[:12]}",
             "variant | correctness | input tokens (mean/min/max) | "
@@ -384,6 +397,8 @@ class CacheBenchmarkRunner:
         prefix_suite: bool = False,
         restore: bool = False,
         compress: bool = False,
+        optimization_version: AppendOnlyOptimizationVersion = "baseline_v1",
+        overhead_case: Literal["contract-migration", "long-output"] | None = None,
     ) -> CacheRunReport:
         """Run six real Runtime tool rounds and report the recorded provider requests.
 
@@ -400,13 +415,17 @@ class CacheBenchmarkRunner:
         from patchloop.events import EventLogger
         from patchloop.memory.manager import ManagedMemoryRetrieval
         from patchloop.memory.retrieval import RetrievalLayer, RetrievalSelection
+        from patchloop.memory.working import (
+            WorkingMemoryItemKind,
+            WorkingMemoryProviderEntry,
+        )
         from patchloop.persistence import RuntimeCheckpoint, SQLiteStore
         from patchloop.providers import FakeProvider, ModelResponse
         from patchloop.runtime import AgentRuntime
         from patchloop.tools.base import Tool, ToolContext, ToolInputModel
         from patchloop.tools.gateway import ToolGateway
 
-        count = 36 if compress else 6
+        count = 8 if overhead_case is not None else 36 if compress else 6
         observations: list[int] = []
 
         class FixtureInput(ToolInputModel):
@@ -422,7 +441,13 @@ class CacheBenchmarkRunner:
                 index = FixtureInput.model_validate(arguments).index
                 observations.append(index)
                 body = f"observation-{index}: "
-                if compress:
+                if overhead_case == "contract-migration":
+                    body += "contract compatibility evidence; " * 90
+                elif overhead_case == "long-output" and index == 2:
+                    body += "long deterministic tool output; " * 1_200
+                elif overhead_case == "long-output":
+                    body += "stable long-output observation; " * 45
+                elif compress:
                     body += "evidence " * 250
                 elif index == 2:
                     body += "long-tool-output;" * 1_200
@@ -503,6 +528,46 @@ class CacheBenchmarkRunner:
                     )
                     if not prefix_suite or retrieved.context is None:
                         return retrieved
+                    if overhead_case is not None:
+                        overhead_marker = provider.index
+                        files = [
+                            WorkingMemoryProviderEntry(
+                                key=f"read:src/module_{index}.py",
+                                kind=WorkingMemoryItemKind.ACCESSED_FILE,
+                                value=(f"src/module_{index}.py compatibility evidence"),
+                            )
+                            for index in range(3)
+                        ]
+                        active = WorkingMemoryProviderEntry(
+                            key="plan:active",
+                            kind=WorkingMemoryItemKind.PLAN,
+                            value=f"action-{overhead_marker}",
+                            pinned=True,
+                        )
+                        legacy_blob = "PATCHLOOP_WORKING_MEMORY_V1\n" + json.dumps(
+                            [entry.model_dump(mode="json") for entry in [*files, active]],
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        selection = RetrievalSelection(
+                            id="overhead-working-state",
+                            layer=RetrievalLayer.WORKING,
+                            text=legacy_blob,
+                            provider_text=legacy_blob,
+                            provider_items=[*files, active]
+                            if projection_mode == "structured_v1"
+                            else None,
+                            score=1.0,
+                            estimated_tokens=max(1, len(legacy_blob) // 4),
+                            reason="fixed append-only overhead fixture",
+                            diversity_key="overhead-working-state",
+                        )
+                        return replace(
+                            retrieved,
+                            context=retrieved.context.model_copy(
+                                update={"selections": [selection]},
+                            ),
+                        )
                     marker = ("A", "B", "A", "B", "C")[min(provider.index, 4)]
                     selection = RetrievalSelection(
                         id="prefix-stimulus",
@@ -537,10 +602,13 @@ class CacheBenchmarkRunner:
                 repository=str(root),
                 budget=TaskBudget(
                     max_steps=count + 2,
-                    max_context_tokens=4_500 if compress else 32_000,
-                    max_tool_output_chars=3_000 if compress else 8_000,
+                    max_context_tokens=4_500 if compress or overhead_case is not None else 32_000,
+                    max_tool_output_chars=3_000 if compress or overhead_case is not None else 8_000,
                 ),
-                execution=TaskExecutionConfig(prompt_cache_layout=layout),
+                execution=TaskExecutionConfig(
+                    prompt_cache_layout=layout,
+                    append_only_optimization=optimization_version,
+                ),
             )
             runtime = FixtureRuntime(provider, gateway, trace, state_store=store)
             try:
@@ -556,14 +624,19 @@ class CacheBenchmarkRunner:
                 )
                 result = runtime.resume(store.get_task(task.id), store.get_checkpoint(task.id))
             if result.status is not TaskStatus.COMPLETED:
-                raise RuntimeError(f"Runtime cache fixture failed: {result.error}")
+                raise RuntimeError(
+                    "Runtime cache fixture failed "
+                    f"({result.status.value}, observations={len(observations)}, "
+                    f"requests={len(provider.requests)}): {result.error}"
+                )
             if result.report is None or result.report.tool_calls != count:
                 raise RuntimeError("Runtime cache fixture did not execute six tool rounds")
             if len(provider.requests) < count + 1:
                 raise RuntimeError("Runtime cache fixture did not complete six tool rounds")
+            recorded_events = trace.read()
             traces = [
                 CacheLayoutTrace.model_validate(event.data)
-                for event in trace.read()
+                for event in recorded_events
                 if event.type == "cache.layout"
             ]
             if len(traces) != len(provider.requests):
@@ -583,8 +656,50 @@ class CacheBenchmarkRunner:
         if prefix_suite and restore:
             steps = [item.model_copy(update={"restored": item.step == 3}) for item in steps]
         run = _run_report(variant, repeat, steps, source="deterministic")
-        if prefix_suite:
-            from patchloop.context import ContextEngine
+        if overhead_case is not None:
+            diagnostics = _cache_diagnostics(recorded_events)
+            diagnostics["new_memory_tokens"] = sum(
+                int(event.data["new_memory_tokens"])
+                for event in recorded_events
+                if event.type == "cache.compression.decision"
+                and isinstance(event.data.get("new_memory_tokens"), int)
+            )
+            compression_requests = [
+                event for event in recorded_events if event.type == "cache.compression.requested"
+            ]
+            rollovers = [
+                event for event in recorded_events if event.type == "cache.epoch.rolled_over"
+            ]
+            update_count, unrelated_count = _single_item_update_diagnostics()
+            action_fingerprint = _sha256_json(
+                {
+                    "case": overhead_case,
+                    "count": count,
+                    "goal": task.goal,
+                    "budget": task.budget.model_dump(mode="json"),
+                    "tool": FixtureTool.name,
+                }
+            )
+            estimated_input = sum(
+                ContextEngine.estimate_messages(messages) + ContextEngine.estimate_tools(tools)
+                for messages, tools in provider.requests
+            )
+            run = run.model_copy(
+                update={
+                    "task_case": overhead_case,
+                    "total_estimated_input_tokens": estimated_input,
+                    "compression_count": len(compression_requests),
+                    "compression_request_count": len(compression_requests),
+                    "successful_rollover_count": len(rollovers),
+                    "failed_compression_count": len(compression_requests) - len(rollovers),
+                    "optimization_version": optimization_version,
+                    "fixed_action_fingerprint": action_fingerprint,
+                    "working_update_count": update_count,
+                    "unrelated_working_republication_count": unrelated_count,
+                    **diagnostics,
+                }
+            )
+        if prefix_suite and overhead_case is None:
             from patchloop.prompt_cache.coordinator import compute_prefix_budget
             from patchloop.prompt_cache.epoch import SUMMARY_PREFIX
 
@@ -619,6 +734,72 @@ class CacheBenchmarkRunner:
                 }
             )
         return run
+
+    def run_append_only_overhead_suite(self, repository: str | Path) -> CacheEvaluationReport:
+        """Compare fixed append-only actions without claiming Provider cache benefit."""
+
+        cases: tuple[Literal["contract-migration", "long-output"], ...] = (
+            "contract-migration",
+            "long-output",
+        )
+        versions: tuple[AppendOnlyOptimizationVersion, ...] = (
+            "baseline_v1",
+            "balanced_v1",
+        )
+        runs = [
+            self.run_runtime_fixture(
+                repository,
+                layout=PromptCacheLayout.APPEND_ONLY,
+                repeat=repeat,
+                prefix_suite=True,
+                optimization_version=version,
+                overhead_case=case,
+            )
+            for version in versions
+            for case in cases
+            for repeat in range(1, self.repeats + 1)
+        ]
+        recovery = self.run_runtime_fixture(
+            repository,
+            layout=PromptCacheLayout.APPEND_ONLY,
+            prefix_suite=True,
+            restore=True,
+            optimization_version="balanced_v1",
+        )
+        fingerprint = append_only_overhead_fixture_fingerprint(self.repeats)
+        return CacheEvaluationReport(
+            schema_version="aop-overhead.v1",
+            suite_id="append-only-overhead",
+            repeats=self.repeats,
+            variants=(CacheEvaluationVariant.APPEND_ONLY,),
+            scenarios=(),
+            fixture_fingerprint=fingerprint,
+            deterministic_fingerprint=_sha256_json([run.model_dump(mode="json") for run in runs]),
+            compression_prefix_reusable=all(
+                step.previous_request_is_prefix is True
+                for run in runs
+                for step in run.steps
+                if step.comparison_kind in {"ordinary", "compression"}
+            ),
+            runs=runs,
+            summaries=[_summarize(CacheEvaluationVariant.APPEND_ONLY, runs)],
+            offline_checks={
+                "prefix_invariants": all(
+                    step.previous_request_is_prefix is True
+                    and step.tools_unchanged is True
+                    and step.binding_unchanged is True
+                    for run in runs
+                    for step in run.steps
+                    if step.comparison_kind in {"ordinary", "compression"}
+                ),
+                "recovery": recovery.recovery_verified is True,
+                "single_item_updates": all(
+                    run.working_update_count == 100
+                    and run.unrelated_working_republication_count == 0
+                    for run in runs
+                ),
+            },
+        )
 
     def run_prefix_suite(self, repository: str | Path) -> CacheEvaluationReport:
         """Record the production Runtime through ordinary, compression and recovery cases."""
@@ -1003,6 +1184,108 @@ def _cache_diagnostics(events: list[Event]) -> dict[str, Any]:
         ]
         diagnostics[field] = sum(values) if values else None
     return diagnostics
+
+
+def _single_item_update_diagnostics() -> tuple[int, int]:
+    """Exercise 100 V2 updates and count unrelated working-entry republications."""
+
+    from patchloop.prompt_cache.publication import MemoryDeltaPublisher
+
+    stable = [
+        {
+            "type": "working_memory",
+            "key": f"read:src/module_{index}.py",
+            "field": "read_files",
+            "value": f"src/module_{index}.py",
+        }
+        for index in range(3)
+    ]
+    changing = {
+        "type": "working_memory",
+        "key": "plan:active",
+        "field": "plan",
+        "value": "step-0",
+    }
+    payload: dict[str, object] = {"working_state": [*stable, changing]}
+    first = MemoryDeltaPublisher().preview(
+        "overhead-stream",
+        payload,
+        invalidated_values=[],
+        max_message_tokens=2_048,
+    )
+    publisher = MemoryDeltaPublisher(first.next_state)
+    unrelated = 0
+    for index in range(1, 101):
+        expected_key = "read:src/inserted.py" if index == 50 else "plan:active"
+        if index == 50:
+            stable = [
+                *stable,
+                {
+                    "type": "working_memory",
+                    "key": expected_key,
+                    "field": "read_files",
+                    "value": "src/inserted.py",
+                },
+            ]
+        else:
+            changing = {**changing, "value": f"step-{index}"}
+        update = publisher.preview(
+            "overhead-stream",
+            {"working_state": [*stable, changing]},
+            invalidated_values=[],
+            max_message_tokens=2_048,
+        )
+        for message in update.messages:
+            envelope = json.loads(message.content.split("\n", 2)[2])
+            for operation in envelope.get("operations", []):
+                value = operation.get("value")
+                if isinstance(value, dict) and value.get("key") != expected_key:
+                    unrelated += 1
+        publisher = MemoryDeltaPublisher(update.next_state)
+    return 100, unrelated
+
+
+AOP_SOURCE_PATHS: tuple[str, ...] = (
+    "src/patchloop/cli.py",
+    "src/patchloop/domain.py",
+    "src/patchloop/runtime.py",
+    "src/patchloop/memory/working.py",
+    "src/patchloop/memory/retrieval.py",
+    "src/patchloop/prompt_cache/publication.py",
+    "src/patchloop/prompt_cache/coordinator.py",
+    "src/patchloop/prompt_cache/epoch.py",
+    "src/patchloop/evaluation/cache.py",
+    "src/patchloop/evaluation/gates.py",
+)
+
+
+def aop_source_fingerprint(repository: str | Path) -> str:
+    """Hash the source surface whose drift invalidates AOP L0 readiness."""
+
+    root = Path(repository).resolve(strict=True)
+    digest = hashlib.sha256()
+    for relative in AOP_SOURCE_PATHS:
+        path = root / relative
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def append_only_overhead_fixture_fingerprint(repeats: int = 3) -> str:
+    """Return the versioned fingerprint for the fixed AOP overhead workload."""
+
+    return _sha256_json(
+        {
+            "suite": "append-only-overhead.v1",
+            "cases": ("contract-migration", "long-output"),
+            "versions": ("baseline_v1", "balanced_v1"),
+            "repeats": repeats,
+            "tool_rounds": 8,
+            "single_item_updates": 100,
+        }
+    )
 
 
 def build_cache_fixture(variant: CacheEvaluationVariant) -> list[CacheSimulationRequest]:

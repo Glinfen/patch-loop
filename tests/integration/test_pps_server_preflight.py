@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from benchmarks import run_pps_server as runner
+from patchloop.domain import TaskRuntimeCondition
 from patchloop.evaluation.cache import (
     aop_source_fingerprint,
     append_only_overhead_fixture_fingerprint,
@@ -300,6 +301,14 @@ def test_quiet_pause_requires_no_live_attempt_and_persists_control(tmp_path):
     )
     assert runner._request_quiet_pause(repository, trace, "pause-1") is True
     assert store.get_control_request("pause-1").status.value == "requested"
+
+
+def test_completed_task_uses_durable_usage_after_trace_flush_lag():
+    ended = SimpleNamespace(runtime_condition=TaskRuntimeCondition.ENDED)
+    running = SimpleNamespace(runtime_condition=TaskRuntimeCondition.RUNNING)
+
+    assert not runner._trace_has_unsettled_attempts(ended, {"attempt-1"})
+    assert runner._trace_has_unsettled_attempts(running, {"attempt-1"})
 
 
 def test_trial_command_carries_complete_strategy_and_remaining_budget(tmp_path):

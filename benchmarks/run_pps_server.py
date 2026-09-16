@@ -533,6 +533,10 @@ def _request_quiet_pause(repo: Path, trace: Path, request_id: str) -> bool:
     return True
 
 
+def _trace_has_unsettled_attempts(task: Task, active_attempts: set[str]) -> bool:
+    return bool(active_attempts) and task.runtime_condition is not TaskRuntimeCondition.ENDED
+
+
 def _resume(
     repo: Path,
     env: dict[str, str],
@@ -817,7 +821,7 @@ def _execute_trial(
         or report.unknown_model_usage_calls > 0
         or not report.model_usage_exact
         or report.cost_status == "unknown"
-        or bool(active_attempts)
+        or _trace_has_unsettled_attempts(task, active_attempts)
     )
     completed = (
         task.outcome is TaskOutcome.COMPLETED

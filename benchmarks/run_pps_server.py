@@ -775,7 +775,6 @@ def _execute_trial(
     paused_state_verified = False
     resume_code: int | None = None
     if pause_requested:
-        paused_state_verified = task.runtime_condition is TaskRuntimeCondition.PAUSED
         if task.session_id is None:
             raise RuntimeError("paused PPS task has no Session")
         resume_code = _resume(
@@ -787,6 +786,7 @@ def _execute_trial(
             config.process_timeout_seconds,
         )
         task = store.get_task(task.id)
+        paused_state_verified = task.runtime_condition is TaskRuntimeCondition.PAUSED
 
     approved_ids, approval_resume_code, approval_reason = _approve_and_resume(
         config, repo, trial, env, task

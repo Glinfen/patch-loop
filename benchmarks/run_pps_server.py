@@ -608,6 +608,14 @@ def _approval_is_permitted(approval: Any, effect: Any, repo: Path) -> bool:
     )
 
 
+def _pending_approvals(store: SQLiteStore, task_id: str) -> list[Any]:
+    return [
+        approval
+        for approval in store.list_approvals(task_id)
+        if approval.status.value == "pending"
+    ]
+
+
 def _approve_and_resume(
     config: RunnerConfig,
     repo: Path,
@@ -623,11 +631,7 @@ def _approve_and_resume(
     resume_code: int | None = None
     for approval_round in range(4):
         task = store.get_task(task.id)
-        pending = [
-            approval
-            for approval in store.list_approvals(task.id)
-            if approval.status.value == "pending"
-        ]
+        pending = _pending_approvals(store, task.id)
         if not pending:
             return approved_ids, resume_code, None
         if not all(
@@ -667,6 +671,9 @@ def _approve_and_resume(
             trial / f"approved-{approval_round}.stderr",
             config.process_timeout_seconds,
         )
+    task = store.get_task(task.id)
+    if not _pending_approvals(store, task.id):
+        return approved_ids, resume_code, None
     return approved_ids, resume_code, "approval_round_limit"
 
 

@@ -378,3 +378,15 @@ def test_approval_scope_allows_only_fixture_read_commands(tmp_path):
         tool_name="run_command", arguments_summary={"command": ["git", "diff"]}
     )
     assert not runner._approval_is_permitted(approval, broad, repository)
+
+
+def test_approval_round_boundary_accepts_no_remaining_pending_requests():
+    pending = SimpleNamespace(status=SimpleNamespace(value="pending"))
+    approved = SimpleNamespace(status=SimpleNamespace(value="approved"))
+    store = SimpleNamespace(list_approvals=lambda _task_id: [approved])
+
+    assert runner._pending_approvals(store, "task-1") == []
+
+    store.list_approvals = lambda _task_id: [approved, pending]
+
+    assert runner._pending_approvals(store, "task-1") == [pending]

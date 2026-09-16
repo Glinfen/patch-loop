@@ -337,3 +337,20 @@ def test_approval_scope_remains_exact(tmp_path):
     assert runner._approval_is_permitted(approval, replace_text, repository)
     approval.resource_summary = f"workspace={repository}; paths=order_service.py,other.py"
     assert not runner._approval_is_permitted(approval, broad, repository)
+
+
+def test_approval_scope_allows_only_fixture_read_commands(tmp_path):
+    repository = tmp_path.resolve()
+    approval = SimpleNamespace(resource_summary=f"workspace={repository}")
+
+    for command in (
+        ["git", "status", "--short"],
+        ["git", "diff", "--", "order_service.py"],
+    ):
+        effect = SimpleNamespace(tool_name="run_command", arguments_summary={"command": command})
+        assert runner._approval_is_permitted(approval, effect, repository)
+
+    broad = SimpleNamespace(
+        tool_name="run_command", arguments_summary={"command": ["git", "diff"]}
+    )
+    assert not runner._approval_is_permitted(approval, broad, repository)

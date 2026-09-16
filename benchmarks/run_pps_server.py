@@ -574,7 +574,11 @@ def _approval_is_permitted(approval: Any, effect: Any, repo: Path) -> bool:
         or (
             effect.tool_name == "run_command"
             and approval.resource_summary == f"workspace={repo}"
-            and effect.arguments_summary.get("command") == ["git", "status", "--short"]
+            and effect.arguments_summary.get("command")
+            in (
+                ["git", "status", "--short"],
+                ["git", "diff", "--", "order_service.py"],
+            )
         )
         or (
             effect.tool_name == "run_tests"
@@ -683,7 +687,10 @@ def _execute_trial(
         "execution_policy": {
             "sandbox": "local",
             "write_scope": ["order_service.py"],
-            "allowed_read_only_commands": [["git", "status", "--short"]],
+            "allowed_read_only_commands": [
+                ["git", "status", "--short"],
+                ["git", "diff", "--", "order_service.py"],
+            ],
             "allowed_test_commands": [
                 ["python", "-m", "pytest"],
                 ["python", "-m", "pytest", "-q"],

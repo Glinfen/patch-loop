@@ -566,7 +566,7 @@ def _resume(
 def _approval_is_permitted(approval: Any, effect: Any, repo: Path) -> bool:
     return bool(
         (
-            effect.tool_name == "apply_patch"
+            effect.tool_name in {"apply_patch", "replace_text"}
             and approval.resource_summary == f"workspace={repo}; paths=order_service.py"
         )
         or (
@@ -597,6 +597,7 @@ def _approve_and_resume(
 ) -> tuple[list[str], int | None, str | None]:
     if task.session_id is None:
         return [], None, "task_missing_session"
+    session_id = task.session_id
     store = SQLiteStore(repo / ".patchloop/patchloop.db")
     approved_ids: list[str] = []
     resume_code: int | None = None
@@ -641,7 +642,7 @@ def _approve_and_resume(
         resume_code = _resume(
             repo,
             env,
-            task.session_id,
+            session_id,
             trial / f"approved-{approval_round}.stdout",
             trial / f"approved-{approval_round}.stderr",
             config.process_timeout_seconds,

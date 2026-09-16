@@ -316,9 +316,11 @@ def test_trial_command_carries_complete_strategy_and_remaining_budget(tmp_path):
 def test_approval_scope_remains_exact(tmp_path):
     repository = tmp_path.resolve()
     approval = SimpleNamespace(resource_summary=f"workspace={repository}; paths=order_service.py")
-    permitted = SimpleNamespace(tool_name="apply_patch", arguments_summary={})
+    apply_patch = SimpleNamespace(tool_name="apply_patch", arguments_summary={})
+    replace_text = SimpleNamespace(tool_name="replace_text", arguments_summary={})
     broad = SimpleNamespace(tool_name="apply_patch", arguments_summary={})
 
-    assert runner._approval_is_permitted(approval, permitted, repository)
+    assert runner._approval_is_permitted(approval, apply_patch, repository)
+    assert runner._approval_is_permitted(approval, replace_text, repository)
     approval.resource_summary = f"workspace={repository}; paths=order_service.py,other.py"
     assert not runner._approval_is_permitted(approval, broad, repository)

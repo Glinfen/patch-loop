@@ -515,6 +515,8 @@ def _trace_state(trace: Path) -> tuple[int, set[str]]:
         elif event_type == "provider.attempt.finished" and isinstance(attempt_id, str):
             active.discard(attempt_id)
         elif event_type == "provider.request.completed":
+            if isinstance(attempt_id, str):
+                active.discard(attempt_id)
             completed += 1
     return completed, active
 

@@ -261,8 +261,21 @@ def test_quiet_pause_requires_no_live_attempt_and_persists_control(tmp_path):
     trace_root.mkdir(parents=True)
     trace = trace_root / "task-1.jsonl"
     active_events = [
-        {"id": "complete-1", "type": "provider.request.completed", "data": {}},
-        {"id": "complete-2", "type": "provider.request.completed", "data": {}},
+        {
+            "id": "start-1",
+            "type": "provider.attempt.started",
+            "data": {"attempt_id": "completed-1"},
+        },
+        {
+            "id": "complete-1",
+            "type": "provider.request.completed",
+            "data": {"attempt_id": "completed-1"},
+        },
+        {
+            "id": "complete-2",
+            "type": "provider.request.completed",
+            "data": {"attempt_id": "completed-2"},
+        },
         {
             "id": "attempt-1",
             "type": "provider.attempt.started",
@@ -278,7 +291,7 @@ def test_quiet_pause_requires_no_live_attempt_and_persists_control(tmp_path):
     active_events.append(
         {
             "id": "attempt-2",
-            "type": "provider.attempt.finished",
+            "type": "provider.request.completed",
             "data": {"attempt_id": "active"},
         }
     )

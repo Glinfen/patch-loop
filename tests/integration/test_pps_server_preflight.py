@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from benchmarks import run_pps_server as runner
-from patchloop.domain import TaskRuntimeCondition
+from patchloop.domain import Task, TaskRuntimeCondition
 from patchloop.evaluation.cache import (
     aop_source_fingerprint,
     append_only_overhead_fixture_fingerprint,
@@ -309,6 +309,18 @@ def test_completed_task_uses_durable_usage_after_trace_flush_lag():
 
     assert not runner._trace_has_unsettled_attempts(ended, {"attempt-1"})
     assert runner._trace_has_unsettled_attempts(running, {"attempt-1"})
+
+
+def test_acceptance_pause_only_uses_durable_approval_boundary():
+    spec = runner.TrialSpec("contract-migration", 1, "append_only")
+    task = Task(id="task-1", goal="Inspect", repository="workspace")
+    task.transition_runtime(TaskRuntimeCondition.RUNNING)
+
+    assert not runner._is_quiet_pause_boundary(spec, task)
+
+    task.transition_runtime(TaskRuntimeCondition.WAITING_FOR_APPROVAL)
+
+    assert runner._is_quiet_pause_boundary(spec, task)
 
 
 def test_trial_command_carries_complete_strategy_and_remaining_budget(tmp_path):

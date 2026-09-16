@@ -533,6 +533,15 @@ def _request_quiet_pause(repo: Path, trace: Path, request_id: str) -> bool:
     return True
 
 
+def _is_quiet_pause_boundary(spec: TrialSpec, task: Task) -> bool:
+    return bool(
+        spec.layout == "append_only"
+        and spec.repeat == 1
+        and spec.case == "contract-migration"
+        and task.runtime_condition is TaskRuntimeCondition.WAITING_FOR_APPROVAL
+    )
+
+
 def _trace_has_unsettled_attempts(task: Task, active_attempts: set[str]) -> bool:
     return bool(active_attempts) and task.runtime_condition is not TaskRuntimeCondition.ENDED
 
@@ -733,16 +742,6 @@ def _execute_trial(
                 if active:
                     process.send_signal(signal.SIGINT)
                     cancel_injected = True
-            elif (
-                trace is not None
-                and spec.layout == "append_only"
-                and spec.repeat == 1
-                and spec.case == "contract-migration"
-                and not pause_requested
-            ):
-                pause_requested = _request_quiet_pause(
-                    repo, trace, f"pps-quiet-pause-{spec.name}"
-                )
             time.sleep(0.2)
 
     traces = list((repo / ".patchloop/traces").glob("*.jsonl"))
@@ -765,6 +764,14 @@ def _execute_trial(
     trace = traces[0]
     store = SQLiteStore(repo / ".patchloop/patchloop.db")
     task = store.get_task(trace.stem)
+    if _is_quiet_pause_boundary(spec, task):
+        # Request the acceptance-test pause only after the worker has yielded at
+        # a durable approval boundary.  A trace-only quiet check while the
+        # worker is still running leaves a race in which the next provider
+        # attempt can start between observation and control consumption.
+        pause_requested = _request_quiet_pause(
+            repo, trace, f"pps-quiet-pause-{spec.name}"
+        )
     paused_state_verified = False
     resume_code: int | None = None
     if pause_requested:

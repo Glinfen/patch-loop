@@ -198,7 +198,7 @@ def _append_only_state() -> AppendOnlyPromptState:
         last_submitted_message_fingerprints=["a" * 64, "b" * 64],
         last_submitted_request_id="request-1",
         last_submitted_tool_fingerprint="c" * 64,
-        epoch_generation=1,
+        epoch_generation=0,
     )
 
 

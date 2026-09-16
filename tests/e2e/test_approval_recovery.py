@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from patchloop.domain import (
+    AppendOnlyOptimizationVersion,
     PromptCacheLayout,
     Task,
     TaskExecutionConfig,
@@ -249,8 +250,19 @@ def test_hard_permission_denial_cannot_be_approved(tmp_path: Path) -> None:
     assert store.list_approvals(task.id) == []
 
 
-@pytest.mark.parametrize("layout", [PromptCacheLayout.LEGACY, PromptCacheLayout.APPEND_ONLY])
-def test_operator_can_deny_pending_effect(tmp_path: Path, layout: PromptCacheLayout) -> None:
+@pytest.mark.parametrize(
+    ("layout", "optimization_version"),
+    [
+        (PromptCacheLayout.LEGACY, "baseline_v1"),
+        (PromptCacheLayout.APPEND_ONLY, "baseline_v1"),
+        (PromptCacheLayout.APPEND_ONLY, "balanced_v1"),
+    ],
+)
+def test_operator_can_deny_pending_effect(
+    tmp_path: Path,
+    layout: PromptCacheLayout,
+    optimization_version: AppendOnlyOptimizationVersion,
+) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
     target = repository / "README.md"
@@ -264,7 +276,10 @@ def test_operator_can_deny_pending_effect(tmp_path: Path, layout: PromptCacheLay
         id="task-1",
         goal="Update README",
         repository=str(repository),
-        execution=TaskExecutionConfig(prompt_cache_layout=layout),
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=layout,
+            append_only_optimization=optimization_version,
+        ),
     )
     AgentRuntime(
         FakeProvider([_plan_response(), _replace_response()]),

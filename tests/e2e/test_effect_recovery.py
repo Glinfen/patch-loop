@@ -6,9 +6,12 @@ from pydantic import BaseModel
 
 from patchloop.domain import (
     AgentStep,
+    AppendOnlyOptimizationVersion,
     ErrorKind,
+    PromptCacheLayout,
     StepStatus,
     Task,
+    TaskExecutionConfig,
     TaskRuntimeCondition,
     TaskStatus,
     ToolCall,
@@ -261,13 +264,25 @@ def _file_responses() -> list[ModelResponse]:
     ]
 
 
-def test_resume_confirms_completed_file_effect_from_target_digest(tmp_path: Path) -> None:
+@pytest.mark.parametrize("optimization_version", ["baseline_v1", "balanced_v1"])
+def test_resume_confirms_completed_file_effect_from_target_digest(
+    tmp_path: Path,
+    optimization_version: AppendOnlyOptimizationVersion,
+) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
     target = repository / "README.md"
     target.write_text("# Before\n", encoding="utf-8")
     store = SQLiteStore(tmp_path / "state.db")
-    task = Task(id="task-1", goal="Update README", repository=str(repository))
+    task = Task(
+        id="task-1",
+        goal="Update README",
+        repository=str(repository),
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+            append_only_optimization=optimization_version,
+        ),
+    )
 
     with pytest.raises(KeyboardInterrupt, match="file mutation"):
         AgentRuntime(

@@ -1,6 +1,6 @@
 # append_only 开销优化开发方案
 
-调研日期：2026-09-15。代码基线：`69738d2`；真实证据执行修订：`8fecd4f`。状态：方案已完成；AOP-01～05 已完成，AOP-06～08 待开发。离线优化阶段不执行真实模型评测。
+调研日期：2026-09-15。代码基线：`69738d2`；真实证据执行修订：`8fecd4f`。状态：方案已完成；AOP-01～06 已完成，AOP-07～08 待开发。离线优化阶段不执行真实模型评测。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，承接 [PPS 方案](PROMPT_PREFIX_STABILITY_PLAN.md)，服务于 [第二阶段总路线](PHASE_2_DEVELOPMENT_PLAN.md)。用户已明确：真实评测等 append_only 优化后再进行。
 
@@ -367,6 +367,8 @@ tests/unit/test_prompt_prefix_transport.py
 
 ### AOP-06：覆盖新策略的跨进程恢复与故障路径
 
+**状态：已完成（2026-09-16）。** baseline_v1 与 balanced_v1 均已覆盖投影保存但请求未登记、压缩请求已登记、响应提交但未 rollover、新 epoch 已保存四个跨进程边界；恢复会比较原请求前缀、工具顺序、策略、退避位置、usage request ID 和副作用次数。新增恢复入口校验会拒绝 pending 压缩缺少完整 source、source 与最后提交请求不符、状态 generation 与 epoch 不符、epoch 标识/前缀计数不符或 publication 属于其他 epoch 的快照。测试同时覆盖压缩期间的新用户消息、invalid/no_gain 原子失败、Provider 取消后的未知用量、租约丢失、拒绝审批、已执行文件副作用确认、旧字段缺失的 V2 checkpoint，以及十代以上只保留一个当前摘要的耐久路径。恢复 pending 请求时同步清除暂存 request ID 与旧输出上限，避免产生不可恢复的中间状态。
+
 **Goal**：确保优化不改变 SRF/PGW 的恢复、安全与计量语义。
 
 **Files / Symbols**
@@ -481,4 +483,4 @@ git diff --check
 
 **设计未决：None。** 关键模块、接口、状态归属、兼容路径、错误传播、任务边界和离线出口已确定。
 
-**实施/验收条件：** AOP-01～05 已实现，AOP-06～08 尚未实现；L0 未完成前所有真实模型评测暂停。真实命中和摘要质量只能在之后 L1/L2 确认；当前零价格无法证明费用下降，完整 Provider/Docker/SRF 和第二阶段验收也仍未完成。这些外部证据限制不阻塞本方案的离线开发。
+**实施/验收条件：** AOP-01～06 已实现，AOP-07～08 尚未实现；L0 未完成前所有真实模型评测暂停。真实命中和摘要质量只能在之后 L1/L2 确认；当前零价格无法证明费用下降，完整 Provider/Docker/SRF 和第二阶段验收也仍未完成。这些外部证据限制不阻塞本方案的离线开发。

@@ -440,6 +440,23 @@ class AppendOnlyPromptState(BaseModel):
             and self.compression_instruction is None
         ):
             raise ValueError("compression summary target requires a frozen instruction")
+        if self.compression_max_output_tokens is not None and self.compression_request_id is None:
+            raise ValueError("compression output limit requires a pending request")
+        if self.compression_request_id is not None:
+            source = (
+                self.compression_source_request_id,
+                self.compression_source_message_count,
+                self.compression_source_epoch_generation,
+            )
+            if any(value is None for value in source):
+                raise ValueError("pending compression requires complete source metadata")
+            if (
+                self.compression_source_request_id != self.last_submitted_request_id
+                or self.compression_source_message_count != self.last_submitted_message_count
+                or self.compression_source_epoch_generation
+                != self.last_submitted_epoch_generation
+            ):
+                raise ValueError("pending compression source must match the last submitted request")
         return self
 
     def validate_message_boundaries(self, message_count: int) -> None:
@@ -594,6 +611,33 @@ class PromptCacheCoordinator:
             != append_only_state.root_prefix_message_count
         ):
             raise ValueError("append-only root count must match the epoch root count")
+        if (
+            layout is PromptCacheLayout.APPEND_ONLY
+            and cache_epoch is not None
+            and append_only_state is not None
+            and append_only_state.epoch_generation != cache_epoch.snapshot.generation
+        ):
+            raise ValueError("append-only state generation must match the epoch generation")
+        if (
+            layout is PromptCacheLayout.APPEND_ONLY
+            and cache_epoch is not None
+            and append_only_state is not None
+            and append_only_state.compression_request_id is not None
+            and append_only_state.compression_source_epoch_generation
+            != cache_epoch.snapshot.generation
+        ):
+            raise ValueError("pending compression source must belong to the current epoch")
+        if cache_epoch is not None and cache_epoch_id != cache_epoch.epoch_id:
+            raise ValueError("prompt-cache epoch id must match the restored epoch")
+        if cache_epoch is not None and prefix_message_count != cache_epoch.prefix_message_count:
+            raise ValueError("prompt-cache prefix count must match the restored epoch")
+        if (
+            publication is not None
+            and publication.snapshot is not None
+            and cache_epoch is not None
+            and publication.snapshot.epoch_id != cache_epoch.epoch_id
+        ):
+            raise ValueError("memory publication must belong to the restored epoch")
         if layout is not PromptCacheLayout.APPEND_ONLY and append_only_state is not None:
             raise ValueError("only the append_only layout can carry append-only state")
         self.layout = layout
@@ -1251,6 +1295,7 @@ class PromptCacheCoordinator:
                 "compression_source_message_count": source_message_count,
                 "compression_source_epoch_generation": self._epoch.snapshot.generation,
                 "compression_request_id": None,
+                "compression_max_output_tokens": None,
                 "compression_instruction": final_instruction,
                 "compression_summary_target_tokens": summary_target_tokens,
                 "last_compression_attempt_step": step,

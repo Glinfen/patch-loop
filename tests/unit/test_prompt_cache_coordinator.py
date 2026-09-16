@@ -6,7 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from patchloop.context import ContextEngine
-from patchloop.domain import PromptCacheLayout, TaskBudget, ToolCall
+from patchloop.domain import (
+    AppendOnlyOptimizationVersion,
+    PromptCacheLayout,
+    TaskBudget,
+    ToolCall,
+)
 from patchloop.prompt_cache import (
     COMPRESSION_INSTRUCTION,
     MEMORY_SNAPSHOT_PREFIX,
@@ -23,6 +28,7 @@ from patchloop.prompt_cache import (
     PromptCacheCoordinatorError,
     PromptCacheCoordinatorSnapshot,
     PromptCompressionRejected,
+    compression_instruction,
     compute_prefix_budget,
     decide_append_only_compression,
     estimate_append_only_mandatory_rebase_tokens,
@@ -379,9 +385,11 @@ def test_append_only_compression_reuses_submitted_source_and_preserves_unsent_su
     ("summary", "reason"),
     [(_strict_summary(next_step="x"), "no_gain"), ("not json", "invalid_summary")],
 )
+@pytest.mark.parametrize("optimization_version", ["baseline_v1", "balanced_v1"])
 def test_append_only_compression_rejection_keeps_epoch_and_publication(
     summary: str,
     reason: str,
+    optimization_version: AppendOnlyOptimizationVersion,
 ) -> None:
     root = [
         ModelMessage(role="system", content="static system"),
@@ -394,6 +402,7 @@ def test_append_only_compression_rejection_keeps_epoch_and_publication(
         layout=PromptCacheLayout.APPEND_ONLY,
         prefix_message_count=2,
         epoch_id="initial",
+        optimization_version=optimization_version,
     )
     source_request = coordinator.prepare_request(
         0,
@@ -410,6 +419,10 @@ def test_append_only_compression_rejection_keeps_epoch_and_publication(
         soft_limit=1,
         memory_message_limit=2_048,
         summary_limit=512,
+        compression_instruction=compression_instruction(
+            512 if optimization_version == "balanced_v1" else None
+        ),
+        summary_target_tokens=512 if optimization_version == "balanced_v1" else None,
     )
     boundary = CacheEpochBoundary.EXPLICIT_COMPRESSION
     decision = _compression_decision(
@@ -448,6 +461,15 @@ def test_append_only_compression_rejection_keeps_epoch_and_publication(
     assert coordinator.append_only_state is not None
     assert (
         coordinator.append_only_state.deferred_compression_fingerprint
+        == prepared.source_fingerprint
+    )
+    restored = PromptCacheCoordinator.from_snapshot(coordinator.snapshot())
+    assert restored.epoch_id == "initial"
+    assert restored.publication_snapshot == old_publication
+    assert restored.append_only_state is not None
+    assert restored.append_only_state.optimization_version == optimization_version
+    assert (
+        restored.append_only_state.deferred_compression_fingerprint
         == prepared.source_fingerprint
     )
     with pytest.raises(PromptCompressionRejected, match="same_source_deferred"):
@@ -869,6 +891,9 @@ def test_balanced_policy_and_backoff_state_round_trip_without_changing_pending_r
     state = _append_only_state(
         optimization_version="balanced_v1",
         last_compression_attempt_step=7,
+        compression_source_request_id="request-1",
+        compression_source_message_count=2,
+        compression_source_epoch_generation=0,
         compression_request_id="compression-1",
         compression_max_output_tokens=321,
     )
@@ -890,6 +915,9 @@ def test_pending_compression_freezes_and_atomically_clears_instruction_target() 
     instruction = "PATCHLOOP_EPOCH_COMPRESSION_BALANCED_V1\nexact frozen request"
     state = _append_only_state(
         optimization_version="balanced_v1",
+        compression_source_request_id="request-1",
+        compression_source_message_count=2,
+        compression_source_epoch_generation=0,
         compression_instruction=instruction,
         compression_summary_target_tokens=512,
     )
@@ -947,9 +975,9 @@ def test_append_only_state_round_trips_through_coordinator() -> None:
     state = _append_only_state(
         last_submitted_tool_fingerprint="c" * 64,
         last_submitted_binding_fingerprint="d" * 64,
-        epoch_generation=1,
         compression_source_request_id="request-1",
         compression_source_message_count=2,
+        compression_source_epoch_generation=0,
         compression_request_id="compression-1",
         deferred_compression_fingerprint="e" * 64,
     )
@@ -986,6 +1014,27 @@ def test_append_only_state_compression_source_cannot_exceed_submission() -> None
             compression_source_request_id="request-1",
             compression_source_message_count=3,
         )
+
+
+def test_pending_compression_requires_exact_source_and_request_scoped_output_limit() -> None:
+    with pytest.raises(ValidationError, match="complete source metadata"):
+        _append_only_state(compression_request_id="compression-1")
+    with pytest.raises(ValidationError, match="must match the last submitted request"):
+        _append_only_state(
+            compression_source_request_id="different-request",
+            compression_source_message_count=2,
+            compression_source_epoch_generation=0,
+            compression_request_id="compression-1",
+        )
+    with pytest.raises(ValidationError, match="output limit requires a pending request"):
+        _append_only_state(compression_max_output_tokens=512)
+
+
+def test_append_only_restore_rejects_state_from_another_epoch_generation() -> None:
+    state = _append_only_state(epoch_generation=1)
+
+    with pytest.raises(ValueError, match="state generation must match"):
+        _append_only_coordinator(state=state)
 
 
 def test_append_only_coordinator_requires_state_and_epoch() -> None:

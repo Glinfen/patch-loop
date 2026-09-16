@@ -9,6 +9,7 @@ import pytest
 
 from patchloop.context import ContextEngine
 from patchloop.domain import (
+    AppendOnlyOptimizationVersion,
     PromptCacheLayout,
     Task,
     TaskBudget,
@@ -18,8 +19,8 @@ from patchloop.domain import (
     ToolCall,
 )
 from patchloop.persistence import CheckpointSchemaError, RuntimeCheckpoint, SQLiteStore
-from patchloop.persistence_contracts import LeaseLost
-from patchloop.prompt_cache import PromptCacheCoordinator
+from patchloop.persistence_contracts import LeaseLost, ProviderRequestStatus
+from patchloop.prompt_cache import SUMMARY_PREFIX, PromptCacheCoordinator
 from patchloop.prompt_cache.coordinator import compute_prefix_budget
 from patchloop.providers import FakeProvider, ModelResponse
 from patchloop.providers.base import ModelUsage, ProviderRequestPurpose
@@ -144,10 +145,81 @@ def test_restore_rejects_task_and_checkpoint_optimization_version_conflict(
     )
     with pytest.raises(CheckpointSchemaError, match="optimization version conflicts"):
         runtime._restore_prompt_cache(conflicting, checkpoint)
+    mismatched_generation = checkpoint.model_copy(
+        update={
+            "append_only_state": checkpoint.append_only_state.model_copy(
+                update={"epoch_generation": 1}
+            )
+        }
+    )
+    with pytest.raises(CheckpointSchemaError, match="cannot be safely restored"):
+        runtime._restore_prompt_cache(task, mismatched_generation)
 
 
+def test_old_checkpoint_fields_restore_with_v2_publication_and_exact_request(
+    tmp_path: Path,
+) -> None:
+    class CrashBeforeSecondRequestStore(SQLiteStore):
+        request_count = 0
+
+        def begin_provider_request(self, request, **kwargs):
+            self.request_count += 1
+            if self.request_count == 2:
+                raise KeyboardInterrupt("projection saved before second request")
+            return super().begin_provider_request(request, **kwargs)
+
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    store = CrashBeforeSecondRequestStore(tmp_path / "state.db")
+    calls: list[int] = []
+    task = Task(
+        id="old-v2-checkpoint",
+        repository=str(repository),
+        goal="Read one observation.",
+        execution=TaskExecutionConfig(prompt_cache_layout=PromptCacheLayout.APPEND_ONLY),
+        budget=TaskBudget(max_steps=4, max_context_tokens=20_000),
+    )
+    with pytest.raises(KeyboardInterrupt, match="projection saved"):
+        AgentRuntime(
+            FakeProvider([_response(0)]),
+            ToolGateway(ToolContext(repository), [_Observe(calls)]),
+            state_store=store,
+        ).run(task)
+
+    saved = store.get_checkpoint(task.id)
+    assert saved.memory_publication_state.schema_version == "2.0"
+    assert saved.memory_publication_state.messages
+    payload = saved.model_dump(mode="json")
+    old_state = payload["append_only_state"]
+    for field in (
+        "optimization_version",
+        "last_compression_attempt_step",
+        "compression_instruction",
+        "compression_summary_target_tokens",
+    ):
+        old_state.pop(field, None)
+    legacy = RuntimeCheckpoint.model_validate(payload)
+    assert legacy.append_only_state.optimization_version == "baseline_v1"
+
+    provider = FakeProvider([ModelResponse(content="done")])
+    result = AgentRuntime(
+        provider,
+        ToolGateway(ToolContext(repository), [_Observe(calls)]),
+        state_store=store,
+    ).resume(store.get_task(task.id), legacy)
+
+    assert result.status is TaskStatus.COMPLETED, result.error
+    assert provider.requests[0][0] == saved.messages
+    assert calls == [0]
+
+
+@pytest.mark.parametrize("optimization_version", ["baseline_v1", "balanced_v1"])
 @pytest.mark.parametrize("boundary", ["before_request", "response_ready", "usage", "tool"])
-def test_recovery_preserves_request_publication_tools_and_usage(tmp_path: Path, boundary: str):
+def test_recovery_preserves_request_publication_tools_and_usage(
+    tmp_path: Path,
+    boundary: str,
+    optimization_version: AppendOnlyOptimizationVersion,
+):
     repository = tmp_path / "repo"
     repository.mkdir()
     store = _CrashStore(tmp_path / "state.db")
@@ -157,7 +229,10 @@ def test_recovery_preserves_request_publication_tools_and_usage(tmp_path: Path, 
         id="prefix-task",
         repository=str(repository),
         goal="Read two observations.",
-        execution=TaskExecutionConfig(prompt_cache_layout=PromptCacheLayout.APPEND_ONLY),
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+            append_only_optimization=optimization_version,
+        ),
     )
     first = FakeProvider([_response(0, 1)])
     runtime_type = _CrashToolRuntime if boundary == "tool" else AgentRuntime
@@ -171,6 +246,7 @@ def test_recovery_preserves_request_publication_tools_and_usage(tmp_path: Path, 
     saved = store.get_checkpoint(task.id)
     original_request = saved.messages
     original_publication = saved.memory_publication_state
+    assert saved.append_only_state.optimization_version == optimization_version
     assert saved.append_only_state.last_submitted_message_count == len(original_request)
     responses = ([_response(0, 1)] if boundary == "before_request" else []) + [
         ModelResponse(content="done", usage=ModelUsage(input_tokens=50, output_tokens=5)),
@@ -331,7 +407,170 @@ class _CompressionCrashRuntime(AgentRuntime):
         return response
 
 
-def test_invalid_compression_continues_soft_then_pauses_hard_and_defers_source(tmp_path: Path):
+class _CompressionBoundaryStore(SQLiteStore):
+    def __init__(self, path: Path, *, fault: str):
+        super().__init__(path)
+        self.fault = fault
+        self.crashed = False
+
+    def begin_provider_request(self, request, **kwargs):
+        saved = super().begin_provider_request(request, **kwargs)
+        if (
+            not self.crashed
+            and self.fault == "request_registered"
+            and request.purpose is ProviderRequestPurpose.EPOCH_COMPRESSION
+        ):
+            self.crashed = True
+            raise KeyboardInterrupt("request_registered")
+        return saved
+
+    def save_checkpoint(self, checkpoint, **kwargs):
+        super().save_checkpoint(checkpoint, **kwargs)
+        if (
+            not self.crashed
+            and self.fault == "epoch_saved"
+            and checkpoint.cache_epoch_state is not None
+            and checkpoint.cache_epoch_state.generation > 0
+            and checkpoint.append_only_state.compression_request_id is None
+        ):
+            self.crashed = True
+            raise KeyboardInterrupt("epoch_saved")
+
+
+@pytest.mark.parametrize("optimization_version", ["baseline_v1", "balanced_v1"])
+@pytest.mark.parametrize("fault", ["request_registered", "epoch_saved"])
+def test_compression_request_and_epoch_checkpoint_recover_exactly_once(
+    tmp_path: Path,
+    fault: str,
+    optimization_version: AppendOnlyOptimizationVersion,
+) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    store = _CompressionBoundaryStore(tmp_path / "state.db", fault=fault)
+    task = Task(
+        id=f"compression-{fault.replace('_', '-')}-{optimization_version.replace('_', '-')}",
+        repository=str(repository),
+        goal="Read observations.",
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+            append_only_optimization=optimization_version,
+        ),
+        budget=TaskBudget(max_steps=16, max_context_tokens=4_500, max_tool_output_chars=3_000),
+    )
+    calls: list[int] = []
+    provider = _CompressingProvider(count=6)
+
+    with pytest.raises(KeyboardInterrupt, match=fault):
+        AgentRuntime(
+            provider,
+            ToolGateway(ToolContext(repository), [_Observe(calls, long=True)]),
+            state_store=store,
+        ).run(task)
+
+    saved = store.get_checkpoint(task.id)
+    prefix = saved.append_only_state
+    assert prefix.optimization_version == optimization_version
+    assert prefix.last_compression_attempt_step is not None
+    if fault == "request_registered":
+        assert prefix.compression_request_id is not None
+        pending = store.get_provider_request(prefix.compression_request_id)
+        assert pending.status is ProviderRequestStatus.PENDING
+        assert store.list_provider_attempts(prefix.compression_request_id) == []
+    else:
+        assert prefix.compression_request_id is None
+        assert saved.cache_epoch_state.generation >= 1
+        assert sum(
+            message.content.startswith(SUMMARY_PREFIX)
+            for message in saved.cache_epoch_state.prefix_messages
+        ) == 1
+
+    resumed_provider = _CompressingProvider(index=provider.index, count=6)
+    resumed_runtime = AgentRuntime(
+        resumed_provider,
+        ToolGateway(ToolContext(repository), [_Observe(calls, long=True)]),
+        state_store=store,
+    )
+    result = resumed_runtime.resume(store.get_task(task.id), saved)
+
+    assert result.status is TaskStatus.COMPLETED, result.error
+    assert calls == list(range(6))
+    first_resumed = resumed_provider.requests[0][0]
+    if fault == "request_registered":
+        assert first_resumed[-1].content == prefix.compression_instruction
+        assert first_resumed[:-1] == saved.messages[: prefix.compression_source_message_count]
+    else:
+        assert "PATCHLOOP_EPOCH_COMPRESSION_V1" not in first_resumed[-1].content
+    checkpoint = store.get_checkpoint(task.id)
+    assert checkpoint.append_only_state.optimization_version == optimization_version
+    assert sum(
+        message.content.startswith(SUMMARY_PREFIX)
+        for message in checkpoint.cache_epoch_state.prefix_messages
+    ) == 1
+    all_requests = [*provider.requests, *resumed_provider.requests]
+    compression_count = sum(
+        "PATCHLOOP_EPOCH_COMPRESSION_V1" in messages[-1].content
+        for messages, _ in all_requests
+    )
+    assert checkpoint.input_tokens == 6 * 100 + 50 + compression_count * 200
+    assert len(checkpoint.accounted_provider_request_ids) == 7 + compression_count
+
+
+@pytest.mark.parametrize("optimization_version", ["baseline_v1", "balanced_v1"])
+def test_cancelled_compression_keeps_unknown_attempt_and_old_epoch(
+    tmp_path: Path,
+    optimization_version: AppendOnlyOptimizationVersion,
+) -> None:
+    class CancelCompressionProvider(_CompressingProvider):
+        def complete(self, messages, tools):
+            if "PATCHLOOP_EPOCH_COMPRESSION_V1" in messages[-1].content:
+                self.requests.append((list(messages), list(tools)))
+                raise ProviderError(
+                    ProviderErrorKind.CANCELLED,
+                    "compression cancelled",
+                    request_sent=True,
+                    usage_unknown=True,
+                )
+            return super().complete(messages, tools)
+
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    store = SQLiteStore(tmp_path / "state.db")
+    task = Task(
+        id=f"cancel-compression-{optimization_version.replace('_', '-')}",
+        repository=str(repository),
+        goal="Read observations.",
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+            append_only_optimization=optimization_version,
+        ),
+        budget=TaskBudget(max_steps=12, max_context_tokens=4_500, max_tool_output_chars=3_000),
+    )
+    calls: list[int] = []
+    result = AgentRuntime(
+        CancelCompressionProvider(count=6),
+        ToolGateway(ToolContext(repository), [_Observe(calls, long=True)]),
+        state_store=store,
+    ).run(task)
+
+    assert result.status is TaskStatus.FAILED
+    assert result.report is not None
+    assert result.report.cost_status == "unknown"
+    assert result.report.unknown_usage_attempts == 1
+    checkpoint = store.get_checkpoint(task.id)
+    assert checkpoint.cache_epoch_state.generation == 0
+    request_id = checkpoint.append_only_state.compression_request_id
+    assert request_id is not None
+    attempts = store.list_provider_attempts(request_id)
+    assert len(attempts) == 1
+    assert attempts[0].status.value == "cancelled"
+    assert attempts[0].usage_status.value == "unknown"
+
+
+@pytest.mark.parametrize("optimization_version", ["baseline_v1", "balanced_v1"])
+def test_invalid_compression_continues_soft_then_pauses_hard_and_defers_source(
+    tmp_path: Path,
+    optimization_version: AppendOnlyOptimizationVersion,
+):
     class InvalidSummaryProvider(_CompressingProvider):
         def complete(self, messages, tools):
             response = super().complete(messages, tools)
@@ -344,7 +583,10 @@ def test_invalid_compression_continues_soft_then_pauses_hard_and_defers_source(t
     task = Task(
         repository=str(tmp_path),
         goal="Read observations.",
-        execution=TaskExecutionConfig(prompt_cache_layout=PromptCacheLayout.APPEND_ONLY),
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+            append_only_optimization=optimization_version,
+        ),
         budget=TaskBudget(max_steps=20, max_context_tokens=4_500, max_tool_output_chars=3_000),
     )
     provider = InvalidSummaryProvider()
@@ -363,8 +605,13 @@ def test_invalid_compression_continues_soft_then_pauses_hard_and_defers_source(t
         for i, (messages, _) in enumerate(provider.requests)
         if "PATCHLOOP_EPOCH_COMPRESSION_V1" in messages[-1].content
     ]
-    assert len(compressions) >= 2
-    assert compressions[1] > compressions[0] + 1  # Soft failure still permits an ordinary request.
+    assert compressions
+    if optimization_version == "baseline_v1":
+        assert len(compressions) >= 2
+        # Soft failure still permits an ordinary request before the next attempt.
+        assert compressions[1] > compressions[0] + 1
+    else:
+        assert len(compressions) == 1  # balanced_v1 backoff prevents a redundant retry.
     retry = FakeProvider([])
     resumed = AgentRuntime(
         retry,
@@ -375,8 +622,13 @@ def test_invalid_compression_continues_soft_then_pauses_hard_and_defers_source(t
     assert retry.requests == []
 
 
+@pytest.mark.parametrize("optimization_version", ["baseline_v1", "balanced_v1"])
 @pytest.mark.parametrize("fault", ["crash", "lease"])
-def test_compression_response_recovery_and_inputs_during_compression(tmp_path: Path, fault: str):
+def test_compression_response_recovery_and_inputs_during_compression(
+    tmp_path: Path,
+    fault: str,
+    optimization_version: AppendOnlyOptimizationVersion,
+):
     repository = tmp_path / "repo"
     repository.mkdir()
     store = SQLiteStore(tmp_path / "state.db")
@@ -385,7 +637,10 @@ def test_compression_response_recovery_and_inputs_during_compression(tmp_path: P
     task = service.start_task(
         session.id,
         "Read observations.",
-        execution=TaskExecutionConfig(prompt_cache_layout=PromptCacheLayout.APPEND_ONLY),
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+            append_only_optimization=optimization_version,
+        ),
         budget=TaskBudget(max_steps=20, max_context_tokens=4_500, max_tool_output_chars=3_000),
     )
     calls: list[int] = []
@@ -406,6 +661,15 @@ def test_compression_response_recovery_and_inputs_during_compression(tmp_path: P
         runtime.run(task)
     saved = store.get_checkpoint(task.id)
     assert saved.append_only_state.compression_request_id is not None
+    assert saved.append_only_state.optimization_version == optimization_version
+    assert saved.append_only_state.last_compression_attempt_step is not None
+    if optimization_version == "balanced_v1":
+        assert "PATCHLOOP_EPOCH_COMPRESSION_BALANCED_V1" in (
+            saved.append_only_state.compression_instruction or ""
+        )
+        assert saved.append_only_state.compression_summary_target_tokens is not None
+    else:
+        assert saved.append_only_state.compression_summary_target_tokens is None
     source_count = saved.append_only_state.last_submitted_message_count
     assert provider.requests[-1][0][:-1] == saved.messages[:source_count]
     resumed_provider = _CompressingProvider(index=provider.index)
@@ -423,6 +687,7 @@ def test_compression_response_recovery_and_inputs_during_compression(tmp_path: P
     )
     checkpoint = store.get_checkpoint(task.id)
     assert checkpoint.cache_epoch_state.generation >= 2
+    assert checkpoint.append_only_state.optimization_version == optimization_version
     all_requests = provider.requests + resumed_provider.requests
     compressions = 0
     previous = None
@@ -435,7 +700,14 @@ def test_compression_response_recovery_and_inputs_during_compression(tmp_path: P
             if previous is not None:
                 assert messages[: len(previous)] == previous
             previous = messages
-            budget = compute_prefix_budget(task.budget, resumed_runtime.provider_binding, tools)
+            policy = resumed_runtime._prompt_cache.optimization_policy
+            assert policy is not None
+            budget = compute_prefix_budget(
+                task.budget,
+                resumed_runtime.provider_binding,
+                tools,
+                policy=policy,
+            )
             assert ContextEngine.estimate_messages(messages) + ContextEngine.estimate_tools(
                 tools
             ) <= (budget.ordinary_limit)

@@ -568,7 +568,7 @@ def _resume(
 def _approval_is_permitted(approval: Any, effect: Any, repo: Path) -> bool:
     return bool(
         (
-            effect.tool_name in {"apply_patch", "replace_text"}
+            effect.tool_name in {"apply_patch", "replace_text", "write_file"}
             and approval.resource_summary == f"workspace={repo}; paths=order_service.py"
         )
         or (

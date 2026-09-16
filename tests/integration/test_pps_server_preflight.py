@@ -331,10 +331,12 @@ def test_approval_scope_remains_exact(tmp_path):
     approval = SimpleNamespace(resource_summary=f"workspace={repository}; paths=order_service.py")
     apply_patch = SimpleNamespace(tool_name="apply_patch", arguments_summary={})
     replace_text = SimpleNamespace(tool_name="replace_text", arguments_summary={})
+    write_file = SimpleNamespace(tool_name="write_file", arguments_summary={})
     broad = SimpleNamespace(tool_name="apply_patch", arguments_summary={})
 
     assert runner._approval_is_permitted(approval, apply_patch, repository)
     assert runner._approval_is_permitted(approval, replace_text, repository)
+    assert runner._approval_is_permitted(approval, write_file, repository)
     approval.resource_summary = f"workspace={repository}; paths=order_service.py,other.py"
     assert not runner._approval_is_permitted(approval, broad, repository)
 

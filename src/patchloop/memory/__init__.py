@@ -73,13 +73,17 @@ from patchloop.memory.store import (
 )
 from patchloop.memory.working import (
     WORKING_MEMORY_PREFIX,
+    MemoryProjectionBudgetError,
     MemoryPromotionBatch,
     WorkingMemoryBudgetError,
     WorkingMemoryEvent,
     WorkingMemoryItem,
     WorkingMemoryItemKind,
     WorkingMemoryManager,
+    WorkingMemoryProviderEntry,
     WorkingMemorySnapshot,
+    project_working_entries,
+    working_memory_provider_field,
 )
 
 __all__ = [
@@ -115,6 +119,7 @@ __all__ = [
     "MemoryManager",
     "MemoryManagerSnapshot",
     "MemoryManagerUpdate",
+    "MemoryProjectionBudgetError",
     "MemoryPromotionBatch",
     "MemoryQuery",
     "MemoryRecord",
@@ -143,9 +148,12 @@ __all__ = [
     "WorkingMemoryItem",
     "WorkingMemoryItemKind",
     "WorkingMemoryManager",
+    "WorkingMemoryProviderEntry",
     "WorkingMemorySnapshot",
     "compute_memory_content_hash",
     "evaluate_retrieval",
     "memory_record_matches_semantic_filters",
+    "project_working_entries",
     "validate_supersession_chain",
+    "working_memory_provider_field",
 ]

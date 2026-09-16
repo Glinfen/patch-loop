@@ -8,7 +8,7 @@ import os
 from collections.abc import Callable
 from contextlib import suppress
 from time import monotonic
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from patchloop.context import ContextBudgetError, ContextEngine, ContextWindow
@@ -65,6 +65,7 @@ from patchloop.memory.retrieval import LayeredMemoryContext
 from patchloop.memory.semantic import SemanticMemoryManager, SemanticResolutionBatch
 from patchloop.memory.store import MemoryStoreError
 from patchloop.memory.working import (
+    MemoryProjectionBudgetError,
     WorkingMemoryBudgetError,
     WorkingMemoryManager,
 )
@@ -1089,6 +1090,23 @@ class AgentRuntime:
             return task
         except MemoryStoreError as exc:
             return self._fail(task, ErrorKind.EXECUTION_ERROR, str(exc))
+        except MemoryProjectionBudgetError as exc:
+            task.plan = self.gateway.context.plan
+            task.report = self._build_report(str(exc))
+            task.transition_runtime(TaskRuntimeCondition.PAUSING)
+            task.transition_runtime(TaskRuntimeCondition.PAUSED)
+            self._persist_task(task)
+            self._emit(
+                "context.budget_exceeded",
+                task,
+                {
+                    "reason": str(exc),
+                    "required_tokens": exc.required_tokens,
+                    "available_tokens": exc.available_tokens,
+                    "required_keys": exc.required_keys,
+                },
+            )
+            return task
         except ContextBudgetError as exc:
             if (
                 append_only
@@ -2539,20 +2557,34 @@ class AgentRuntime:
             remaining = budget.ordinary_limit - (
                 engine.estimate_messages(messages) + engine.estimate_tools(specifications)
             )
+            policy = cache.optimization_policy
+            projection_mode = policy.projection_mode if policy is not None else "legacy"
+            retrieval_cap = (
+                max(0, budget.memory_message_limit - 128)
+                if policy is not None and policy.fixed_projection_budget
+                else max(0, min(budget.memory_message_limit - 128, remaining - 128))
+            )
             retrieval = self._retrieve_memory(
                 task,
                 budget.ordinary_limit,
-                max(0, min(budget.memory_message_limit - 128, remaining - 128)),
+                retrieval_cap,
+                projection_mode=projection_mode,
             )
             if retrieval.fallback_reason is not None:
                 self._emit_memory_fallback(task, retrieval.fallback_reason, phase="retrieval")
             projection_fallback_reason = retrieval.fallback_reason
             projection = (
-                None if retrieval.context is None else retrieval.context.provider_projection
+                None
+                if retrieval.context is None
+                else retrieval.context.provider_payload
+                if projection_mode == "structured_v1"
+                else retrieval.context.provider_projection
             )
             if projection is not None:
-                projection_format = "legacy_v1"
-            if projection is not None:
+                projection_format = (
+                    "structured_v1" if projection_mode == "structured_v1" else "legacy_v1"
+                )
+            if isinstance(projection, str):
                 projection = engine.redactor.redact_text(projection)
             invalidations = (
                 self._memory_manager.inactive_context_values()
@@ -3153,6 +3185,8 @@ class AgentRuntime:
         task: Task,
         total_context_tokens: int,
         retrieval_token_cap: int | None = None,
+        *,
+        projection_mode: Literal["legacy", "structured_v1"] = "legacy",
     ) -> ManagedMemoryRetrieval:
         if self._memory_manager is None:
             raise RuntimeError("memory manager is not initialized")
@@ -3161,6 +3195,7 @@ class AgentRuntime:
             changed_paths=self.gateway.context.changes.changed_paths(),
             total_context_tokens=total_context_tokens,
             retrieval_token_cap=retrieval_token_cap,
+            projection_mode=projection_mode,
         )
 
     def _record_memory_retrieval(

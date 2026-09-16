@@ -2,14 +2,97 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from patchloop.domain import Task, TaskBudget, TaskStatus, ToolCall
+from patchloop.domain import (
+    PromptCacheLayout,
+    Task,
+    TaskBudget,
+    TaskExecutionConfig,
+    TaskRuntimeCondition,
+    TaskStatus,
+    ToolCall,
+)
 from patchloop.events import EventLogger
-from patchloop.memory import MemoryKind, MemoryQuery, WorkingMemoryItemKind
+from patchloop.memory import (
+    MemoryKind,
+    MemoryProjectionBudgetError,
+    MemoryQuery,
+    WorkingMemoryItemKind,
+)
 from patchloop.observability import TaskMetrics
 from patchloop.persistence import SQLiteStore
+from patchloop.prompt_cache import MemoryDeltaPublisher
 from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ToolSpec
 from patchloop.runtime import AgentRuntime
 from patchloop.tools import ReadFileTool, ToolContext, ToolGateway, UpdatePlanTool
+
+
+def test_balanced_append_only_runtime_publishes_structured_working_memory(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    store = SQLiteStore(tmp_path / "state.db")
+    trace = EventLogger(tmp_path / "trace.jsonl")
+    provider = FakeProvider([ModelResponse(content="Constraint preserved.")])
+    runtime = AgentRuntime(provider, ToolGateway(ToolContext(repository), [], trace), trace, store)
+    task = Task(
+        id="balanced-structured-working",
+        goal="Only inspect src. Do not modify .env.",
+        repository=str(repository),
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+            append_only_optimization="balanced_v1",
+        ),
+    )
+
+    result = runtime.run(task)
+
+    assert result.status is TaskStatus.COMPLETED, result.error
+    snapshot = runtime._prompt_cache.publication_snapshot
+    assert snapshot is not None
+    working = MemoryDeltaPublisher.replay(snapshot)["working_state"]
+    assert working
+    assert all(item.get("type") == "working_memory" for item in working)
+    assert all("key" in item and "value" in item for item in working)
+    assert all(set(item) != {"text"} for item in working)
+
+
+def test_balanced_projection_budget_error_pauses_before_provider_request(tmp_path: Path) -> None:
+    class ProjectionOverflowRuntime(AgentRuntime):
+        def _retrieve_memory(self, *args, **kwargs):
+            raise MemoryProjectionBudgetError(
+                required_tokens=400,
+                available_tokens=128,
+                required_keys=["constraint:required"],
+            )
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    store = SQLiteStore(tmp_path / "state.db")
+    trace = EventLogger(tmp_path / "trace.jsonl")
+    provider = FakeProvider([])
+    task = Task(
+        id="balanced-projection-overflow",
+        goal="Only preserve the required constraint.",
+        repository=str(repository),
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+            append_only_optimization="balanced_v1",
+        ),
+    )
+
+    result = ProjectionOverflowRuntime(
+        provider,
+        ToolGateway(ToolContext(repository), [], trace),
+        trace,
+        store,
+    ).run(task)
+
+    assert result.runtime_condition is TaskRuntimeCondition.PAUSED
+    assert result.status is TaskStatus.RUNNING
+    assert provider.requests == []
+    event = next(item for item in trace.read() if item.type == "context.budget_exceeded")
+    assert event.data["required_keys"] == ["constraint:required"]
 
 
 class LongContextProvider:

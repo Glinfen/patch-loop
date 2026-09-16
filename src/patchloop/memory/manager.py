@@ -347,6 +347,7 @@ class MemoryManager:
         changed_paths: list[str],
         total_context_tokens: int,
         retrieval_token_cap: int | None = None,
+        projection_mode: Literal["legacy", "structured_v1"] = "legacy",
     ) -> ManagedMemoryRetrieval:
         if self._fallback_active:
             return ManagedMemoryRetrieval(context=None)
@@ -379,6 +380,7 @@ class MemoryManager:
             sources=sources,
             total_context_tokens=total_context_tokens,
             retrieval_token_cap=retrieval_token_cap,
+            projection_mode=projection_mode,
         )
         if not context.rendered and context.omitted_ids:
             duration = (perf_counter() - read_started) * 1_000

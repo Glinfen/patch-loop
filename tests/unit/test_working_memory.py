@@ -16,8 +16,11 @@ from patchloop.memory import (
     WORKING_MEMORY_PREFIX,
     MemoryKind,
     WorkingMemoryBudgetError,
+    WorkingMemoryItem,
     WorkingMemoryItemKind,
     WorkingMemoryManager,
+    WorkingMemorySnapshot,
+    project_working_entries,
 )
 
 
@@ -53,6 +56,56 @@ def test_extracts_and_pins_goal_constraints_and_prohibitions() -> None:
     assert all(item.pinned for item in snapshot.items)
     assert memory.render().startswith(WORKING_MEMORY_PREFIX)
     assert snapshot.estimated_tokens <= snapshot.token_budget
+
+
+def test_provider_projection_keeps_complete_safe_values_and_stable_keys() -> None:
+    complex_value = '保留完整 JSON: {"quoted":"a\\nb", "path":"src\\main.py"}\n下一行'
+    snapshot = WorkingMemorySnapshot(
+        task_id="provider-projection",
+        token_budget=800,
+        items=[
+            WorkingMemoryItem(
+                key="goal",
+                kind=WorkingMemoryItemKind.GOAL,
+                text="This goal is already present in the request",
+                pinned=True,
+            ),
+            WorkingMemoryItem(
+                key="constraint:json",
+                kind=WorkingMemoryItemKind.CONSTRAINT,
+                text=complex_value,
+                pinned=True,
+            ),
+            WorkingMemoryItem(
+                key="result:old",
+                kind=WorkingMemoryItemKind.RECENT_RESULT,
+                text="old result",
+                step_index=1,
+            ),
+            WorkingMemoryItem(
+                key="result:new-b",
+                kind=WorkingMemoryItemKind.RECENT_RESULT,
+                text="new result b",
+                step_index=3,
+            ),
+            WorkingMemoryItem(
+                key="result:new-a",
+                kind=WorkingMemoryItemKind.RECENT_RESULT,
+                text="new result a",
+                step_index=3,
+            ),
+        ],
+    )
+
+    entries = project_working_entries(snapshot)
+
+    assert [entry.key for entry in entries] == [
+        "constraint:json",
+        "result:new-a",
+        "result:new-b",
+    ]
+    assert entries[0].value == complex_value
+    assert all(entry.key != "goal" for entry in entries)
 
 
 def test_100_steps_remain_bounded_and_keep_constraints_and_active_error() -> None:

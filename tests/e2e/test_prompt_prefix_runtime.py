@@ -138,8 +138,20 @@ class _ProjectionSequenceRuntime(AgentRuntime):
         super().__init__(*args, **kwargs)
         self._projections = iter(projections)
 
-    def _retrieve_memory(self, task, total_context_tokens, retrieval_token_cap=None):
-        retrieved = super()._retrieve_memory(task, total_context_tokens, retrieval_token_cap)
+    def _retrieve_memory(
+        self,
+        task,
+        total_context_tokens,
+        retrieval_token_cap=None,
+        *,
+        projection_mode="legacy",
+    ):
+        retrieved = super()._retrieve_memory(
+            task,
+            total_context_tokens,
+            retrieval_token_cap,
+            projection_mode=projection_mode,
+        )
         marker = next(self._projections)
         if retrieved.context is None:
             raise AssertionError("the real MemoryManager should return a retrieval context")

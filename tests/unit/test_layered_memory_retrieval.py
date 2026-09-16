@@ -5,11 +5,14 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from patchloop.context import ContextEngine
 from patchloop.domain import Plan, PlanItem, StepStatus
 from patchloop.memory import (
     CrossLayerMemoryRetriever,
     MemoryKind,
+    MemoryProjectionBudgetError,
     MemoryRecord,
     MemoryScope,
     MemorySource,
@@ -204,6 +207,77 @@ def test_aop01_fixture_reproduces_opaque_truncated_working_blob() -> None:
         )
 
     assert observed == expected["runs"]
+
+
+def test_structured_projection_has_complete_stable_working_items() -> None:
+    task_id = "structured-working"
+    working = _working(task_id).model_copy(update={"revision": 17})
+    retriever = CrossLayerMemoryRetriever()
+
+    context = retriever.retrieve(
+        task_id=task_id,
+        repository_scope_id="repo",
+        goal="Repair parser timeout",
+        plan=None,
+        working=working,
+        working_render=WorkingMemoryManager(
+            task_id,
+            "Repair parser timeout",
+            token_budget=working.token_budget,
+            snapshot=working,
+        ).render(),
+        episodic_render=None,
+        changed_paths=["config.py"],
+        records=[],
+        sources=[],
+        total_context_tokens=2_000,
+        retrieval_token_cap=900,
+        projection_mode="structured_v1",
+    )
+
+    items = context.provider_payload["working_state"]
+    assert all(item["type"] == "working_memory" for item in items)
+    assert all(set(item) == {"type", "key", "field", "value"} for item in items)
+    assert {item["key"] for item in items} == {"error", "changed:config.py"}
+    assert "revision" not in context.provider_projection
+    assert "[layer budget truncated]" not in context.provider_projection
+    assert json.loads(context.provider_projection.split("\n", 2)[2]) == context.provider_payload
+
+
+def test_structured_projection_rejects_pinned_entries_that_cannot_fit() -> None:
+    task_id = "structured-pinned-overflow"
+    working = WorkingMemorySnapshot(
+        task_id=task_id,
+        token_budget=2_000,
+        items=[
+            WorkingMemoryItem(
+                key="constraint:large",
+                kind=WorkingMemoryItemKind.CONSTRAINT,
+                text="必须完整保留" * 100,
+                pinned=True,
+            )
+        ],
+    )
+
+    with pytest.raises(MemoryProjectionBudgetError) as raised:
+        CrossLayerMemoryRetriever().retrieve(
+            task_id=task_id,
+            repository_scope_id="repo",
+            goal="Keep the constraint",
+            plan=None,
+            working=working,
+            working_render="audit",
+            episodic_render=None,
+            changed_paths=[],
+            records=[],
+            sources=[],
+            total_context_tokens=1_000,
+            retrieval_token_cap=64,
+            projection_mode="structured_v1",
+        )
+
+    assert raised.value.required_tokens > raised.value.available_tokens
+    assert raised.value.required_keys == ["constraint:large"]
 
 
 def test_query_combines_goal_plan_error_path_and_recent_action() -> None:

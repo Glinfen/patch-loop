@@ -155,7 +155,7 @@ def test_v2_distinguishes_retrieval_failure_from_a_successful_empty_projection()
     assert failed_retrieval.next_state.current_payload == initial.next_state.current_payload
 
     successful_empty = restored.preview(
-        "epoch-1", _projection({}), invalidated_values=[], max_message_tokens=2_048
+        "epoch-1", {}, invalidated_values=[], max_message_tokens=2_048
     )
     assert len(successful_empty.messages) == 1
     assert successful_empty.next_state.current_payload == {}
@@ -356,6 +356,45 @@ def test_v2_existing_working_blob_upgrades_by_appending_without_rewriting_histor
     assert all(
         "field" in item for item in MemoryDeltaPublisher.replay(changed.next_state)["working_state"]
     )
+
+
+def test_v2_structured_working_keys_avoid_resending_unrelated_files() -> None:
+    stable = {
+        "type": "working_memory",
+        "key": "read:contract.md",
+        "field": "read_files",
+        "value": "contract.md",
+    }
+    initial = MemoryDeltaPublisher().preview(
+        "epoch-1",
+        {"working_state": [stable]},
+        invalidated_values=[],
+        max_message_tokens=2_048,
+    )
+    publisher = MemoryDeltaPublisher(initial.next_state)
+    previous: dict[str, object] | None = None
+
+    for index in range(100):
+        added = {
+            "type": "working_memory",
+            "key": f"read:file-{index:03d}.py",
+            "field": "read_files",
+            "value": f"file-{index:03d}.py",
+        }
+        update = publisher.preview(
+            "epoch-1",
+            {"working_state": [stable, added]},
+            invalidated_values=[],
+            max_message_tokens=512,
+        )
+        assert len(update.messages) == 1
+        envelope = _v2_envelope(update.messages[0], MEMORY_DELTA_V2_PREFIX)
+        assert envelope["payload"]["added"]["working_state"] == [added]
+        if previous is not None:
+            assert envelope["payload"]["removed"]["working_state"] == [previous]
+        assert "contract.md" not in update.messages[0].content
+        publisher = MemoryDeltaPublisher(update.next_state)
+        previous = added
 
 
 def test_v2_preview_can_upgrade_v1_state_without_mutating_it() -> None:

@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from patchloop.domain import Plan, StepStatus, ToolCall, ToolResult
 from patchloop.memory.models import MemoryKind, MemoryRecord, MemorySource, MemorySourceKind
-from patchloop.security import SecretRedactor
+from patchloop.security import SecretRedactor, UntrustedContentGuard
 
 WORKING_MEMORY_PREFIX = "PATCHLOOP_WORKING_MEMORY_V1\nUntrusted runtime state.\n"
 _SENTENCE_SPLIT = re.compile(r"[.!?\u3002\uff01\uff1f;\uff1b\n]+")
@@ -36,6 +36,26 @@ _PROHIBITION_MARKERS = (" do not ", " don't ", " never ", "不要", "禁止", "�
 
 class WorkingMemoryBudgetError(ValueError):
     pass
+
+
+class MemoryProjectionBudgetError(ValueError):
+    """Raised when complete pinned provider entries cannot fit the projection budget."""
+
+    def __init__(
+        self,
+        *,
+        required_tokens: int,
+        available_tokens: int,
+        required_keys: list[str],
+    ) -> None:
+        self.required_tokens = required_tokens
+        self.available_tokens = available_tokens
+        self.required_keys = list(required_keys)
+        super().__init__(
+            "pinned memory projection requires "
+            f"{required_tokens} tokens, budget is {available_tokens}; "
+            f"required keys: {', '.join(required_keys)}"
+        )
 
 
 class WorkingMemoryItemKind(StrEnum):
@@ -60,6 +80,75 @@ class WorkingMemoryItem(BaseModel):
     pinned: bool = False
     step_index: int = Field(default=0, ge=0)
     source_id: str | None = None
+
+
+class WorkingMemoryProviderEntry(BaseModel):
+    """One stable, complete working-memory value exposed to the provider."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key: str = Field(min_length=1, max_length=160)
+    kind: WorkingMemoryItemKind
+    value: str = Field(min_length=1, max_length=1_200)
+    pinned: bool = False
+
+
+_PROVIDER_FIELDS = {
+    WorkingMemoryItemKind.CONSTRAINT: "constraints",
+    WorkingMemoryItemKind.PROHIBITION: "prohibitions",
+    WorkingMemoryItemKind.PLAN: "plan",
+    WorkingMemoryItemKind.ACCESSED_FILE: "read_files",
+    WorkingMemoryItemKind.ACTIVE_ERROR: "active_errors",
+    WorkingMemoryItemKind.OPEN_QUESTION: "questions",
+    WorkingMemoryItemKind.CHANGED_FILE: "changed_files",
+    WorkingMemoryItemKind.KEY_EVIDENCE: "key_evidence",
+    WorkingMemoryItemKind.RECENT_RESULT: "recent_results",
+}
+
+
+def working_memory_provider_field(kind: WorkingMemoryItemKind) -> str:
+    """Return the stable V2 field name for a provider-visible working item."""
+
+    try:
+        return _PROVIDER_FIELDS[kind]
+    except KeyError as exc:
+        raise ValueError(f"working memory kind is not provider-visible: {kind.value}") from exc
+
+
+def project_working_entries(
+    snapshot: WorkingMemorySnapshot,
+    *,
+    redactor: SecretRedactor | None = None,
+) -> list[WorkingMemoryProviderEntry]:
+    """Project safe provider entries without rendering or truncating nested JSON."""
+
+    active_redactor = redactor or SecretRedactor()
+    guard = UntrustedContentGuard(active_redactor)
+    recent_keys = {
+        item.key
+        for item in sorted(
+            (item for item in snapshot.items if item.kind is WorkingMemoryItemKind.RECENT_RESULT),
+            key=lambda item: (-item.step_index, item.key),
+        )[:2]
+    }
+    entries: list[WorkingMemoryProviderEntry] = []
+    for item in snapshot.items:
+        if item.kind is WorkingMemoryItemKind.GOAL:
+            continue
+        if item.kind is WorkingMemoryItemKind.RECENT_RESULT and item.key not in recent_keys:
+            continue
+        safe_value = guard.inspect(active_redactor.redact_text(item.text)).safe_text
+        if not safe_value:
+            continue
+        entries.append(
+            WorkingMemoryProviderEntry(
+                key=item.key,
+                kind=item.kind,
+                value=safe_value,
+                pinned=item.pinned,
+            )
+        )
+    return sorted(entries, key=lambda entry: entry.key)
 
 
 class WorkingMemoryEvent(BaseModel):

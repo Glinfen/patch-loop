@@ -202,7 +202,7 @@ class MemoryDeltaPublisher:
     def preview(
         self,
         epoch_id: str,
-        provider_projection: str | None,
+        provider_projection: str | Mapping[str, object] | None,
         *,
         invalidated_values: list[str],
         max_message_tokens: int,
@@ -538,7 +538,18 @@ def _projection_payload(value: str) -> dict[str, list[dict[str, object]]]:
     return normalized
 
 
-def _projection_payload_v2(value: str) -> dict[str, list[dict[str, object]]]:
+def _projection_payload_v2(
+    value: str | Mapping[str, object],
+) -> dict[str, list[dict[str, object]]]:
+    if not isinstance(value, str):
+        normalized = _normalize_v2_payload(value)
+        if "working_state" in normalized:
+            normalized["working_state"] = [
+                entry
+                for item in normalized["working_state"]
+                for entry in _working_state_entries(item)
+            ]
+        return _normalize_v2_payload(normalized)
     if value == "":
         return {}
     lines = value.splitlines()

@@ -16,7 +16,7 @@ from enum import StrEnum
 from itertools import pairwise
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -492,9 +492,14 @@ class CacheBenchmarkRunner:
                     task: Task,
                     total_context_tokens: int,
                     retrieval_token_cap: int | None = None,
+                    *,
+                    projection_mode: Literal["legacy", "structured_v1"] = "legacy",
                 ) -> ManagedMemoryRetrieval:
                     retrieved = super()._retrieve_memory(
-                        task, total_context_tokens, retrieval_token_cap
+                        task,
+                        total_context_tokens,
+                        retrieval_token_cap,
+                        projection_mode=projection_mode,
                     )
                     if not prefix_suite or retrieved.context is None:
                         return retrieved

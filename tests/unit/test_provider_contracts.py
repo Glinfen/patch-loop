@@ -82,6 +82,13 @@ def test_binding_fingerprint_is_stable_and_covers_request_configuration() -> Non
     assert changed.fingerprint != first.fingerprint
 
 
+def test_optional_cache_write_price_preserves_legacy_binding_fingerprint_shape() -> None:
+    selected = binding()
+    pricing = selected.model_dump(mode="json")["pricing"]
+
+    assert "cache_write_input_per_million" not in pricing
+
+
 def test_binding_contains_no_credential_value_in_dump_or_repr() -> None:
     selected = binding()
     dumped = json.dumps(selected.model_dump(mode="json"))

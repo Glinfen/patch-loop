@@ -96,6 +96,7 @@ def test_default_command_is_read_only_preflight(tmp_path, monkeypatch, capsys):
     assert payload["execute_real"] is False
     assert payload["model_requests"] == 0
     assert payload["planned_trials"] == 4
+    assert len(payload["provider_config_fingerprint"]) == 64
 
 
 @pytest.mark.parametrize("failure", ["missing", "source_drift", "evidence_drift"])

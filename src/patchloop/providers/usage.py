@@ -25,6 +25,7 @@ class PriceSnapshot(BaseModel):
     input_per_million: float = Field(ge=0)
     output_per_million: float = Field(ge=0)
     cached_input_per_million: float | None = Field(default=None, ge=0)
+    cache_write_input_per_million: float | None = Field(default=None, ge=0)
     legacy_default: bool = False
 
     @classmethod
@@ -40,6 +41,7 @@ class PriceSnapshot(BaseModel):
         output_tokens: int,
         cache_hit_tokens: int | None = None,
         cache_miss_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
     ) -> float:
         if (
             cache_hit_tokens is not None
@@ -51,8 +53,21 @@ class PriceSnapshot(BaseModel):
                 if self.cached_input_per_million is None
                 else self.cached_input_per_million
             )
+            write_tokens = cache_write_tokens or 0
+            if write_tokens > cache_miss_tokens:
+                return (
+                    input_tokens * self.input_per_million
+                    + output_tokens * self.output_per_million
+                ) / 1_000_000
+            write_price = (
+                self.input_per_million
+                if self.cache_write_input_per_million is None
+                else self.cache_write_input_per_million
+            )
             input_cost = (
-                cache_hit_tokens * cached_price + cache_miss_tokens * self.input_per_million
+                cache_hit_tokens * cached_price
+                + (cache_miss_tokens - write_tokens) * self.input_per_million
+                + write_tokens * write_price
             )
         else:
             input_cost = input_tokens * self.input_per_million
@@ -110,7 +125,13 @@ class UsageNormalizer:
         input_proxy = len(body) + 64 * message_count
         if not cls._is_token_count(max_output_tokens):
             raise ValueError("max_output_tokens must be a non-negative integer")
-        return prices.estimate(input_tokens=input_proxy, output_tokens=max_output_tokens)
+        input_price = max(
+            prices.input_per_million,
+            prices.cache_write_input_per_million or prices.input_per_million,
+        )
+        return (
+            input_proxy * input_price + max_output_tokens * prices.output_per_million
+        ) / 1_000_000
 
     @classmethod
     def _chat(cls, raw: dict[str, Any], prices: PriceSnapshot | None) -> ModelUsage:
@@ -140,7 +161,9 @@ class UsageNormalizer:
         ):
             cache_miss = input_tokens - standard_cache_hit
             cache_miss_source = "derived"
-        cache_write = cls._integer(raw, "cache_write_tokens")
+        cache_write = cls._integer(details, "cache_write_tokens")
+        if cache_write is None:
+            cache_write = cls._integer(raw, "cache_write_tokens")
         if cache_write is None:
             cache_write = cls._integer(raw, "prompt_cache_write_tokens")
         return cls._usage(
@@ -202,12 +225,30 @@ class UsageNormalizer:
     ) -> ModelUsage:
         cost = 0.0
         status: Literal["estimated", "unknown", "legacy"] = "unknown"
-        if prices is not None and input_tokens is not None and output_tokens is not None:
+        cache_write_usage_complete = (
+            prices is None
+            or prices.cache_write_input_per_million is None
+            or (
+                cache_hit is not None
+                and cache_miss is not None
+                and cache_write is not None
+                and input_tokens is not None
+                and cache_hit + cache_miss == input_tokens
+                and cache_write <= cache_miss
+            )
+        )
+        if (
+            prices is not None
+            and input_tokens is not None
+            and output_tokens is not None
+            and cache_write_usage_complete
+        ):
             cost = prices.estimate(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_hit_tokens=cache_hit,
                 cache_miss_tokens=cache_miss,
+                cache_write_tokens=cache_write,
             )
             status = "legacy" if prices.legacy_default else "estimated"
         return ModelUsage(

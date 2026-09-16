@@ -193,7 +193,7 @@ tests/unit/test_provider_config.py（新增）
 4. 凭据只在运行期解析为 SecretStr；内置 DeepSeek 保留 DEEPSEEK_*/LLM_* 与显式 env_file，通用/OpenAI profile 只读各自 credential_env。本地 auth=none 必须显式，不用假 API Key。
 5. TaskExecutionConfig.provider 默认 None。新 Task 创建时保存解析结果；旧 None 的首次绑定由 PGW-08 在取得 guard 后执行。Factory 注册三条 protocol/dialect 路径，未实现的 Adapter 明确不支持，不回落 DeepSeek。
 
-配置字段固定为：profile 增加 `auth`、`default_model`、`transport`；每个 models 项包含 `capabilities`、`generation`、`pricing`。generation 只允许 `max_output_tokens`、可空 `temperature`、`reasoning_enabled`、可空 `reasoning_effort`，Chat 另有 `token_limit_field=max_tokens/max_completion_tokens`（默认 max_tokens）；不支持字段拒绝，不能静默丢弃。pricing 包含 `version/input_per_million/output_per_million/cached_input_per_million`，最后一项可空。内置 DeepSeek 默认模型使用官方实时目录在 2026-09-13 返回的 `deepseek-flash`；模型/生成参数沿用现有配置，上下文按当前 TaskBudget 的 32000 保守声明、输出默认 16384；这些是产品默认限制，不宣称服务最大规格。历史报告中的旧模型 ID 不追溯改写。
+配置字段固定为：profile 增加 `auth`、`default_model`、`transport`；每个 models 项包含 `capabilities`、`generation`、`pricing`。generation 只允许 `max_output_tokens`、可空 `temperature`、`reasoning_enabled`、可空 `reasoning_effort`，Chat 另有 `token_limit_field=max_tokens/max_completion_tokens`（默认 max_tokens）；不支持字段拒绝，不能静默丢弃。pricing 包含 `version/input_per_million/output_per_million/cached_input_per_million/cache_write_input_per_million`，后两项可空；配置缓存写入价格时，缺少写入 token 明细不能估算为已知费用。内置 DeepSeek 默认模型使用官方实时目录在 2026-09-13 返回的 `deepseek-flash`；模型/生成参数沿用现有配置，上下文按当前 TaskBudget 的 32000 保守声明、输出默认 16384；这些是产品默认限制，不宣称服务最大规格。历史报告中的旧模型 ID 不追溯改写。
 
 **Interface Changes**
 

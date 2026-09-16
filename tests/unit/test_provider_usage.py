@@ -18,6 +18,10 @@ def pricing() -> ProviderPricing:
     )
 
 
+def cache_write_pricing() -> ProviderPricing:
+    return pricing().model_copy(update={"cache_write_input_per_million": 2.5})
+
+
 def test_chat_usage_preserves_reported_cache_fields_and_estimates_cost() -> None:
     usage = UsageNormalizer.normalize(
         ProviderProtocol.CHAT_COMPLETIONS,
@@ -42,7 +46,7 @@ def test_responses_usage_derives_miss_and_does_not_add_reasoning_twice() -> None
         {
             "input_tokens": 40,
             "output_tokens": 12,
-            "input_tokens_details": {"cached_tokens": 30},
+            "input_tokens_details": {"cached_tokens": 30, "cache_write_tokens": 0},
             "output_tokens_details": {"reasoning_tokens": 7},
         },
         pricing(),
@@ -77,7 +81,10 @@ def test_standard_chat_usage_derives_uncached_input_from_reported_totals(cached:
         {
             "prompt_tokens": 100,
             "completion_tokens": 10,
-            "prompt_tokens_details": {"cached_tokens": cached},
+            "prompt_tokens_details": {
+                "cached_tokens": cached,
+                "cache_write_tokens": 0,
+            },
         },
         pricing(),
     )
@@ -124,6 +131,48 @@ def test_chat_usage_preserves_explicit_miss_even_when_it_disagrees_with_totals()
     assert usage.cost_usd == pytest.approx((100 * 2 + 10 * 8) / 1_000_000)
 
 
+@pytest.mark.parametrize("protocol", list(ProviderProtocol))
+def test_official_cache_write_usage_is_priced_separately(protocol) -> None:
+    raw = (
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "prompt_tokens_details": {
+                "cached_tokens": 60,
+                "cache_write_tokens": 25,
+            },
+        }
+        if protocol is ProviderProtocol.CHAT_COMPLETIONS
+        else {
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "input_tokens_details": {
+                "cached_tokens": 60,
+                "cache_write_tokens": 25,
+            },
+        }
+    )
+
+    usage = UsageNormalizer.normalize(protocol, raw, cache_write_pricing())
+
+    assert usage.cache_write_tokens == 25
+    assert usage.cost_status == "estimated"
+    assert usage.cost_usd == pytest.approx(
+        (60 * 0.5 + 15 * 2 + 25 * 2.5 + 10 * 8) / 1_000_000
+    )
+
+
+def test_cache_write_pricing_requires_complete_usage_breakdown() -> None:
+    usage = UsageNormalizer.normalize(
+        ProviderProtocol.CHAT_COMPLETIONS,
+        {"prompt_tokens": 100, "completion_tokens": 10},
+        cache_write_pricing(),
+    )
+
+    assert usage.cost_status == "unknown"
+    assert usage.cost_usd == 0
+
+
 def test_boolean_token_counts_are_rejected() -> None:
     with pytest.raises(ProviderError, match="invalid token usage"):
         UsageNormalizer.normalize(
@@ -146,3 +195,15 @@ def test_reservation_uses_utf8_bytes_framing_and_uncached_prices() -> None:
     reservation = UsageNormalizer.reserve(encoded, 10, snapshot)
 
     assert reservation > 10 * snapshot.output_per_million / 1_000_000
+
+
+def test_reservation_uses_cache_write_price_as_conservative_input_ceiling() -> None:
+    encoded = EncodedRequest(
+        path="/responses",
+        body={"input": [{"role": "user", "content": "hello"}]},
+    )
+
+    ordinary = UsageNormalizer.reserve(encoded, 10, pricing())
+    cache_write = UsageNormalizer.reserve(encoded, 10, cache_write_pricing())
+
+    assert cache_write > ordinary

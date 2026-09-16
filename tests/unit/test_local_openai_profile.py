@@ -30,7 +30,12 @@ def test_local_profile_resolves_env_and_encodes_high(tmp_path, monkeypatch):
     assert binding.base_url == "http://localhost:12345/v1"
     assert binding.model == "gpt-5.6-luna"
     assert binding.pricing is not None
-    assert binding.pricing.input_per_million == binding.pricing.output_per_million == 0
+    assert binding.pricing.version == "openai-public-2026-09-16"
+    assert binding.pricing.input_per_million == 0.20
+    assert binding.pricing.cached_input_per_million == 0.02
+    assert binding.pricing.cache_write_input_per_million == 0.25
+    assert binding.pricing.output_per_million == 1.20
+    assert binding.capabilities.cache_usage_supported is True
     assert "private-test-key" not in binding.model_dump_json()
     request = ProviderRequest(
         request_id="request",

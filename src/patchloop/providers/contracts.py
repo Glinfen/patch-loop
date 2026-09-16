@@ -12,7 +12,15 @@ import json
 from enum import StrEnum
 from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 
 class ProviderProtocol(StrEnum):
@@ -110,6 +118,17 @@ class ProviderPricing(BaseModel):
     input_per_million: float = Field(ge=0)
     output_per_million: float = Field(ge=0)
     cached_input_per_million: float | None = Field(default=None, ge=0)
+    cache_write_input_per_million: float | None = Field(default=None, ge=0)
+
+    @model_serializer(mode="wrap")
+    def serialize_compatibly(
+        self,
+        handler: SerializerFunctionWrapHandler,
+    ) -> Any:
+        payload = handler(self)
+        if self.cache_write_input_per_million is None:
+            payload.pop("cache_write_input_per_million", None)
+        return payload
 
 
 class ValidatedResponseItem(BaseModel):

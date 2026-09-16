@@ -317,6 +317,9 @@ def _preflight_payload(
         "revision": readiness.revision,
         "source_fingerprint": readiness.source_fingerprint,
         "fixture_fingerprint": readiness.fixture_fingerprint,
+        "provider_config_fingerprint": hashlib.sha256(
+            (config.root / "providers.toml").read_bytes()
+        ).hexdigest(),
         "optimization_version": readiness.optimization_version,
         "baseline_version": readiness.baseline_version,
         "scenario_fixture": scenario["fixture"],
@@ -351,6 +354,9 @@ def execute_batch(
         "revision": readiness.revision,
         "source_fingerprint": readiness.source_fingerprint,
         "fixture_fingerprint": readiness.fixture_fingerprint,
+        "provider_config_fingerprint": hashlib.sha256(
+            (config.root / "providers.toml").read_bytes()
+        ).hexdigest(),
         "optimization_version": readiness.optimization_version,
         "baseline_version": readiness.baseline_version,
         "batch_limits": asdict(config.batch_limits),
@@ -662,6 +668,9 @@ def _execute_trial(
         "optimization_version": spec.optimization_version,
         "provider": config.provider,
         "model": config.model,
+        "provider_config_fingerprint": hashlib.sha256(
+            (config.root / "providers.toml").read_bytes()
+        ).hexdigest(),
         "budget": asdict(budget),
         "scenario": {
             "fixture": scenario["fixture"],

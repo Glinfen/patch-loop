@@ -31,7 +31,7 @@ structured_output = false
 context_window_tokens = 128000
 max_output_tokens = 8192
 usage_supported = true
-cache_usage_supported = false
+cache_usage_supported = true
 
 [profiles.local-openai.models."gpt-5.6-luna".generation]
 max_output_tokens = 8192
@@ -39,10 +39,12 @@ token_limit_field = "max_completion_tokens"
 reasoning_enabled = true
 reasoning_effort = "high"
 
-# User-confirmed local proxy budget accounting: no per-token charges.
-# These are not the upstream provider's list prices.
+# OpenAI public list prices for GPT-5.6 Luna, verified 2026-09-16.
+# https://developers.openai.com/api/docs/models/gpt-5.6-luna
+# The L1 task context is capped at 24k, below the 272k long-context price tier.
 [profiles.local-openai.models."gpt-5.6-luna".pricing]
-version = "local-proxy-zero-v1"
-input_per_million = 0.0
-cached_input_per_million = 0.0
-output_per_million = 0.0
+version = "openai-public-2026-09-16"
+input_per_million = 0.20
+cached_input_per_million = 0.02
+cache_write_input_per_million = 0.25
+output_per_million = 1.20

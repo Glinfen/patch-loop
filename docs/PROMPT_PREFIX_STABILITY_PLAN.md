@@ -878,3 +878,4 @@ PGW adapter 契约测试随其文件落地加入 targeted 集合，不用尚不�
 - 真实执行必须显式提供 `--execute-real` 和三项批次预算。runner 按剩余预算顺序启动，固定策略写入每个 trial manifest；中断、未知 usage、预算不足、真实 Task 状态未完成或验证失败都会保存 partial 原因并停止扩量。
 - 正常成本样本只在无在途 Provider attempt 的静止边界进行持久化 pause/resume；`--inject-inflight-cancel` 是独立故障入口，产生的未知用量不得并入成本样本或通过补跑覆盖。
 - 当前停在 L0 归档完成、L1 尚未执行的边界。进入 L1 前须在提交后的同一源码修订重新生成 readiness；L1 两场景各一对通过后才能进入 L2 三次正式配对，PPS 发布门禁通过后才允许评估默认切换。具体命令与恢复步骤见 README。
+- L1 不再使用历史零价配置。`gpt-5.6-luna` 按 2026-09-16 OpenAI 公布价格锁定普通输入 0.20、缓存读取 0.02、缓存写入 0.25、输出 1.20 美元/百万 token；若 Chat 代理未透传 `cache_write_tokens`，费用与批次用量视为 unknown 并停批。24K 单次上下文不会进入官方 272K 长上下文加价档。

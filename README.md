@@ -106,10 +106,7 @@ Profile 的 `base_url_env`、`model_env`、`reasoning_effort_env` 分别映射 `
 不能只改模型名就沿用其他模型的能力。密钥单独从 `credential_env` 指向的变量读取。
 这些映射只在新任务创建时解析；恢复使用已保存的 binding。
 
-本地 profile 的 128,000 上下文和 8,192 输出是暂定声明，工具/usage 支持尚待该代理验证；
-缓存统计暂未声明支持。价格按用户确认的“不按 token 计费”设置为零，是本地预算口径，
-不是上游模型报价；零价基线不能用于证明 PPS 的费用下降目标。此文件需显式选择，
-不会自动加载被操作仓库里的配置或 `.env`。
+本地 profile 的 128,000 上下文和 8,192 输出仍是代理侧保守声明；工具、标准 usage 和缓存统计已在先前真实试跑中验证。`providers.toml` 现锁定 OpenAI 2026-09-16 公布的 `gpt-5.6-luna` 输入、缓存读写和输出单价，不再使用历史零价预算口径。此文件需显式选择，不会自动加载被操作仓库里的配置或 `.env`。
 
 内置 `deepseek` profile 继续支持上面的环境变量。通用 Chat Completions、OpenAI Responses 和
 本地兼容服务使用 `~/.patchloop/providers.toml`，也可以通过 `--provider-config` 指定其他文件。
@@ -145,6 +142,7 @@ max_output_tokens = 4096
 version = "chat-2026-09"
 input_per_million = 1.0
 cached_input_per_million = 0.25
+cache_write_input_per_million = 1.25
 output_per_million = 4.0
 
 # 3. Responses（其余 capabilities/generation/pricing 字段写法相同）
@@ -260,12 +258,14 @@ patchloop validate-cache-gates --profile pps --report benchmarks/results/pps_pre
 
 append_only 优化的分层门禁为：L0 是 Fake/loopback 固定动作开销与恢复检查；L1 是两场景各一对的有限真实验收；L2 是同一修订下两场景各三对的 PPS 正式配对；L3 才是第二阶段至少 5 个仓库、30 个任务、每项至少 3 次的端到端验收。L0 只授权进入 L1，不等于真实收益、费用或默认发布已经通过。
 
+当前 `gpt-5.6-luna` profile 使用 2026-09-16 核对的 OpenAI 公布价格：普通输入 `$0.20/百万 token`、缓存读取 `$0.02/百万`、缓存写入 `$0.25/百万`、输出 `$1.20/百万`。价格版本、Provider 配置摘要和最终 Task binding 会进入试跑证据。配置了缓存写入价格后，如果 Provider 没有返回 `cache_write_tokens` 等完整用量，费用保持 unknown，runner 会停止扩量。L1 的单次上下文限制为 24K，低于官方 272K 长上下文加价阈值。
+
 每次源码变更后先重新生成 L0 产物。下面的 runner 命令故意不带 `--execute-real`，只复验报告、源码、fixture、证据文件和预算；它不会读取 `.env`、创建任务或发出模型请求：
 
 ```powershell
 .venv\Scripts\python.exe -m patchloop benchmark-cache --suite append-only-overhead --output benchmarks/results/aop_overhead_runtime.json
 .venv\Scripts\python.exe -m patchloop validate-cache-gates --profile aop --report benchmarks/results/aop_overhead_runtime.json --output benchmarks/results/aop_readiness.json
-.venv\Scripts\python.exe benchmarks/run_pps_server.py --work-root .patchloop/pps-l1-preflight --env-file .env --readiness-report benchmarks/results/aop_readiness.json --repeats 1 --max-batch-input-tokens 1600000 --max-batch-output-tokens 320000 --max-batch-cost-usd 4
+.venv\Scripts\python.exe benchmarks/run_pps_server.py --work-root .patchloop/pps-l1-preflight --env-file .env --readiness-report benchmarks/results/aop_readiness.json --provider local-openai --model gpt-5.6-luna --repeats 1 --max-batch-input-tokens 1600000 --max-batch-output-tokens 320000 --max-batch-cost-usd 1.2 --task-max-cost-usd 0.3
 ```
 
 预检输出必须为 `status=preflight_only`、`model_requests=0`。归档实现提交和这两份 L0 产物后，后续获准的 L1 执行轮复用同一命令及全新 `--work-root`，并显式增加 `--execute-real`；可用 `--provider`、`--model` 锁定配置。runner 为每项任务分配批次剩余预算，任何中断、未知 usage、预算不足、任务/隐藏测试失败都会保存 `manifest.json` 的 `partial_reason` 并停止新任务。`--inject-inflight-cancel` 仅用于独立取消故障批次，不得混入成本样本。

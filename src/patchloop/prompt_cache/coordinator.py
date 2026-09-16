@@ -24,6 +24,7 @@ from patchloop.prompt_cache.epoch import (
     CacheEpoch,
     CacheEpochBoundary,
     CacheEpochSnapshot,
+    compression_instruction,
     validate_compression_summary,
 )
 from patchloop.prompt_cache.layout import PromptLayout
@@ -134,6 +135,8 @@ class PrefixBudget(BaseModel):
     soft_limit: int = Field(ge=1)
     memory_message_limit: int = Field(ge=64)
     summary_limit: int = Field(ge=128)
+    compression_instruction: str = Field(default=COMPRESSION_INSTRUCTION, min_length=1)
+    summary_target_tokens: int | None = Field(default=None, ge=1)
 
 
 class CompressionDecision(BaseModel):
@@ -183,7 +186,31 @@ def compute_prefix_budget(
             f"tool definitions require {tool_tokens} tokens, input budget is {input_limit}"
         )
 
-    compression_message = ModelMessage(role="user", content=COMPRESSION_INSTRUCTION)
+    active_policy = policy or AppendOnlyOptimizationPolicy.for_version("baseline_v1")
+    final_instruction = COMPRESSION_INSTRUCTION
+    summary_target: int | None = None
+    for _ in range(8):
+        compression_message = ModelMessage(role="user", content=final_instruction)
+        compression_reserve = ContextEngine.estimate_message(compression_message) + 64
+        ordinary_limit = input_limit - compression_reserve
+        if ordinary_limit < 1:
+            raise ContextBudgetError(
+                "input budget cannot reserve enough room for an ordinary request and compression"
+            )
+        summary_limit = min(2048, max(128, math.floor(ordinary_limit * 0.125)))
+        summary_target = (
+            min(summary_limit, active_policy.summary_target_max_tokens, output_tokens)
+            if active_policy.summary_target_max_tokens is not None
+            else None
+        )
+        next_instruction = compression_instruction(summary_target)
+        if next_instruction == final_instruction:
+            break
+        final_instruction = next_instruction
+    else:
+        raise ContextBudgetError("compression instruction budget did not converge")
+
+    compression_message = ModelMessage(role="user", content=final_instruction)
     compression_reserve = ContextEngine.estimate_message(compression_message) + 64
     ordinary_limit = input_limit - compression_reserve
     if ordinary_limit < 1:
@@ -195,15 +222,22 @@ def compute_prefix_budget(
         raise ContextBudgetError(
             "ordinary input budget is too small to reserve the minimum memory message limit"
         )
-    active_policy = policy or AppendOnlyOptimizationPolicy.for_version("baseline_v1")
     soft_limit = math.floor(ordinary_limit * active_policy.soft_limit_ratio)
     summary_limit = min(2048, max(128, math.floor(ordinary_limit * 0.125)))
+    summary_target = (
+        min(summary_limit, active_policy.summary_target_max_tokens, output_tokens)
+        if active_policy.summary_target_max_tokens is not None
+        else None
+    )
+    final_instruction = compression_instruction(summary_target)
     return PrefixBudget(
         input_limit=input_limit,
         ordinary_limit=ordinary_limit,
         soft_limit=soft_limit,
         memory_message_limit=memory_message_limit,
         summary_limit=summary_limit,
+        compression_instruction=final_instruction,
+        summary_target_tokens=summary_target,
     )
 
 
@@ -231,7 +265,7 @@ def decide_append_only_compression(
     if last_compression_attempt_step is not None and last_compression_attempt_step > step:
         raise ValueError("last compression attempt cannot be after the current step")
     soft_limit = math.floor(budget.ordinary_limit * policy.soft_limit_ratio)
-    summary_target = min(
+    summary_target = budget.summary_target_tokens or min(
         budget.summary_limit,
         policy.summary_target_max_tokens or budget.summary_limit,
     )
@@ -375,6 +409,8 @@ class AppendOnlyPromptState(BaseModel):
     compression_source_epoch_generation: int | None = Field(default=None, ge=0, le=1_000_000_000)
     compression_request_id: str | None = Field(default=None, min_length=1, max_length=128)
     compression_max_output_tokens: int | None = Field(default=None, gt=0)
+    compression_instruction: str | None = Field(default=None, min_length=1)
+    compression_summary_target_tokens: int | None = Field(default=None, ge=1)
     deferred_compression_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -399,6 +435,11 @@ class AppendOnlyPromptState(BaseModel):
             and self.compression_source_epoch_generation > self.epoch_generation
         ):
             raise ValueError("compression source generation cannot exceed current generation")
+        if (
+            self.compression_summary_target_tokens is not None
+            and self.compression_instruction is None
+        ):
+            raise ValueError("compression summary target requires a frozen instruction")
         return self
 
     def validate_message_boundaries(self, message_count: int) -> None:
@@ -472,6 +513,8 @@ class PromptCacheCompressionPreparation(BaseModel):
     candidate_input_tokens: int | None = Field(default=None, ge=0)
     ordinary_limit: int | None = Field(default=None, ge=1)
     summary_limit: int | None = Field(default=None, ge=1)
+    compression_instruction: str | None = Field(default=None, min_length=1)
+    summary_target_tokens: int | None = Field(default=None, ge=1)
     memory_message_limit: int | None = Field(default=None, ge=1)
     candidate_publication_state: MemoryPublicationSnapshot | None = None
     decision: CompressionDecision | None = None
@@ -490,6 +533,8 @@ class PromptCacheCompressionCompletion(BaseModel):
     source_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     candidate_input_tokens: int = Field(ge=0)
     rebased_input_tokens: int = Field(ge=0)
+    summary_estimated_tokens: int = Field(ge=0)
+    summary_target_tokens: int | None = Field(default=None, ge=1)
 
 
 class PromptCacheResponseObservation(BaseModel):
@@ -1157,6 +1202,15 @@ class PromptCacheCoordinator:
             )
             raise PromptCompressionRejected("same_source_deferred", action)
 
+        recovering_compression = state.compression_request_id is not None
+        final_instruction = budget.compression_instruction
+        if recovering_compression:
+            final_instruction = state.compression_instruction or COMPRESSION_INSTRUCTION
+        summary_target_tokens = (
+            state.compression_summary_target_tokens
+            if recovering_compression
+            else budget.summary_target_tokens
+        )
         request = self._epoch.compression_request(
             source_messages,
             self._frozen_tools,
@@ -1164,6 +1218,7 @@ class PromptCacheCoordinator:
             append_only_source=True,
             source_request_id=source_request_id,
             source_message_count=source_message_count,
+            instruction=final_instruction,
         )
         ContextEngine(
             max_tokens=256,
@@ -1196,6 +1251,8 @@ class PromptCacheCoordinator:
                 "compression_source_message_count": source_message_count,
                 "compression_source_epoch_generation": self._epoch.snapshot.generation,
                 "compression_request_id": None,
+                "compression_instruction": final_instruction,
+                "compression_summary_target_tokens": summary_target_tokens,
                 "last_compression_attempt_step": step,
             }
         )
@@ -1225,6 +1282,8 @@ class PromptCacheCoordinator:
             candidate_input_tokens=estimated_candidate,
             ordinary_limit=budget.ordinary_limit,
             summary_limit=summary_limit,
+            compression_instruction=final_instruction,
+            summary_target_tokens=summary_target_tokens,
             memory_message_limit=budget.memory_message_limit,
             candidate_publication_state=candidate_publication_state,
             decision=decision,
@@ -1317,6 +1376,7 @@ class PromptCacheCoordinator:
             or prepared.candidate_input_tokens is None
             or prepared.ordinary_limit is None
             or prepared.summary_limit is None
+            or prepared.compression_instruction is None
             or prepared.memory_message_limit is None
         ):
             raise PromptCacheCoordinatorError("append-only compression metadata is incomplete")
@@ -1330,6 +1390,9 @@ class PromptCacheCoordinator:
             )
         except ValueError as exc:
             raise self._reject_append_only_compression(prepared, "invalid_summary") from exc
+        summary_estimated_tokens = ContextEngine.estimate_message(
+            ModelMessage(role="assistant", content=validated_summary)
+        )
 
         try:
             candidate_epoch = self._epoch.rollover(
@@ -1398,6 +1461,9 @@ class PromptCacheCoordinator:
                 "compression_source_message_count": prepared.source_message_count,
                 "compression_source_epoch_generation": prepared.source_epoch_generation,
                 "compression_request_id": None,
+                "compression_max_output_tokens": None,
+                "compression_instruction": None,
+                "compression_summary_target_tokens": None,
                 "deferred_compression_fingerprint": None,
             }
         )
@@ -1411,6 +1477,8 @@ class PromptCacheCoordinator:
             source_fingerprint=prepared.source_fingerprint,
             candidate_input_tokens=prepared.candidate_input_tokens,
             rebased_input_tokens=rebased_input_tokens,
+            summary_estimated_tokens=summary_estimated_tokens,
+            summary_target_tokens=prepared.summary_target_tokens,
         )
 
     def record_compression_failure(
@@ -1477,7 +1545,10 @@ class PromptCacheCoordinator:
             prepared.request.source_request_id != prepared.source_request_id
             or prepared.request.source_message_count != prepared.source_message_count
             or len(prepared.request.messages) != prepared.source_message_count + 1
-            or prepared.request.messages[-1].content != COMPRESSION_INSTRUCTION
+            or prepared.compression_instruction is None
+            or prepared.request.messages[-1].content != prepared.compression_instruction
+            or state.compression_instruction != prepared.compression_instruction
+            or state.compression_summary_target_tokens != prepared.summary_target_tokens
         ):
             raise PromptCacheCoordinatorError("compression request source boundary is invalid")
         if prepared.decision is not None and (
@@ -1692,15 +1763,44 @@ class PromptCacheCoordinator:
         request_id: str | None,
         *,
         max_output_tokens: int | None = None,
+        instruction: str | None = None,
+        summary_target_tokens: int | None = None,
     ) -> None:
         """Associate the pending compression with the existing Provider journal."""
         if self._append_only_state is None:
             raise PromptCacheCoordinatorError("append-only state is unavailable")
+        state = self._append_only_state
+        if request_id is not None:
+            frozen_instruction = instruction or state.compression_instruction
+            if frozen_instruction is None:
+                frozen_instruction = COMPRESSION_INSTRUCTION
+            if (
+                state.compression_instruction is not None
+                and state.compression_instruction != frozen_instruction
+            ):
+                raise PromptCacheCoordinatorError("compression instruction changed while pending")
+            frozen_target = (
+                summary_target_tokens
+                if summary_target_tokens is not None
+                else state.compression_summary_target_tokens
+            )
+            if (
+                state.compression_summary_target_tokens is not None
+                and state.compression_summary_target_tokens != frozen_target
+            ):
+                raise PromptCacheCoordinatorError(
+                    "compression summary target changed while pending"
+                )
+        else:
+            frozen_instruction = None
+            frozen_target = None
         self._append_only_state = AppendOnlyPromptState.model_validate(
             {
-                **self._append_only_state.model_dump(),
+                **state.model_dump(),
                 "compression_request_id": request_id,
                 "compression_max_output_tokens": max_output_tokens if request_id else None,
+                "compression_instruction": frozen_instruction,
+                "compression_summary_target_tokens": frozen_target,
             }
         )
 

@@ -2735,7 +2735,10 @@ class AgentRuntime:
                     else prepared.summary_limit
                 )
                 cache.set_compression_request_id(
-                    request_id, max_output_tokens=compression_output_limit
+                    request_id,
+                    max_output_tokens=compression_output_limit,
+                    instruction=prepared.compression_instruction,
+                    summary_target_tokens=prepared.summary_target_tokens,
                 )
                 state = checkpoint(messages)
                 self._emit(
@@ -2751,6 +2754,7 @@ class AgentRuntime:
                         "candidate_input_tokens": prepared.candidate_input_tokens,
                         "ordinary_limit": budget.ordinary_limit,
                         "soft_limit": budget.soft_limit,
+                        "summary_target_tokens": prepared.summary_target_tokens,
                         "memory_message_tokens": [
                             engine.estimate_message(item) for item in memory_messages
                         ],
@@ -2814,8 +2818,12 @@ class AgentRuntime:
                             "generation": completion.epoch.generation,
                             "candidate_input_tokens": completion.candidate_input_tokens,
                             "rebased_input_tokens": completion.rebased_input_tokens,
-                            "summary_estimated_tokens": engine.estimate_message(
-                                ModelMessage(role="system", content=response.content)
+                            "summary_estimated_tokens": completion.summary_estimated_tokens,
+                            "summary_target_tokens": completion.summary_target_tokens,
+                            "summary_target_met": (
+                                completion.summary_target_tokens is None
+                                or completion.summary_estimated_tokens
+                                <= completion.summary_target_tokens
                             ),
                             "freed_input_tokens": (
                                 completion.candidate_input_tokens

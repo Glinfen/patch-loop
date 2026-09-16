@@ -6,8 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from patchloop.context import ContextEngine
-from patchloop.domain import PromptCacheLayout, ToolCall
+from patchloop.domain import PromptCacheLayout, TaskBudget, ToolCall
 from patchloop.prompt_cache import (
+    COMPRESSION_INSTRUCTION,
     MEMORY_SNAPSHOT_PREFIX,
     AppendOnlyOptimizationPolicy,
     AppendOnlyPromptState,
@@ -22,6 +23,7 @@ from patchloop.prompt_cache import (
     PromptCacheCoordinatorError,
     PromptCacheCoordinatorSnapshot,
     PromptCompressionRejected,
+    compute_prefix_budget,
     decide_append_only_compression,
     estimate_append_only_mandatory_rebase_tokens,
 )
@@ -357,6 +359,8 @@ def test_append_only_compression_reuses_submitted_source_and_preserves_unsent_su
     assert completion.publication_state.epoch_id == completion.epoch.epoch_id
     assert len(completion.publication_state.messages) == 1
     assert completion.candidate_input_tokens > completion.rebased_input_tokens
+    assert completion.summary_estimated_tokens > 0
+    assert completion.summary_target_tokens is None
 
     next_request = coordinator.prepare_request(
         2,
@@ -628,6 +632,34 @@ def test_balanced_compression_uses_95_percent_threshold_instead_of_baseline_80()
     assert balanced.soft_limit == 950
 
 
+def test_balanced_budget_reserves_its_final_instruction_and_separates_target() -> None:
+    policy = AppendOnlyOptimizationPolicy.for_version("balanced_v1")
+    budget = compute_prefix_budget(
+        TaskBudget(max_context_tokens=16_000, max_output_tokens=2_000),
+        None,
+        _tools(),
+        policy=policy,
+    )
+
+    assert budget.summary_target_tokens == min(budget.summary_limit, 1_024)
+    assert "PATCHLOOP_EPOCH_COMPRESSION_BALANCED_V1" in budget.compression_instruction
+    assert str(budget.summary_target_tokens) in budget.compression_instruction
+    assert budget.input_limit - budget.ordinary_limit == (
+        ContextEngine.estimate_message(
+            ModelMessage(role="user", content=budget.compression_instruction)
+        )
+        + 64
+    )
+
+    baseline = compute_prefix_budget(
+        TaskBudget(max_context_tokens=16_000, max_output_tokens=2_000),
+        None,
+        _tools(),
+    )
+    assert baseline.compression_instruction == COMPRESSION_INSTRUCTION
+    assert baseline.summary_target_tokens is None
+
+
 def test_balanced_soft_backoff_never_overrides_hard_or_oversized_limits() -> None:
     policy = AppendOnlyOptimizationPolicy.for_version("balanced_v1")
     budget = PrefixBudget(
@@ -849,7 +881,40 @@ def test_balanced_policy_and_backoff_state_round_trip_without_changing_pending_r
     assert restored.append_only_state == state
     assert restored.append_only_state.compression_request_id == "compression-1"
     assert restored.append_only_state.compression_max_output_tokens == 321
+    assert restored.append_only_state.compression_instruction is None
+    assert restored.append_only_state.compression_summary_target_tokens is None
     assert restored.append_only_state.last_compression_attempt_step == 7
+
+
+def test_pending_compression_freezes_and_atomically_clears_instruction_target() -> None:
+    instruction = "PATCHLOOP_EPOCH_COMPRESSION_BALANCED_V1\nexact frozen request"
+    state = _append_only_state(
+        optimization_version="balanced_v1",
+        compression_instruction=instruction,
+        compression_summary_target_tokens=512,
+    )
+    coordinator = _append_only_coordinator(state=state)
+
+    coordinator.set_compression_request_id(
+        "compression-1",
+        max_output_tokens=1_024,
+        instruction=instruction,
+        summary_target_tokens=512,
+    )
+    restored = PromptCacheCoordinator.from_snapshot(coordinator.snapshot())
+    assert restored.append_only_state is not None
+    assert restored.append_only_state.compression_instruction == instruction
+    assert restored.append_only_state.compression_summary_target_tokens == 512
+    with pytest.raises(PromptCacheCoordinatorError, match="instruction changed while pending"):
+        restored.set_compression_request_id(
+            "compression-1", instruction="changed", summary_target_tokens=512
+        )
+
+    restored.set_compression_request_id(None)
+    assert restored.append_only_state.compression_request_id is None
+    assert restored.append_only_state.compression_max_output_tokens is None
+    assert restored.append_only_state.compression_instruction is None
+    assert restored.append_only_state.compression_summary_target_tokens is None
 
 
 _UNSET: object = object()

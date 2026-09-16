@@ -40,12 +40,14 @@ from patchloop.prompt_cache.diagnostics import (
     fingerprint_text,
 )
 from patchloop.prompt_cache.epoch import (
+    BALANCED_COMPRESSION_INSTRUCTION_VERSION,
     COMPRESSION_INSTRUCTION,
     SUMMARY_PREFIX,
     CacheCompressionRequest,
     CacheEpoch,
     CacheEpochBoundary,
     CacheEpochSnapshot,
+    compression_instruction,
     validate_compression_summary,
 )
 from patchloop.prompt_cache.layout import (
@@ -67,6 +69,7 @@ from patchloop.prompt_cache.usage import CacheUsageAccumulator, CacheUsageAccumu
 
 __all__ = [
     "APPEND_ONLY_MEMORY_PROTOCOL",
+    "BALANCED_COMPRESSION_INSTRUCTION_VERSION",
     "COMPRESSION_INSTRUCTION",
     "MEMORY_DELTA_PREFIX",
     "MEMORY_DELTA_V2_PREFIX",
@@ -109,6 +112,7 @@ __all__ = [
     "PromptCompressionRejected",
     "PromptLayout",
     "PromptPrefixViolation",
+    "compression_instruction",
     "compute_prefix_budget",
     "decide_append_only_compression",
     "estimate_append_only_mandatory_rebase_tokens",

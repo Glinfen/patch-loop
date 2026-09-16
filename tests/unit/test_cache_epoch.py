@@ -5,10 +5,13 @@ import json
 import pytest
 
 from patchloop.prompt_cache import (
+    BALANCED_COMPRESSION_INSTRUCTION_VERSION,
     COMPRESSION_INSTRUCTION,
     SUMMARY_PREFIX,
     CacheEpoch,
     CacheEpochBoundary,
+    compression_instruction,
+    validate_compression_summary,
 )
 from patchloop.providers import ModelMessage, ToolSpec
 
@@ -89,6 +92,54 @@ def test_compression_request_reuses_old_prefix_and_rollover_replaces_tail() -> N
     assert next_epoch.frozen_prefix[-1].content.startswith(SUMMARY_PREFIX)
     assert next_epoch.materialize(next_epoch.frozen_prefix) == next_epoch.frozen_prefix
     assert next_epoch.snapshot.prefix_fingerprint != epoch.snapshot.prefix_fingerprint
+
+
+def test_balanced_compression_instruction_is_versioned_exact_and_optional() -> None:
+    target = 1_024
+    instruction = compression_instruction(target)
+    expected_suffix = (
+        f"{BALANCED_COMPRESSION_INSTRUCTION_VERSION}\n"
+        "Target the JSON content at no more than 1024 estimated tokens; this target is advisory "
+        "and does not permit truncated or invalid JSON. Keep only exact constraints, current "
+        "decisions, failure lessons, verified results and the next concrete action needed to "
+        "continue. Do not copy chronological event logs, completed file-read lists or snapshot "
+        "progress already represented by the current memory state. Keep all seven required fields "
+        "even when a list is empty."
+    )
+
+    assert compression_instruction() == COMPRESSION_INSTRUCTION
+    assert instruction == f"{COMPRESSION_INSTRUCTION}\n{expected_suffix}"
+    request = CacheEpoch.bootstrap(
+        _history(), prefix_message_count=2, epoch_id="initial"
+    ).compression_request(
+        _history(),
+        _tools(),
+        boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
+        instruction=instruction,
+    )
+    assert request.messages[-1].content == instruction
+    with pytest.raises(ValueError, match="compression summary target must be a positive integer"):
+        compression_instruction(0)
+
+
+def test_strict_summary_normalizes_whitespace_and_has_stable_errors() -> None:
+    summary = """{
+      "constraints": ["keep API"], "paths": [], "decisions": [],
+      "failures": [], "tests": ["pytest: 4 passed"], "unfinished": [],
+      "next_step": "commit"
+    }"""
+
+    assert validate_compression_summary(summary) == (
+        '{"constraints":["keep API"],"decisions":[],"failures":[],'
+        '"next_step":"commit","paths":[],"tests":["pytest: 4 passed"],"unfinished":[]}'
+    )
+    with pytest.raises(
+        ValueError, match=r"^compression summary must contain exactly the required fields$"
+    ):
+        validate_compression_summary(
+            '{"constraints":[],"paths":[],"decisions":[],"failures":[],'
+            '"tests":[],"unfinished":[],"next_step":"x","extra":[]}'
+        )
 
 
 def test_compression_summary_is_security_filtered_and_has_fixed_shape() -> None:

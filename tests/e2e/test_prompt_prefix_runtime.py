@@ -314,6 +314,10 @@ def test_balanced_runtime_delays_soft_compression_without_exceeding_hard_budget(
     )
 
     assert len(balanced) < len(baseline)
+    assert all(
+        "PATCHLOOP_EPOCH_COMPRESSION_BALANCED_V1" in messages[-1].content
+        for messages in balanced
+    )
     policy = balanced_runtime._prompt_cache.optimization_policy
     assert policy is not None
     decision_events = [
@@ -328,6 +332,15 @@ def test_balanced_runtime_delays_soft_compression_without_exceeding_hard_budget(
         for event in decision_events
     )
     assert all(event.data["mandatory_rebase_tokens"] is not None for event in decision_events)
+    rollover_events = [
+        event
+        for event in balanced_runtime.event_logger.read()
+        if event.type == "cache.epoch.rolled_over"
+    ]
+    assert rollover_events
+    assert all(event.data["summary_target_tokens"] is not None for event in rollover_events)
+    assert all(event.data["summary_estimated_tokens"] is not None for event in rollover_events)
+    assert all(event.data["summary_target_met"] is True for event in rollover_events)
     for messages, tools in balanced_ordinary:
         budget = balanced_runtime.provider_binding
         prefix_budget = compute_prefix_budget(

@@ -34,6 +34,7 @@ def test_compression_keeps_tools_but_disables_calls(responses):
         purpose="agent_step",
         messages=(ModelMessage(role="user", content="Keep this exact prefix."),),
         tools=(ToolSpec(name="read_file", description="read", parameters={"type": "object"}),),
+        max_output_tokens=777,
     )
     source = adapter.encode(request, binding).body
     compressed = request.model_copy(
@@ -52,6 +53,16 @@ def test_compression_keeps_tools_but_disables_calls(responses):
     assert body[key][: len(source[key])] == source[key]
     assert body["tool_choice"] == "none"
     assert source.get("tool_choice", "auto") == "auto"
+    preserved_parameters = (
+        "model",
+        "max_output_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "reasoning",
+    )
+    for key in preserved_parameters:
+        if key in source:
+            assert body[key] == source[key]
 
 
 class _CaptureTransport:

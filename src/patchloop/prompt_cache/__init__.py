@@ -9,6 +9,7 @@ from patchloop.prompt_cache.coordinator import (
     AppendOnlyOptimizationPolicy,
     AppendOnlyOptimizationVersion,
     AppendOnlyPromptState,
+    CompressionDecision,
     CompressionFailureAction,
     PrefixBudget,
     PromptCacheCheckpointFields,
@@ -22,6 +23,8 @@ from patchloop.prompt_cache.coordinator import (
     PromptCompressionRejected,
     PromptPrefixViolation,
     compute_prefix_budget,
+    decide_append_only_compression,
+    estimate_append_only_mandatory_rebase_tokens,
 )
 from patchloop.prompt_cache.diagnostics import (
     CacheDiagnostics,
@@ -86,6 +89,7 @@ __all__ = [
     "CacheSectionFingerprint",
     "CacheUsageAccumulator",
     "CacheUsageAccumulatorSnapshot",
+    "CompressionDecision",
     "CompressionFailureAction",
     "MemoryDeltaPublisher",
     "MemoryDeltaTooLarge",
@@ -106,6 +110,8 @@ __all__ = [
     "PromptLayout",
     "PromptPrefixViolation",
     "compute_prefix_budget",
+    "decide_append_only_compression",
+    "estimate_append_only_mandatory_rebase_tokens",
     "fingerprint_json",
     "fingerprint_request",
     "fingerprint_text",

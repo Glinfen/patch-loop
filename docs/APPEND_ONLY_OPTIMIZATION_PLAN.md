@@ -1,6 +1,6 @@
 # append_only 开销优化开发方案
 
-调研日期：2026-09-15。代码基线：`69738d2`；真实证据执行修订：`8fecd4f`。状态：方案已完成；AOP-01～03 已完成，AOP-04～08 待开发。离线优化阶段不执行真实模型评测。
+调研日期：2026-09-15。代码基线：`69738d2`；真实证据执行修订：`8fecd4f`。状态：方案已完成；AOP-01～04 已完成，AOP-05～08 待开发。离线优化阶段不执行真实模型评测。
 
 本方案遵循 [PLANNING_GUIDE.md](PLANNING_GUIDE.md)，承接 [PPS 方案](PROMPT_PREFIX_STABILITY_PLAN.md)，服务于 [第二阶段总路线](PHASE_2_DEVELOPMENT_PLAN.md)。用户已明确：真实评测等 append_only 优化后再进行。
 
@@ -310,6 +310,8 @@ tests/e2e/test_working_memory_runtime.py
 
 ### AOP-04：统一预算驱动的压缩调度
 
+**状态：已完成（2026-09-16）。** Coordinator 已提供纯 `CompressionDecision`，统一输出 continue/compress/pause、原因、候选输入、强制重建开销和摘要目标；Runtime 只执行并记录该决策，prepare 会按精确 source、bounded V2 snapshot、完整未发送后缀和工具定义重新校验。balanced_v1 使用 95% 软阈值和三步退避，硬上限及 oversized delta 始终优先；无已提交 source 或重建空间不足时按当前请求是否合法继续或暂停，实际压缩尝试位置随 checkpoint 持久化。
+
 **Goal**：减少不必要的提前压缩，同时保证每次提交满足硬预算。
 
 **Files / Symbols**
@@ -477,4 +479,4 @@ git diff --check
 
 **设计未决：None。** 关键模块、接口、状态归属、兼容路径、错误传播、任务边界和离线出口已确定。
 
-**实施/验收条件：** AOP-01～03 已实现，AOP-04～08 尚未实现；L0 未完成前所有真实模型评测暂停。真实命中和摘要质量只能在之后 L1/L2 确认；当前零价格无法证明费用下降，完整 Provider/Docker/SRF 和第二阶段验收也仍未完成。这些外部证据限制不阻塞本方案的离线开发。
+**实施/验收条件：** AOP-01～04 已实现，AOP-05～08 尚未实现；L0 未完成前所有真实模型评测暂停。真实命中和摘要质量只能在之后 L1/L2 确认；当前零价格无法证明费用下降，完整 Provider/Docker/SRF 和第二阶段验收也仍未完成。这些外部证据限制不阻塞本方案的离线开发。

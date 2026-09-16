@@ -136,10 +136,26 @@ class PrefixBudget(BaseModel):
     summary_limit: int = Field(ge=128)
 
 
+class CompressionDecision(BaseModel):
+    """Pure append-only scheduling result consumed and verified by Runtime/Coordinator."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action: Literal["continue", "compress", "pause"]
+    reason: str = Field(min_length=1)
+    candidate_input_tokens: int = Field(ge=0)
+    mandatory_rebase_tokens: int = Field(ge=0)
+    soft_limit: int = Field(ge=1)
+    ordinary_limit: int = Field(ge=1)
+    summary_target_tokens: int = Field(ge=1)
+
+
 def compute_prefix_budget(
     task_budget: TaskBudget,
     provider_binding: ProviderBinding | None,
     tools: list[ToolSpec],
+    *,
+    policy: AppendOnlyOptimizationPolicy | None = None,
 ) -> PrefixBudget:
     """Calculate the append-only input, compression, summary and memory budgets."""
 
@@ -179,7 +195,8 @@ def compute_prefix_budget(
         raise ContextBudgetError(
             "ordinary input budget is too small to reserve the minimum memory message limit"
         )
-    soft_limit = math.floor(ordinary_limit * 0.80)
+    active_policy = policy or AppendOnlyOptimizationPolicy.for_version("baseline_v1")
+    soft_limit = math.floor(ordinary_limit * active_policy.soft_limit_ratio)
     summary_limit = min(2048, max(128, math.floor(ordinary_limit * 0.125)))
     return PrefixBudget(
         input_limit=input_limit,
@@ -188,6 +205,104 @@ def compute_prefix_budget(
         memory_message_limit=memory_message_limit,
         summary_limit=summary_limit,
     )
+
+
+def decide_append_only_compression(
+    *,
+    policy: AppendOnlyOptimizationPolicy,
+    budget: PrefixBudget,
+    candidate_input_tokens: int,
+    mandatory_rebase_tokens: int,
+    step: int,
+    last_compression_attempt_step: int | None,
+    has_submitted_source: bool,
+    recovering_compression: bool = False,
+    oversized_delta: bool = False,
+) -> CompressionDecision:
+    """Choose one bounded action without mutating coordinator or runtime state."""
+
+    values = {
+        "candidate_input_tokens": candidate_input_tokens,
+        "mandatory_rebase_tokens": mandatory_rebase_tokens,
+        "step": step,
+    }
+    if any(isinstance(value, bool) or value < 0 for value in values.values()):
+        raise ValueError("compression decision token counts and step must be non-negative")
+    if last_compression_attempt_step is not None and last_compression_attempt_step > step:
+        raise ValueError("last compression attempt cannot be after the current step")
+    soft_limit = math.floor(budget.ordinary_limit * policy.soft_limit_ratio)
+    summary_target = min(
+        budget.summary_limit,
+        policy.summary_target_max_tokens or budget.summary_limit,
+    )
+
+    def decision(
+        action: Literal["continue", "compress", "pause"],
+        reason: str,
+    ) -> CompressionDecision:
+        return CompressionDecision(
+            action=action,
+            reason=reason,
+            candidate_input_tokens=candidate_input_tokens,
+            mandatory_rebase_tokens=mandatory_rebase_tokens,
+            soft_limit=soft_limit,
+            ordinary_limit=budget.ordinary_limit,
+            summary_target_tokens=summary_target,
+        )
+
+    if recovering_compression:
+        return decision("compress", "recovering_compression")
+
+    hard_limit_exceeded = candidate_input_tokens > budget.ordinary_limit
+    requires_compression = (
+        hard_limit_exceeded or oversized_delta or candidate_input_tokens > soft_limit
+    )
+    if not requires_compression:
+        return decision("continue", "below_soft_limit")
+
+    has_rebase_headroom = (
+        mandatory_rebase_tokens + budget.summary_limit < budget.ordinary_limit
+    )
+    if not has_rebase_headroom:
+        return decision(
+            "pause" if hard_limit_exceeded or oversized_delta else "continue",
+            "insufficient_rebase_headroom",
+        )
+    if not has_submitted_source:
+        return decision(
+            "pause" if hard_limit_exceeded or oversized_delta else "continue",
+            "no_submitted_compression_source",
+        )
+    if oversized_delta:
+        return decision("compress", "oversized_memory_delta")
+    if hard_limit_exceeded:
+        return decision("compress", "hard_input_limit_exceeded")
+    if (
+        last_compression_attempt_step is not None
+        and step - last_compression_attempt_step < policy.soft_compression_backoff_steps
+    ):
+        return decision("continue", "soft_compression_backoff")
+    return decision("compress", "soft_limit_exceeded")
+
+
+def estimate_append_only_mandatory_rebase_tokens(
+    *,
+    root_messages: list[ModelMessage],
+    unsent_suffix_messages: list[ModelMessage],
+    publication_state: MemoryPublicationSnapshot | None,
+    tools: list[ToolSpec],
+    memory_message_limit: int,
+) -> int:
+    """Estimate a summary-free rebuilt epoch using a complete V2 snapshot."""
+
+    rebased = MemoryDeltaPublisher(publication_state).rebase_snapshot(
+        "r" * 128,
+        max_message_tokens=memory_message_limit,
+        source_state=publication_state,
+    )
+    return ContextEngine.estimate_messages(
+        [*root_messages, *unsent_suffix_messages, *rebased.messages]
+    ) + ContextEngine.estimate_tools(tools)
 
 
 def _fingerprint_payload(value: object) -> str:
@@ -359,6 +474,7 @@ class PromptCacheCompressionPreparation(BaseModel):
     summary_limit: int | None = Field(default=None, ge=1)
     memory_message_limit: int | None = Field(default=None, ge=1)
     candidate_publication_state: MemoryPublicationSnapshot | None = None
+    decision: CompressionDecision | None = None
 
 
 class PromptCacheCompressionCompletion(BaseModel):
@@ -870,6 +986,7 @@ class PromptCacheCoordinator:
         source_request_id: str | None = None,
         source_message_count: int | None = None,
         budget: PrefixBudget | None = None,
+        decision: CompressionDecision | None = None,
         provider_binding: ProviderBinding | None = None,
         candidate_publication_state: MemoryPublicationSnapshot | None = None,
     ) -> PromptCacheCompressionPreparation:
@@ -879,6 +996,8 @@ class PromptCacheCoordinator:
                 "cannot prepare epoch compression when stable layout is disabled"
             )
         if self.layout is PromptCacheLayout.APPEND_ONLY:
+            if decision is None:
+                raise ValueError("append-only compression requires a verified decision")
             return self._prepare_append_only_compression(
                 step,
                 messages,
@@ -894,6 +1013,7 @@ class PromptCacheCoordinator:
                 source_request_id=source_request_id,
                 source_message_count=source_message_count,
                 budget=budget,
+                decision=decision,
                 provider_binding=provider_binding,
                 candidate_publication_state=candidate_publication_state,
             )
@@ -941,6 +1061,7 @@ class PromptCacheCoordinator:
         source_request_id: str | None,
         source_message_count: int | None,
         budget: PrefixBudget | None,
+        decision: CompressionDecision,
         provider_binding: ProviderBinding | None,
         candidate_publication_state: MemoryPublicationSnapshot | None,
     ) -> PromptCacheCompressionPreparation:
@@ -995,12 +1116,29 @@ class PromptCacheCoordinator:
             self._frozen_tools,
             max_input_tokens=validation_budget,
         )
-        if (
-            boundary is CacheEpochBoundary.CONTEXT_THRESHOLD
-            and estimated_candidate <= budget.soft_limit
-        ):
+        publication_source = candidate_publication_state or self._publication.snapshot
+        mandatory_rebase_tokens = estimate_append_only_mandatory_rebase_tokens(
+            root_messages=self.frozen_prefix[: state.root_prefix_message_count],
+            unsent_suffix_messages=unsent_suffix_messages,
+            publication_state=publication_source,
+            tools=self._frozen_tools,
+            memory_message_limit=budget.memory_message_limit,
+        )
+        expected_decision = decide_append_only_compression(
+            policy=self._optimization_policy
+            or AppendOnlyOptimizationPolicy.for_version(state.optimization_version),
+            budget=budget,
+            candidate_input_tokens=estimated_candidate,
+            mandatory_rebase_tokens=mandatory_rebase_tokens,
+            step=step,
+            last_compression_attempt_step=state.last_compression_attempt_step,
+            has_submitted_source=bool(source_messages and source_request_id),
+            recovering_compression=state.compression_request_id is not None,
+            oversized_delta=boundary is CacheEpochBoundary.EXPLICIT_COMPRESSION,
+        )
+        if decision != expected_decision or decision.action != "compress":
             raise PromptCacheCoordinatorError(
-                "append-only compression candidate does not exceed the soft limit"
+                "append-only compression decision does not match the candidate"
             )
 
         source_fingerprint = _fingerprint_payload(
@@ -1058,6 +1196,7 @@ class PromptCacheCoordinator:
                 "compression_source_message_count": source_message_count,
                 "compression_source_epoch_generation": self._epoch.snapshot.generation,
                 "compression_request_id": None,
+                "last_compression_attempt_step": step,
             }
         )
         cache_layout = self._diagnostics.observe(
@@ -1088,6 +1227,7 @@ class PromptCacheCoordinator:
             summary_limit=summary_limit,
             memory_message_limit=budget.memory_message_limit,
             candidate_publication_state=candidate_publication_state,
+            decision=decision,
         )
         self._append_only_state = next_state
         self._mark_pending("compression", cache_layout.request_fingerprint)
@@ -1340,6 +1480,12 @@ class PromptCacheCoordinator:
             or prepared.request.messages[-1].content != COMPRESSION_INSTRUCTION
         ):
             raise PromptCacheCoordinatorError("compression request source boundary is invalid")
+        if prepared.decision is not None and (
+            prepared.decision.action != "compress"
+            or prepared.decision.candidate_input_tokens != prepared.candidate_input_tokens
+            or state.last_compression_attempt_step != prepared.step
+        ):
+            raise PromptCacheCoordinatorError("compression decision metadata is invalid")
         source_messages = prepared.request.messages[:-1]
         source_fingerprints = [_message_fingerprint(message) for message in source_messages]
         if source_fingerprints != state.last_submitted_message_fingerprints:

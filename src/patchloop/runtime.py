@@ -92,6 +92,8 @@ from patchloop.prompt_cache.coordinator import (
     CompressionFailureAction,
     PromptCompressionRejected,
     compute_prefix_budget,
+    decide_append_only_compression,
+    estimate_append_only_mandatory_rebase_tokens,
 )
 from patchloop.prompt_cache.publication import (
     MemoryDeltaPublisher,
@@ -2511,7 +2513,15 @@ class AgentRuntime:
         cache = self._prompt_cache
         if cache is None or cache.append_only_state is None:
             raise CheckpointSchemaError("append-only prompt state is unavailable")
-        budget = compute_prefix_budget(task.budget, self.provider_binding, specifications)
+        policy = cache.optimization_policy
+        if policy is None:
+            raise CheckpointSchemaError("append-only optimization policy is unavailable")
+        budget = compute_prefix_budget(
+            task.budget,
+            self.provider_binding,
+            specifications,
+            policy=policy,
+        )
         prefix = cache.append_only_state
         recovering_compression = prefix.compression_request_id is not None
         if replay and not recovering_compression:
@@ -2557,11 +2567,10 @@ class AgentRuntime:
             remaining = budget.ordinary_limit - (
                 engine.estimate_messages(messages) + engine.estimate_tools(specifications)
             )
-            policy = cache.optimization_policy
-            projection_mode = policy.projection_mode if policy is not None else "legacy"
+            projection_mode = policy.projection_mode
             retrieval_cap = (
                 max(0, budget.memory_message_limit - 128)
-                if policy is not None and policy.fixed_projection_budget
+                if policy.fixed_projection_budget
                 else max(0, min(budget.memory_message_limit - 128, remaining - 128))
             )
             retrieval = self._retrieve_memory(
@@ -2626,17 +2635,30 @@ class AgentRuntime:
             engine.estimate_message(item) > budget.memory_message_limit for item in memory_messages
         )
         estimated = engine.estimate_messages(messages) + engine.estimate_tools(specifications)
-        can_compress = prefix.last_submitted_message_count > cache.prefix_message_count
-        decision_reason = (
-            "recovering_compression"
-            if recovering_compression
-            else "oversized_memory_delta"
-            if oversized_delta
-            else "soft_limit_exceeded"
-            if estimated > budget.soft_limit and can_compress
-            else "no_submitted_compression_source"
-            if estimated > budget.soft_limit
-            else "below_soft_limit"
+        unsent_suffix = base_messages[prefix.last_submitted_message_count :]
+        try:
+            mandatory_rebase_tokens = estimate_append_only_mandatory_rebase_tokens(
+                root_messages=cache.frozen_prefix[: prefix.root_prefix_message_count],
+                unsent_suffix_messages=unsent_suffix,
+                publication_state=publication,
+                tools=specifications,
+                memory_message_limit=budget.memory_message_limit,
+            )
+        except MemoryDeltaTooLarge:
+            mandatory_rebase_tokens = budget.ordinary_limit
+        decision = decide_append_only_compression(
+            policy=policy,
+            budget=budget,
+            candidate_input_tokens=estimated,
+            mandatory_rebase_tokens=mandatory_rebase_tokens,
+            step=state.next_step_index,
+            last_compression_attempt_step=prefix.last_compression_attempt_step,
+            has_submitted_source=(
+                prefix.last_submitted_message_count > 0
+                and prefix.last_submitted_request_id is not None
+            ),
+            recovering_compression=recovering_compression,
+            oversized_delta=oversized_delta,
         )
         memory_diagnostics = _append_only_memory_diagnostics(publication)
         cache_diagnostics: dict[str, object] = {
@@ -2648,13 +2670,28 @@ class AgentRuntime:
             ),
             "working_item_count": memory_diagnostics["working_item_count"],
             "opaque_working_blob_count": memory_diagnostics["opaque_working_blob_count"],
-            "decision_reason": decision_reason,
-            "mandatory_rebase_tokens": None,
-            "summary_target_tokens": None,
+            "decision_reason": decision.reason,
+            "mandatory_rebase_tokens": decision.mandatory_rebase_tokens,
+            "summary_target_tokens": decision.summary_target_tokens,
         }
-        if recovering_compression or (
-            (estimated > budget.soft_limit or oversized_delta) and can_compress
-        ):
+        self._emit(
+            "cache.compression.decision",
+            task,
+            {
+                "step": state.next_step_index,
+                **decision.model_dump(mode="json"),
+                "recovering_compression": recovering_compression,
+                "oversized_delta": oversized_delta,
+            },
+        )
+        if decision.action == "pause":
+            raise ContextBudgetError(
+                f"append-only compression paused: {decision.reason}; "
+                f"candidate={decision.candidate_input_tokens}, "
+                f"mandatory_rebase={decision.mandatory_rebase_tokens}, "
+                f"ordinary_limit={decision.ordinary_limit}"
+            )
+        if decision.action == "compress":
             try:
                 prepared = cache.prepare_compression(
                     state.next_step_index,
@@ -2674,6 +2711,7 @@ class AgentRuntime:
                     source_request_id=prefix.last_submitted_request_id,
                     source_message_count=prefix.last_submitted_message_count,
                     budget=budget,
+                    decision=decision,
                     candidate_publication_state=publication,
                 )
             except PromptCompressionRejected as exc:

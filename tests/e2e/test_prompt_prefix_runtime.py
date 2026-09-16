@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 from pydantic import Field
 
+from patchloop.context import ContextEngine
 from patchloop.domain import (
+    AppendOnlyOptimizationVersion,
     PromptCacheLayout,
     Task,
     TaskBudget,
@@ -21,7 +23,7 @@ from patchloop.memory.retrieval import (
     RetrievalSelection,
 )
 from patchloop.persistence import SQLiteStore
-from patchloop.prompt_cache import MemoryDeltaPublisher
+from patchloop.prompt_cache import MemoryDeltaPublisher, compute_prefix_budget
 from patchloop.providers import FakeProvider, ModelMessage, ModelResponse
 from patchloop.runtime import AgentRuntime
 from patchloop.session.service import SessionService
@@ -71,6 +73,7 @@ def _run_runtime(
     budget: TaskBudget | None = None,
     runtime_type: type[AgentRuntime] = AgentRuntime,
     runtime_kwargs: dict[str, object] | None = None,
+    optimization: AppendOnlyOptimizationVersion = "baseline_v1",
 ) -> tuple[FakeProvider, EventLogger, Task, AgentRuntime]:
     repository = tmp_path / "repository"
     repository.mkdir(parents=True, exist_ok=True)
@@ -82,7 +85,10 @@ def _run_runtime(
         goal="Inspect the repository observations and preserve the task constraints.",
         repository=str(repository),
         budget=budget or TaskBudget(max_steps=10),
-        execution=TaskExecutionConfig(prompt_cache_layout=layout),
+        execution=TaskExecutionConfig(
+            prompt_cache_layout=layout,
+            append_only_optimization=optimization,
+        ),
     )
     result = runtime.run(task)
     assert result.status is TaskStatus.COMPLETED, result.error
@@ -222,6 +228,122 @@ def test_runtime_compression_request_is_recorded_with_its_source_history(tmp_pat
     assert compression
     assert any(event.type == "cache.compression.requested" for event in trace.read())
     assert any(message.role == "tool" for message in compression[0])
+
+
+def test_balanced_runtime_delays_soft_compression_without_exceeding_hard_budget(
+    tmp_path: Path,
+) -> None:
+    class CompressionAwareProvider(FakeProvider):
+        def complete(self, messages, tools):
+            if messages[-1].content.startswith("PATCHLOOP_EPOCH_COMPRESSION_V1"):
+                self.requests.append((list(messages), list(tools)))
+                return ModelResponse(
+                    content=json.dumps(
+                        {
+                            "constraints": ["preserve observations"],
+                            "paths": [],
+                            "decisions": [],
+                            "failures": [],
+                            "tests": [],
+                            "unfinished": ["finish observations"],
+                            "next_step": "continue",
+                        }
+                    )
+                )
+            return super().complete(messages, tools)
+
+    def run(version: AppendOnlyOptimizationVersion, root: Path):
+        repository = root / "repository"
+        repository.mkdir(parents=True)
+        trace = EventLogger(root / "trace.jsonl")
+        provider = CompressionAwareProvider(_tool_responses())
+        runtime = AgentRuntime(
+            provider,
+            ToolGateway(ToolContext(repository), [_ObservationTool()], trace),
+            trace,
+        )
+        task_budget = TaskBudget(
+            max_steps=10,
+            max_context_tokens=2_400,
+            max_tool_output_chars=1_000,
+        )
+        task = Task(
+            goal="Inspect observations and preserve constraints.",
+            repository=str(repository),
+            budget=task_budget,
+            execution=TaskExecutionConfig(
+                prompt_cache_layout=PromptCacheLayout.APPEND_ONLY,
+                append_only_optimization=version,
+            ),
+        )
+        result = runtime.run(task)
+        assert result.status is TaskStatus.COMPLETED, result.error
+        policy = runtime._prompt_cache.optimization_policy
+        assert policy is not None
+        for messages, tools in provider.requests:
+            request_budget = compute_prefix_budget(
+                task_budget,
+                runtime.provider_binding,
+                tools,
+                policy=policy,
+            )
+            estimated = ContextEngine.estimate_messages(
+                messages
+            ) + ContextEngine.estimate_tools(tools)
+            limit = (
+                request_budget.input_limit
+                if messages[-1].content.startswith("PATCHLOOP_EPOCH_COMPRESSION_V1")
+                else request_budget.ordinary_limit
+            )
+            assert estimated <= limit
+        compressions = [
+            messages
+            for messages, _ in provider.requests
+            if messages[-1].content.startswith("PATCHLOOP_EPOCH_COMPRESSION_V1")
+        ]
+        ordinary = [
+            (messages, tools)
+            for messages, tools in provider.requests
+            if not messages[-1].content.startswith("PATCHLOOP_EPOCH_COMPRESSION_V1")
+        ]
+        return compressions, ordinary, runtime
+
+    baseline, _, _ = run("baseline_v1", tmp_path / "baseline")
+    balanced, balanced_ordinary, balanced_runtime = run(
+        "balanced_v1", tmp_path / "balanced"
+    )
+
+    assert len(balanced) < len(baseline)
+    policy = balanced_runtime._prompt_cache.optimization_policy
+    assert policy is not None
+    decision_events = [
+        event
+        for event in balanced_runtime.event_logger.read()
+        if event.type == "cache.compression.decision"
+    ]
+    assert any(
+        event.data["action"] == "continue"
+        and int(event.data["candidate_input_tokens"])
+        > int(event.data["ordinary_limit"]) * 0.8
+        for event in decision_events
+    )
+    assert all(event.data["mandatory_rebase_tokens"] is not None for event in decision_events)
+    for messages, tools in balanced_ordinary:
+        budget = balanced_runtime.provider_binding
+        prefix_budget = compute_prefix_budget(
+            TaskBudget(
+                max_steps=10,
+                max_context_tokens=2_400,
+                max_tool_output_chars=1_000,
+            ),
+            budget,
+            tools,
+            policy=policy,
+        )
+        assert (
+            ContextEngine.estimate_messages(messages) + ContextEngine.estimate_tools(tools)
+            <= prefix_budget.ordinary_limit
+        )
 
 
 @pytest.mark.parametrize("layout", [PromptCacheLayout.STABLE, PromptCacheLayout.APPEND_ONLY])

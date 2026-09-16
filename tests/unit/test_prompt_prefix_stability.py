@@ -3,6 +3,7 @@ import pytest
 from patchloop.context import ContextBudgetError
 from patchloop.domain import PromptCacheLayout, TaskBudget, ToolCall
 from patchloop.prompt_cache import (
+    AppendOnlyOptimizationPolicy,
     PromptCacheCoordinator,
     PromptPrefixViolation,
     compute_prefix_budget,
@@ -217,6 +218,14 @@ def test_compute_prefix_budget_uses_declared_window_and_never_returns_negative_l
     offline = compute_prefix_budget(
         TaskBudget(max_context_tokens=16_000, max_output_tokens=4_000), None, []
     )
+
+    balanced = compute_prefix_budget(
+        task_budget,
+        _binding(context_window=8_192),
+        tools,
+        policy=AppendOnlyOptimizationPolicy.for_version("balanced_v1"),
+    )
+    assert balanced.soft_limit == int(balanced.ordinary_limit * 0.95)
     assert offline.input_limit == 16_000
     assert all(
         value >= 0

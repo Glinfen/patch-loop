@@ -5,6 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
+from patchloop.context import ContextEngine
 from patchloop.domain import PromptCacheLayout, ToolCall
 from patchloop.prompt_cache import (
     MEMORY_SNAPSHOT_PREFIX,
@@ -12,6 +13,7 @@ from patchloop.prompt_cache import (
     AppendOnlyPromptState,
     CacheEpoch,
     CacheEpochBoundary,
+    CompressionDecision,
     CompressionFailureAction,
     MemoryDeltaPublisher,
     MemoryPublicationSnapshot,
@@ -20,6 +22,8 @@ from patchloop.prompt_cache import (
     PromptCacheCoordinatorError,
     PromptCacheCoordinatorSnapshot,
     PromptCompressionRejected,
+    decide_append_only_compression,
+    estimate_append_only_mandatory_rebase_tokens,
 )
 from patchloop.providers import ModelMessage, ModelUsage, ToolSpec
 
@@ -117,7 +121,7 @@ def _append_only_compression_fixture() -> tuple[
     source = [
         *root,
         *second.next_state.messages,
-        ModelMessage(role="assistant", content="old history " + "x" * 9_000),
+        ModelMessage(role="assistant", content="old history " + "x" * 20_000),
     ]
     prepared = coordinator.prepare_request(
         0,
@@ -129,6 +133,47 @@ def _append_only_compression_fixture() -> tuple[
     )
     coordinator.observe_response(prepared, _usage())
     return coordinator, source, tools, second.next_state
+
+
+def _compression_decision(
+    coordinator: PromptCacheCoordinator,
+    candidate: list[ModelMessage],
+    unsent_suffix: list[ModelMessage],
+    budget: PrefixBudget,
+    *,
+    step: int,
+    boundary: CacheEpochBoundary,
+    publication: MemoryPublicationSnapshot | None = None,
+) -> CompressionDecision:
+    policy = coordinator.optimization_policy
+    state = coordinator.append_only_state
+    assert policy is not None
+    assert state is not None
+    publication_state = publication or coordinator.publication_snapshot
+    mandatory = estimate_append_only_mandatory_rebase_tokens(
+        root_messages=coordinator.frozen_prefix[: state.root_prefix_message_count],
+        unsent_suffix_messages=unsent_suffix,
+        publication_state=publication_state,
+        tools=coordinator.frozen_tools,
+        memory_message_limit=budget.memory_message_limit,
+    )
+    return decide_append_only_compression(
+        policy=policy,
+        budget=budget,
+        candidate_input_tokens=(
+            ContextEngine.estimate_messages(candidate)
+            + ContextEngine.estimate_tools(coordinator.frozen_tools)
+        ),
+        mandatory_rebase_tokens=mandatory,
+        step=step,
+        last_compression_attempt_step=state.last_compression_attempt_step,
+        has_submitted_source=(
+            state.last_submitted_message_count > 0
+            and state.last_submitted_request_id is not None
+        ),
+        recovering_compression=state.compression_request_id is not None,
+        oversized_delta=boundary is CacheEpochBoundary.EXPLICIT_COMPRESSION,
+    )
 
 
 def test_bootstrap_prepares_frozen_provider_request_and_records_response() -> None:
@@ -262,11 +307,21 @@ def test_append_only_compression_reuses_submitted_source_and_preserves_unsent_su
         memory_message_limit=2_048,
         summary_limit=512,
     )
+    boundary = CacheEpochBoundary.CONTEXT_THRESHOLD
+    decision = _compression_decision(
+        coordinator,
+        candidate_messages,
+        unsent_suffix,
+        budget,
+        step=1,
+        boundary=boundary,
+        publication=candidate_publication.next_state,
+    )
 
     prepared = coordinator.prepare_compression(
         1,
         candidate_messages,
-        boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
+        boundary=boundary,
         provider="fake",
         model="model-1",
         thinking={"enabled": False},
@@ -276,6 +331,7 @@ def test_append_only_compression_reuses_submitted_source_and_preserves_unsent_su
         source_request_id="source-request-1",
         source_message_count=len(source),
         budget=budget,
+        decision=decision,
         candidate_publication_state=candidate_publication.next_state,
     )
 
@@ -351,10 +407,19 @@ def test_append_only_compression_rejection_keeps_epoch_and_publication(
         memory_message_limit=2_048,
         summary_limit=512,
     )
+    boundary = CacheEpochBoundary.EXPLICIT_COMPRESSION
+    decision = _compression_decision(
+        coordinator,
+        root,
+        [],
+        budget,
+        step=1,
+        boundary=boundary,
+    )
     prepared = coordinator.prepare_compression(
         1,
         root,
-        boundary=CacheEpochBoundary.EXPLICIT_COMPRESSION,
+        boundary=boundary,
         provider="fake",
         model="model-1",
         thinking={"enabled": False},
@@ -363,6 +428,7 @@ def test_append_only_compression_rejection_keeps_epoch_and_publication(
         source_request_id="small-source",
         source_message_count=len(root),
         budget=budget,
+        decision=decision,
     )
     old_epoch = coordinator.snapshot().cache_epoch_state
     old_publication = coordinator.publication_snapshot
@@ -381,10 +447,18 @@ def test_append_only_compression_rejection_keeps_epoch_and_publication(
         == prepared.source_fingerprint
     )
     with pytest.raises(PromptCompressionRejected, match="same_source_deferred"):
+        retry_decision = _compression_decision(
+            coordinator,
+            root,
+            [],
+            budget,
+            step=2,
+            boundary=boundary,
+        )
         coordinator.prepare_compression(
             2,
             root,
-            boundary=CacheEpochBoundary.EXPLICIT_COMPRESSION,
+            boundary=boundary,
             provider="fake",
             model="model-1",
             thinking={"enabled": False},
@@ -393,10 +467,11 @@ def test_append_only_compression_rejection_keeps_epoch_and_publication(
             source_request_id="small-source",
             source_message_count=len(root),
             budget=budget,
+            decision=retry_decision,
         )
 
 
-def test_append_only_compression_failure_pauses_when_candidate_exceeds_hard_limit() -> None:
+def test_append_only_hard_limit_pauses_before_request_when_rebase_cannot_fit() -> None:
     root = [
         ModelMessage(role="system", content="static system"),
         ModelMessage(role="user", content="small task"),
@@ -423,28 +498,35 @@ def test_append_only_compression_failure_pauses_when_candidate_exceeds_hard_limi
         input_limit=30_000,
         ordinary_limit=1_000,
         soft_limit=500,
-        memory_message_limit=128,
+        memory_message_limit=256,
         summary_limit=256,
     )
-    prepared = coordinator.prepare_compression(
-        1,
+    boundary = CacheEpochBoundary.CONTEXT_THRESHOLD
+    decision = _compression_decision(
+        coordinator,
         candidate,
-        boundary=CacheEpochBoundary.CONTEXT_THRESHOLD,
-        provider="fake",
-        model="model-1",
-        thinking={"enabled": False},
-        source_messages=root,
-        unsent_suffix_messages=suffix,
-        source_request_id="hard-source",
-        source_message_count=len(root),
-        budget=budget,
+        suffix,
+        budget,
+        step=1,
+        boundary=boundary,
     )
-    coordinator.abort_pending()
-
-    assert (
-        coordinator.record_compression_failure(prepared, "provider_error")
-        is CompressionFailureAction.PAUSE_CONTEXT_BUDGET
-    )
+    assert decision.action == "pause"
+    assert decision.reason == "insufficient_rebase_headroom"
+    with pytest.raises(PromptCacheCoordinatorError, match="decision does not match"):
+        coordinator.prepare_compression(
+            1,
+            candidate,
+            boundary=boundary,
+            provider="fake",
+            model="model-1",
+            thinking={"enabled": False},
+            source_messages=root,
+            unsent_suffix_messages=suffix,
+            source_request_id="hard-source",
+            source_message_count=len(root),
+            budget=budget,
+            decision=decision,
+        )
 
 
 def test_legacy_layout_rejects_compression_and_rollover() -> None:
@@ -510,6 +592,238 @@ def test_append_only_optimization_policy_versions_are_frozen_and_repeatable() ->
     assert balanced.fixed_projection_budget is True
     with pytest.raises(ValidationError, match="frozen"):
         balanced.soft_limit_ratio = 0.5
+
+
+def test_balanced_compression_uses_95_percent_threshold_instead_of_baseline_80() -> None:
+    budget = PrefixBudget(
+        input_limit=1_200,
+        ordinary_limit=1_000,
+        soft_limit=800,
+        memory_message_limit=128,
+        summary_limit=128,
+    )
+    common = {
+        "budget": budget,
+        "candidate_input_tokens": 850,
+        "mandatory_rebase_tokens": 200,
+        "step": 10,
+        "last_compression_attempt_step": None,
+        "has_submitted_source": True,
+    }
+
+    baseline = decide_append_only_compression(
+        policy=AppendOnlyOptimizationPolicy.for_version("baseline_v1"),
+        **common,  # type: ignore[arg-type]
+    )
+    balanced = decide_append_only_compression(
+        policy=AppendOnlyOptimizationPolicy.for_version("balanced_v1"),
+        **common,  # type: ignore[arg-type]
+    )
+
+    assert baseline.action == "compress"
+    assert baseline.reason == "soft_limit_exceeded"
+    assert baseline.soft_limit == 800
+    assert balanced.action == "continue"
+    assert balanced.reason == "below_soft_limit"
+    assert balanced.soft_limit == 950
+
+
+def test_balanced_soft_backoff_never_overrides_hard_or_oversized_limits() -> None:
+    policy = AppendOnlyOptimizationPolicy.for_version("balanced_v1")
+    budget = PrefixBudget(
+        input_limit=1_200,
+        ordinary_limit=1_000,
+        soft_limit=950,
+        memory_message_limit=128,
+        summary_limit=128,
+    )
+    common = {
+        "policy": policy,
+        "budget": budget,
+        "mandatory_rebase_tokens": 200,
+        "step": 10,
+        "last_compression_attempt_step": 8,
+        "has_submitted_source": True,
+    }
+
+    backed_off = decide_append_only_compression(
+        candidate_input_tokens=960,
+        **common,  # type: ignore[arg-type]
+    )
+    hard = decide_append_only_compression(
+        candidate_input_tokens=1_001,
+        **common,  # type: ignore[arg-type]
+    )
+    oversized = decide_append_only_compression(
+        candidate_input_tokens=900,
+        oversized_delta=True,
+        **common,  # type: ignore[arg-type]
+    )
+
+    assert backed_off.action == "continue"
+    assert backed_off.reason == "soft_compression_backoff"
+    assert hard.action == "compress"
+    assert hard.reason == "hard_input_limit_exceeded"
+    assert oversized.action == "compress"
+    assert oversized.reason == "oversized_memory_delta"
+
+
+@pytest.mark.parametrize(
+    ("candidate", "has_source", "expected_action", "expected_reason"),
+    [
+        (960, True, "continue", "insufficient_rebase_headroom"),
+        (1_001, True, "pause", "insufficient_rebase_headroom"),
+        (960, False, "continue", "no_submitted_compression_source"),
+        (1_001, False, "pause", "no_submitted_compression_source"),
+    ],
+)
+def test_compression_preflight_handles_rebase_headroom_and_first_request(
+    candidate: int,
+    has_source: bool,
+    expected_action: str,
+    expected_reason: str,
+) -> None:
+    policy = AppendOnlyOptimizationPolicy.for_version("balanced_v1")
+    budget = PrefixBudget(
+        input_limit=1_200,
+        ordinary_limit=1_000,
+        soft_limit=950,
+        memory_message_limit=128,
+        summary_limit=128,
+    )
+    mandatory = 872 if has_source else 200
+    decision = decide_append_only_compression(
+        policy=policy,
+        budget=budget,
+        candidate_input_tokens=candidate,
+        mandatory_rebase_tokens=mandatory,
+        step=1,
+        last_compression_attempt_step=None,
+        has_submitted_source=has_source,
+    )
+
+    assert decision.action == expected_action
+    assert decision.reason == expected_reason
+
+
+def test_recovering_compression_replays_the_same_decision_after_restore() -> None:
+    policy = AppendOnlyOptimizationPolicy.for_version("balanced_v1")
+    budget = PrefixBudget(
+        input_limit=1_200,
+        ordinary_limit=1_000,
+        soft_limit=950,
+        memory_message_limit=128,
+        summary_limit=128,
+    )
+    kwargs = {
+        "policy": policy,
+        "budget": budget,
+        "candidate_input_tokens": 960,
+        "mandatory_rebase_tokens": 900,
+        "step": 7,
+        "last_compression_attempt_step": 7,
+        "has_submitted_source": True,
+        "recovering_compression": True,
+    }
+
+    first = decide_append_only_compression(**kwargs)  # type: ignore[arg-type]
+    restored = CompressionDecision.model_validate_json(first.model_dump_json())
+
+    assert first == restored
+    assert restored.action == "compress"
+    assert restored.reason == "recovering_compression"
+
+
+def test_prepare_compression_validates_decision_and_persists_attempt_step() -> None:
+    coordinator, source, tools, publication = _append_only_compression_fixture()
+    suffix = [ModelMessage(role="user", content="pending suffix")]
+    candidate = [*source, *suffix]
+    budget = PrefixBudget(
+        input_limit=20_000,
+        ordinary_limit=10_000,
+        soft_limit=8_000,
+        memory_message_limit=2_048,
+        summary_limit=512,
+    )
+    mandatory = estimate_append_only_mandatory_rebase_tokens(
+        root_messages=coordinator.frozen_prefix[:2],
+        unsent_suffix_messages=suffix,
+        publication_state=publication,
+        tools=tools,
+        memory_message_limit=budget.memory_message_limit,
+    )
+    policy = coordinator.optimization_policy
+    assert policy is not None
+    decision = decide_append_only_compression(
+        policy=policy,
+        budget=budget,
+        candidate_input_tokens=(
+            ContextEngine.estimate_messages(candidate) + ContextEngine.estimate_tools(tools)
+        ),
+        mandatory_rebase_tokens=mandatory,
+        step=1,
+        last_compression_attempt_step=None,
+        has_submitted_source=True,
+        oversized_delta=True,
+    )
+
+    with pytest.raises(ValueError, match="verified decision"):
+        coordinator.prepare_compression(
+            1,
+            candidate,
+            boundary=CacheEpochBoundary.EXPLICIT_COMPRESSION,
+            provider="fake",
+            model="model-1",
+            thinking={"enabled": False},
+            source_messages=source,
+            unsent_suffix_messages=suffix,
+            source_request_id="source-request-1",
+            source_message_count=len(source),
+            budget=budget,
+            candidate_publication_state=publication,
+        )
+
+    with pytest.raises(PromptCacheCoordinatorError, match="decision does not match"):
+        coordinator.prepare_compression(
+            1,
+            candidate,
+            boundary=CacheEpochBoundary.EXPLICIT_COMPRESSION,
+            provider="fake",
+            model="model-1",
+            thinking={"enabled": False},
+            source_messages=source,
+            unsent_suffix_messages=suffix,
+            source_request_id="source-request-1",
+            source_message_count=len(source),
+            budget=budget,
+            decision=decision.model_copy(
+                update={"candidate_input_tokens": decision.candidate_input_tokens + 1}
+            ),
+            candidate_publication_state=publication,
+        )
+
+    prepared = coordinator.prepare_compression(
+        1,
+        candidate,
+        boundary=CacheEpochBoundary.EXPLICIT_COMPRESSION,
+        provider="fake",
+        model="model-1",
+        thinking={"enabled": False},
+        source_messages=source,
+        unsent_suffix_messages=suffix,
+        source_request_id="source-request-1",
+        source_message_count=len(source),
+        budget=budget,
+        decision=decision,
+        candidate_publication_state=publication,
+    )
+
+    assert prepared.decision == decision
+    assert coordinator.append_only_state is not None
+    assert coordinator.append_only_state.last_compression_attempt_step == 1
+    restored = PromptCacheCoordinator.from_snapshot(coordinator.snapshot())
+    assert restored.append_only_state is not None
+    assert restored.append_only_state.last_compression_attempt_step == 1
 
 
 def test_old_append_only_state_defaults_to_baseline_policy() -> None:

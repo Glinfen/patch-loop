@@ -368,16 +368,17 @@ def test_approval_scope_allows_only_fixture_read_commands(tmp_path):
 
     for command in (
         ["git", "status", "--short"],
+        ["git", "diff"],
         ["git", "diff", "--name-only"],
         ["git", "diff", "--", "order_service.py"],
     ):
         effect = SimpleNamespace(tool_name="run_command", arguments_summary={"command": command})
         assert runner._approval_is_permitted(approval, effect, repository)
 
-    broad = SimpleNamespace(
-        tool_name="run_command", arguments_summary={"command": ["git", "diff"]}
+    unsupported = SimpleNamespace(
+        tool_name="run_command", arguments_summary={"command": ["git", "show"]}
     )
-    assert not runner._approval_is_permitted(approval, broad, repository)
+    assert not runner._approval_is_permitted(approval, unsupported, repository)
 
 
 def test_approval_round_boundary_accepts_no_remaining_pending_requests():

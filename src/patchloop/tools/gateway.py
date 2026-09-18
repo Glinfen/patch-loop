@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from patchloop.domain import ErrorKind, ToolCall, ToolResult
 from patchloop.events import Event, EventLogger
+from patchloop.execution.policy import ActionDescriptor, PolicyEngine, PolicyNormalizationError
 from patchloop.providers.base import ToolSpec
 from patchloop.security import (
     RISK_ORDER,
@@ -46,6 +47,13 @@ class ToolPolicy:
         self.require_plan_for_mutations = require_plan_for_mutations
         self.approval_threshold = approval_threshold
         self.approval_handler = approval_handler
+        self.engine = PolicyEngine(
+            allowed_permissions=frozenset(
+                "edit" if item is PermissionLevel.WRITE else item.value
+                for item in self.allowed_permissions
+            ),
+            approval_threshold=approval_threshold,
+        )
 
     def allows(self, tool: Tool) -> bool:
         return tool.permission in self.allowed_permissions
@@ -115,6 +123,51 @@ class ToolPolicy:
                         decision=PolicyDecision.DENY,
                         reason=f"path escapes repository: {value}",
                     )
+        try:
+            parsed = tool.input_model.model_validate(call.arguments)
+            descriptor = tool.policy_descriptor(parsed, context)
+            evaluation = self.engine.evaluate(
+                descriptor,
+                policy_version=self.version,
+                config_version=self.version,
+            )
+            # Existing ToolPolicy callers explicitly opt into the legacy
+            # permission allow-list; retain that default while the standalone
+            # PolicyEngine remains fail-closed for side effects.
+            if (
+                evaluation.decision is PolicyDecision.REQUIRE_APPROVAL
+                and self.approval_threshold is None
+                and evaluation.reason == "side-effect action has no matching allow rule"
+            ):
+                return RiskAssessment(
+                    risk=evaluation.risk,
+                    allowed=True,
+                    decision=PolicyDecision.ALLOW,
+                    reason=f"{tool.permission} action is within the authorized scope",
+                )
+            return RiskAssessment(
+                risk=evaluation.risk,
+                allowed=evaluation.decision is PolicyDecision.ALLOW,
+                approval_required=evaluation.decision is PolicyDecision.REQUIRE_APPROVAL,
+                decision=evaluation.decision,
+                reason=evaluation.reason,
+            )
+        except ValidationError:
+            # Argument validation is classified by the gateway after policy;
+            # preserve the legacy risk decision for that path.
+            return RiskAssessment(
+                risk=risk,
+                allowed=True,
+                decision=PolicyDecision.ALLOW,
+                reason=f"{tool.permission} action is within the authorized scope",
+            )
+        except PolicyNormalizationError as exc:
+            return RiskAssessment(
+                risk=RiskLevel.CRITICAL,
+                allowed=False,
+                decision=PolicyDecision.DENY,
+                reason=str(exc),
+            )
         approval_required = (
             self.approval_threshold is not None
             and RISK_ORDER[risk] >= RISK_ORDER[self.approval_threshold]
@@ -167,6 +220,7 @@ class ToolPreparation(BaseModel):
     action_kind: str
     normalized_arguments: dict[str, object] = Field(default_factory=dict)
     policy_result: RiskAssessment
+    descriptor: ActionDescriptor | None = None
     error: str | None = None
 
 
@@ -211,6 +265,7 @@ class ToolGateway:
             )
         assessment = self.policy.assess_for_preparation(task_id, call, tool, self.context)
         error: str | None = None
+        descriptor: ActionDescriptor | None = None
         normalized: dict[str, object] = dict(call.arguments)
         if not self.policy.allows(tool):
             error = f"permission denied for {tool.permission} tool: {call.name}"
@@ -229,6 +284,9 @@ class ToolGateway:
                 assert_executable_tool_arguments(call.arguments)
                 parsed = tool.input_model.model_validate(call.arguments)
                 normalized = parsed.model_dump(mode="json")
+                descriptor = tool.policy_descriptor(parsed, self.context)
+            except PolicyNormalizationError as exc:
+                error = exc.reason
             except (UnresolvedToolArgument, ValidationError) as exc:
                 error = str(exc)
         if (
@@ -259,6 +317,7 @@ class ToolGateway:
             action_kind=tool.permission.value,
             normalized_arguments=normalized,
             policy_result=assessment,
+            descriptor=descriptor,
             error=error,
         )
 

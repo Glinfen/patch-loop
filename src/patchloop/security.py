@@ -274,3 +274,12 @@ class UntrustedContentGuard:
         if injection_blocked:
             findings.append(UntrustedContentFinding.PROMPT_INJECTION_BLOCKED)
         return UntrustedContentInspection(safe_text=safe_text, findings=findings)
+
+
+def __getattr__(name: str) -> object:
+    """Keep the security module as a compatibility export boundary."""
+    if name == "PolicyEvaluation":
+        from patchloop.execution.policy import PolicyEvaluation
+
+        return PolicyEvaluation
+    raise AttributeError(name)

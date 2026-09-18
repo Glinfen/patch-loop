@@ -46,6 +46,9 @@ class ToolContext:
         self.replan_count = 0
         self.recent_paths: list[str] = []
         self.sandbox = sandbox
+        # Runtimes may attach a session identifier without changing the tool
+        # contract.  The descriptor falls back to an empty id for old callers.
+        self.session_id = ""
 
     def resolve_path(self, relative_path: str, *, must_exist: bool = True) -> Path:
         candidate = (self.repository / relative_path).resolve(strict=must_exist)
@@ -79,6 +82,47 @@ class Tool(ABC):
 
     def classify_output(self, output: str) -> ErrorKind | None:
         return None
+
+    def policy_descriptor(self, arguments: BaseModel, context: ToolContext) -> Any:
+        """Return the stable authorization input for this tool call.
+
+        Individual tools can override this for network, package, or Skill
+        resources.  The default covers the existing file, command, and
+        read-only tools and intentionally derives selectors only from typed
+        arguments.
+        """
+        from patchloop.execution.policy import (
+            ActionDescriptor,
+            PolicyAction,
+            ResourceSelector,
+            arguments_fingerprint,
+            normalize_command_selector,
+            normalize_path_selector,
+            risk_for_permission,
+        )
+
+        values = arguments.model_dump(mode="json")
+        resources: list[ResourceSelector] = []
+        for key, value in values.items():
+            if isinstance(value, str) and key.casefold().endswith("path"):
+                resources.append(normalize_path_selector(value, context.repository))
+            elif key.casefold() == "command" and isinstance(value, list):
+                resources.append(normalize_command_selector(value))
+        action = {
+            PermissionLevel.READ: PolicyAction.READ,
+            PermissionLevel.WRITE: PolicyAction.EDIT,
+            PermissionLevel.EXECUTE: PolicyAction.EXECUTE,
+        }[self.permission]
+        return ActionDescriptor(
+            action=action,
+            tool_name=self.name,
+            workspace_ref=str(context.repository),
+            session_id=getattr(context, "session_id", ""),
+            resources=tuple(resources),
+            arguments_fingerprint=arguments_fingerprint(values),
+            side_effect=self.permission is not PermissionLevel.READ,
+            risk=risk_for_permission(self.permission.value),
+        )
 
     @abstractmethod
     def run(self, arguments: BaseModel, context: ToolContext) -> str:

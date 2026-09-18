@@ -122,6 +122,14 @@ def persist_model_response_batch(
                 arguments_summary=preparation.normalized_arguments,
                 arguments_fingerprint=arguments_fingerprint(preparation.normalized_arguments),
                 policy_result=preparation.policy_result.model_dump(mode="json"),
+                action_descriptor=(
+                    {}
+                    if preparation.descriptor is None
+                    else {
+                        **preparation.descriptor.model_dump(mode="json"),
+                        "digest": preparation.descriptor.digest,
+                    }
+                ),
                 preparation_error=preparation_error,
                 file_preconditions=preconditions,
             )

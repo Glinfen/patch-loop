@@ -57,6 +57,7 @@ from patchloop.evaluation import (
 from patchloop.events import EventLogger, lease_owner_summary
 from patchloop.execution.approvals import ApprovalService
 from patchloop.execution.models import Approval, Effect
+from patchloop.execution.policy import ApprovalScopeKind
 from patchloop.execution.recovery import RecoveryService
 from patchloop.intelligence import (
     RepositoryIndexer,
@@ -123,10 +124,14 @@ app = typer.Typer(help="PatchLoop local-first coding agent runtime.", no_args_is
 task_app = typer.Typer(help="Create and inspect local tasks.", no_args_is_help=True)
 session_app = typer.Typer(help="Manage persistent PatchLoop sessions.", no_args_is_help=True)
 approval_app = typer.Typer(help="Inspect and decide persistent approvals.", no_args_is_help=True)
+grant_app = typer.Typer(help="List and revoke reusable approval grants.", no_args_is_help=True)
+policy_app = typer.Typer(help="Inspect persisted policy rules.", no_args_is_help=True)
 provider_app = typer.Typer(help="Inspect and validate provider profiles.", no_args_is_help=True)
 app.add_typer(task_app, name="task")
 app.add_typer(session_app, name="session")
 app.add_typer(approval_app, name="approval")
+approval_app.add_typer(grant_app, name="grant")
+app.add_typer(policy_app, name="policy")
 app.add_typer(provider_app, name="provider")
 
 CLI_SCHEMA_VERSION = "1.0"
@@ -233,6 +238,19 @@ def approval_group(
         _command_error(exc)
 
 
+@policy_app.callback()
+def policy_group(
+    context: typer.Context,
+    repo: Annotated[Path, typer.Option(resolve_path=True)] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json/--human")] = True,
+) -> None:
+    """Resolve the workspace used by Policy commands."""
+    try:
+        _set_workspace_context(context, repo, json_output=json_output)
+    except InvalidRepository as exc:
+        _command_error(exc)
+
+
 def _services_from_context(context: typer.Context) -> WorkspaceServices:
     services = context.obj
     if not isinstance(services, WorkspaceServices):
@@ -318,9 +336,7 @@ def _parse_append_only_optimization(
     layout: PromptCacheLayout,
 ) -> AppendOnlyOptimizationVersion:
     if value not in {"baseline_v1", "balanced_v1"}:
-        raise CliUsageError(
-            "append_only_optimization must be baseline_v1 or balanced_v1"
-        )
+        raise CliUsageError("append_only_optimization must be baseline_v1 or balanced_v1")
     optimization = cast(AppendOnlyOptimizationVersion, value)
     if optimization == "balanced_v1" and layout is not PromptCacheLayout.APPEND_ONLY:
         raise CliUsageError("balanced_v1 optimization requires append_only prompt layout")
@@ -1524,17 +1540,30 @@ def decide_approval(
     approval_id: Annotated[str, typer.Argument()],
     approved: Optional[bool] = typer.Option(None, "--approve/--deny"),  # noqa: UP045
     source: Annotated[str, typer.Option()] = "cli",
+    scope: Annotated[str, typer.Option("--scope")] = "once",
+    expires: Annotated[str | None, typer.Option("--expires")] = None,
+    reason: Annotated[str | None, typer.Option("--reason")] = None,
 ) -> None:
-    """Approve once or deny an exact persisted Effect request."""
+    """Approve once or create a session/resource grant for an exact request."""
 
     services = _services_from_context(context)
     try:
         if approved is None:
             raise ValueError("choose exactly one of --approve or --deny")
+        try:
+            scope_kind = ApprovalScopeKind(scope)
+        except ValueError as exc:
+            raise ValueError("scope must be once, session, or resource") from exc
+        expires_at = (
+            None if expires is None else datetime.fromisoformat(expires.replace("Z", "+00:00"))
+        )
         approval, effect, task = services.approval.decide_current(
             approval_id,
             approved=approved,
             source=source,
+            scope_kind=scope_kind,
+            expires_at=expires_at,
+            reason=reason,
         )
     except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
         _command_error(exc)
@@ -1548,6 +1577,58 @@ def decide_approval(
             },
             session_id=task.session_id,
             task=task,
+        )
+    )
+
+
+@grant_app.command("list")
+def list_grants(
+    context: typer.Context,
+    scope_id: Annotated[str, typer.Argument()],
+) -> None:
+    services = _services_from_context(context)
+    grants = services.approval.list_grants(scope_id)
+    _echo_json(
+        _command_payload(
+            services, data={"items": [item.model_dump(mode="json") for item in grants]}
+        )
+    )
+
+
+@grant_app.command("revoke")
+def revoke_grant(
+    context: typer.Context,
+    grant_id: Annotated[str, typer.Argument()],
+    reason: Annotated[str | None, typer.Option("--reason")] = None,
+) -> None:
+    del reason  # retained for a stable CLI surface; audit reason is stored by later event plumbing
+    services = _services_from_context(context)
+    grant = services.approval.revoke_grant(grant_id)
+    _echo_json(_command_payload(services, data={"grant": grant.model_dump(mode="json")}))
+
+
+@policy_app.command("list")
+def list_policy_rules(context: typer.Context) -> None:
+    services = _services_from_context(context)
+    rules = services.store.list_policy_rules(workspace_ref=str(services.repository))
+    _echo_json(
+        _command_payload(services, data={"items": [rule.model_dump(mode="json") for rule in rules]})
+    )
+
+
+@policy_app.command("explain")
+def explain_policy(context: typer.Context, effect_id: Annotated[str, typer.Argument()]) -> None:
+    services = _services_from_context(context)
+    effect = services.store.get_effect(effect_id)
+    _echo_json(
+        _command_payload(
+            services,
+            data={
+                "effect_id": effect.id,
+                "policy_result": effect.policy_result,
+                "policy_version": effect.policy_result.get("policy_version"),
+                "config_version": effect.policy_result.get("config_version"),
+            },
         )
     )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID, uuid5
 
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from patchloop.domain import Task
 from patchloop.execution.models import Approval, Effect
+from patchloop.execution.policy import ApprovalGrant, ApprovalScopeKind, PolicyAction
 
 _APPROVAL_NAMESPACE = UUID("b27d9041-66dd-542c-85ff-5309bcc8bdf1")
 
@@ -74,6 +76,14 @@ class ApprovalDecisionStore(Protocol):
         config_version: str,
     ) -> tuple[Approval, Effect, Task]: ...
 
+    def save_approval_grant(self, grant: ApprovalGrant) -> ApprovalGrant: ...
+
+    def list_approval_grants(self, scope_id: str) -> list[ApprovalGrant]: ...
+
+    def revoke_approval_grant(
+        self, grant_id: str, *, expected_version: int | None = None
+    ) -> ApprovalGrant: ...
+
 
 class ApprovalService:
     """Resolve approvals against the current execution conditions."""
@@ -96,13 +106,16 @@ class ApprovalService:
         *,
         approved: bool,
         source: str,
+        scope_kind: ApprovalScopeKind = ApprovalScopeKind.ONCE,
+        expires_at: datetime | None = None,
+        reason: str | None = None,
     ) -> tuple[Approval, Effect, Task]:
         """Decide using the request's persisted, exact execution binding."""
 
         approval = self.store.get_approval(approval_id)
         effect = self.store.get_effect(approval.effect_id)
         task = self.store.get_task(effect.task_id)
-        return self.decide(
+        resolved = self.decide(
             approval.id,
             approved=approved,
             source=source,
@@ -111,6 +124,36 @@ class ApprovalService:
             policy_version=approval.policy_version,
             config_version=approval.config_version,
         )
+        decided, effect, task = resolved
+        if reason is not None and reason != decided.decision_reason:
+            decided = decided.model_copy(update={"decision_reason": reason})
+        if scope_kind is not ApprovalScopeKind.ONCE and approved:
+            action = {
+                "read": PolicyAction.READ,
+                "write": PolicyAction.EDIT,
+                "execute": PolicyAction.EXECUTE,
+            }.get(effect.action_kind, PolicyAction.EXECUTE)
+            grant = ApprovalGrant(
+                id=f"grant-{decided.id}",
+                source_approval_id=decided.id,
+                scope_kind=scope_kind,
+                session_id=task.session_id if scope_kind is ApprovalScopeKind.SESSION else None,
+                workspace_ref=task.repository,
+                action=action,
+                policy_version=decided.policy_version,
+                config_version=decided.config_version,
+                expires_at=expires_at,
+            )
+            self.store.save_approval_grant(grant)
+            decided = decided.model_copy(
+                update={
+                    "scope_kind": scope_kind,
+                    "grant_id": grant.id,
+                    "expires_at": expires_at,
+                    "decision_reason": reason,
+                }
+            )
+        return decided, effect, task
 
     def decide(
         self,
@@ -132,6 +175,12 @@ class ApprovalService:
             policy_version=policy_version,
             config_version=config_version,
         )
+
+    def list_grants(self, scope_id: str) -> list[ApprovalGrant]:
+        return self.store.list_approval_grants(scope_id)
+
+    def revoke_grant(self, grant_id: str, *, expected_version: int | None = None) -> ApprovalGrant:
+        return self.store.revoke_approval_grant(grant_id, expected_version=expected_version)
 
 
 def stable_approval_id(effect: Effect, *, policy_version: str, config_version: str) -> str:
@@ -176,6 +225,23 @@ def build_approval(
     )
 
 
+def build_superseding_approval(
+    task: Task,
+    effect: Effect,
+    previous: Approval,
+    *,
+    policy_version: str,
+    config_version: str,
+) -> Approval:
+    """Create a fresh request while retaining an auditable supersedes link."""
+    return build_approval(
+        task,
+        effect,
+        policy_version=policy_version,
+        config_version=config_version,
+    ).model_copy(update={"supersedes_approval_id": previous.id})
+
+
 def match_exact_preauthorization(
     effect: Effect,
     candidates: Sequence[EffectPreauthorization],
@@ -204,6 +270,7 @@ __all__ = [
     "ApprovalService",
     "EffectPreauthorization",
     "build_approval",
+    "build_superseding_approval",
     "match_exact_preauthorization",
     "stable_approval_id",
 ]

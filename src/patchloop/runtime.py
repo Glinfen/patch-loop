@@ -2804,7 +2804,11 @@ class AgentRuntime:
                     )
                     if response.tool_calls:
                         action = cache.record_compression_failure(prepared, "invalid_summary")
-                        raise PromptCompressionRejected("invalid_summary", action)
+                        raise PromptCompressionRejected(
+                            "invalid_summary",
+                            action,
+                            detail="compression response must not contain tool calls",
+                        )
                     completion = cache.complete_append_only_compression(prepared, response.content)
                     messages = completion.messages
                     self._context_compactions += 1
@@ -2871,6 +2875,8 @@ class AgentRuntime:
                             "request_id": request_id,
                             "source_request_id": prepared.source_request_id,
                             "reason": str(exc),
+                            "reason_code": exc.reason,
+                            "validation_error": exc.detail,
                             "action": exc.action.value,
                             **cache_diagnostics,
                         },

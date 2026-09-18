@@ -57,12 +57,12 @@ def compression_instruction(summary_target_tokens: int | None = None) -> str:
     return (
         f"{COMPRESSION_INSTRUCTION}\n"
         f"{BALANCED_COMPRESSION_INSTRUCTION_VERSION}\n"
-        f"Target the JSON content at no more than {summary_target_tokens} estimated tokens; "
-        "this target is advisory and does not permit truncated or invalid JSON. Keep only exact "
-        "constraints, current decisions, failure lessons, verified results and the next concrete "
-        "action needed to continue. Do not copy chronological event logs, completed file-read "
-        "lists or snapshot progress already represented by the current memory state. Keep all "
-        "seven required fields even when a list is empty."
+        "Return valid JSON with exactly seven fields: constraints, paths, decisions, failures, "
+        "tests and unfinished MUST be string arrays; next_step MUST be a string. Use empty arrays "
+        "when needed. No nested objects, extra fields or Markdown fences. Stay within "
+        f"{summary_target_tokens} estimated tokens without truncating JSON. Preserve exact "
+        "constraints, decisions, failure lessons, verified results and next action. Omit logs, "
+        "completed reads and memory snapshot progress."
     )
 
 

@@ -119,10 +119,20 @@ class CompressionFailureAction(StrEnum):
 class PromptCompressionRejected(PromptCacheCoordinatorError):
     """A compression attempt was rejected without committing a new epoch."""
 
-    def __init__(self, reason: str, action: CompressionFailureAction) -> None:
+    def __init__(
+        self,
+        reason: str,
+        action: CompressionFailureAction,
+        *,
+        detail: str | None = None,
+    ) -> None:
         self.reason = reason
         self.action = action
-        super().__init__(f"append-only compression rejected: {reason} ({action.value})")
+        self.detail = detail
+        message = f"append-only compression rejected: {reason} ({action.value})"
+        if detail is not None:
+            message += f": {detail}"
+        super().__init__(message)
 
 
 class PrefixBudget(BaseModel):
@@ -1434,7 +1444,11 @@ class PromptCacheCoordinator:
                 max_summary_tokens=prepared.summary_limit,
             )
         except ValueError as exc:
-            raise self._reject_append_only_compression(prepared, "invalid_summary") from exc
+            raise self._reject_append_only_compression(
+                prepared,
+                "invalid_summary",
+                detail=str(exc),
+            ) from exc
         summary_estimated_tokens = ContextEngine.estimate_message(
             ModelMessage(role="assistant", content=validated_summary)
         )
@@ -1623,9 +1637,11 @@ class PromptCacheCoordinator:
         self,
         prepared: PromptCacheCompressionPreparation,
         reason: str,
+        *,
+        detail: str | None = None,
     ) -> PromptCompressionRejected:
         action = self.record_compression_failure(prepared, reason)
-        return PromptCompressionRejected(reason, action)
+        return PromptCompressionRejected(reason, action, detail=detail)
 
     def snapshot(self) -> PromptCacheCoordinatorSnapshot:
         return PromptCacheCoordinatorSnapshot(

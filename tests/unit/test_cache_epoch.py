@@ -99,12 +99,12 @@ def test_balanced_compression_instruction_is_versioned_exact_and_optional() -> N
     instruction = compression_instruction(target)
     expected_suffix = (
         f"{BALANCED_COMPRESSION_INSTRUCTION_VERSION}\n"
-        "Target the JSON content at no more than 1024 estimated tokens; this target is advisory "
-        "and does not permit truncated or invalid JSON. Keep only exact constraints, current "
-        "decisions, failure lessons, verified results and the next concrete action needed to "
-        "continue. Do not copy chronological event logs, completed file-read lists or snapshot "
-        "progress already represented by the current memory state. Keep all seven required fields "
-        "even when a list is empty."
+        "Return valid JSON with exactly seven fields: constraints, paths, decisions, failures, "
+        "tests and unfinished MUST be string arrays; next_step MUST be a string. Use empty arrays "
+        "when needed. No nested objects, extra fields or Markdown fences. Stay within 1024 "
+        "estimated tokens without truncating JSON. Preserve exact constraints, decisions, failure "
+        "lessons, verified results and next action. Omit logs, completed reads and memory snapshot "
+        "progress."
     )
 
     assert compression_instruction() == COMPRESSION_INSTRUCTION
@@ -139,6 +139,15 @@ def test_strict_summary_normalizes_whitespace_and_has_stable_errors() -> None:
         validate_compression_summary(
             '{"constraints":[],"paths":[],"decisions":[],"failures":[],'
             '"tests":[],"unfinished":[],"next_step":"x","extra":[]}'
+        )
+    with pytest.raises(
+        ValueError,
+        match=r"^compression summary field paths must be a list of strings$",
+    ):
+        validate_compression_summary(
+            '{"constraints":[],"paths":{"completed":[],"remaining":[]},'
+            '"decisions":[],"failures":[],"tests":[],"unfinished":[],'
+            '"next_step":"x"}'
         )
 
 

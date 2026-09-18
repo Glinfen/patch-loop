@@ -456,6 +456,11 @@ def test_append_only_compression_rejection_keeps_epoch_and_publication(
 
     assert error.value.reason == reason
     assert error.value.action is CompressionFailureAction.CONTINUE_OLD_EPOCH
+    if reason == "invalid_summary":
+        assert error.value.detail == "compression summary must be valid JSON"
+        assert str(error.value).endswith(": compression summary must be valid JSON")
+    else:
+        assert error.value.detail is None
     assert coordinator.snapshot().cache_epoch_state == old_epoch
     assert coordinator.publication_snapshot == old_publication
     assert coordinator.append_only_state is not None

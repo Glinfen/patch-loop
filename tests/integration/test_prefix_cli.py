@@ -208,7 +208,15 @@ def test_paused_compression_report_does_not_write_artifacts_after_lease_release(
         def complete(self, messages, tools):
             response = super().complete(messages, tools)
             if "PATCHLOOP_EPOCH_COMPRESSION_V1" in messages[-1].content:
-                return response.model_copy(update={"content": "invalid JSON"})
+                return response.model_copy(
+                    update={
+                        "content": (
+                            '{"constraints":[],"paths":{"completed":[],"remaining":[]},'
+                            '"decisions":[],"failures":[],"tests":[],"unfinished":[],'
+                            '"next_step":"continue"}'
+                        )
+                    }
+                )
             return response
 
     provider = InvalidSummaryProvider()
@@ -236,6 +244,15 @@ def test_paused_compression_report_does_not_write_artifacts_after_lease_release(
     task = json.loads(result.stdout)
     assert task["runtime_condition"] == "paused"
     assert "invalid_summary" in task["report"]["summary"]
+    assert "compression summary field paths must be a list of strings" in task["report"]["summary"]
+    trace_path = next((tmp_path / ".patchloop" / "traces").glob("*.jsonl"))
+    events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    failure = next(event for event in events if event["type"] == "cache.compression.failed")
+    assert failure["data"]["reason_code"] == "invalid_summary"
+    assert (
+        failure["data"]["validation_error"]
+        == "compression summary field paths must be a list of strings"
+    )
     resumed = runner.invoke(app, ["resume", task["id"], "--repo", str(tmp_path)])
     assert resumed.exit_code == 11, resumed.output
     assert json.loads(resumed.stdout)["runtime_condition"] == "paused"

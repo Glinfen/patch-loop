@@ -1523,28 +1523,7 @@ class AgentRuntime:
             if guard is None:
                 raise LeaseLost(task.id)
             config_version = self._effect_config_version(task)
-            current_preparation = self.gateway.prepare_call(task.id, executable_call)
-            current_assessment = current_preparation.policy_result
-            persisted_digest = effect.action_descriptor.get("digest")
-            if (
-                persisted_digest is not None
-                and current_preparation.descriptor is not None
-                and persisted_digest != current_preparation.descriptor.digest
-            ):
-                result = self.gateway.observe_unexecuted(
-                    task.id,
-                    executable_call,
-                    "action descriptor changed; approval must be requested again",
-                    effect_status=EffectStatus.DENIED.value,
-                    next_action="request_new_approval",
-                )
-                self._settle_unexecuted_effect(
-                    effect,
-                    executable_call,
-                    result,
-                    status=EffectStatus.DENIED,
-                )
-                return result
+            current_assessment = self.gateway.prepare_call(task.id, executable_call).policy_result
             current_decision = current_assessment.decision or PolicyDecision.DENY
             claimed_effect = self.state_store.claim_effect(
                 effect.id,
@@ -2686,7 +2665,9 @@ class AgentRuntime:
             "optimization_version": prefix.optimization_version,
             "projection_format": projection_format,
             "projection_fallback_reason": projection_fallback_reason,
-            "new_memory_tokens": sum(engine.estimate_message(item) for item in memory_messages),
+            "new_memory_tokens": sum(
+                engine.estimate_message(item) for item in memory_messages
+            ),
             "working_item_count": memory_diagnostics["working_item_count"],
             "opaque_working_blob_count": memory_diagnostics["opaque_working_blob_count"],
             "decision_reason": decision.reason,
@@ -2850,7 +2831,8 @@ class AgentRuntime:
                                 <= completion.summary_target_tokens
                             ),
                             "freed_input_tokens": (
-                                completion.candidate_input_tokens - completion.rebased_input_tokens
+                                completion.candidate_input_tokens
+                                - completion.rebased_input_tokens
                             ),
                             "headroom_after_rebase": (
                                 budget.ordinary_limit - completion.rebased_input_tokens

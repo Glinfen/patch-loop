@@ -12,7 +12,6 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from patchloop.domain import TaskRuntimeCondition
-from patchloop.execution.policy import ApprovalScopeKind
 from patchloop.security import CredentialBinding
 from patchloop.session.models import SessionCheckpoint
 
@@ -181,7 +180,6 @@ class Effect(BaseModel):
     arguments_summary: dict[str, Any] = Field(default_factory=dict)
     arguments_fingerprint: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
     policy_result: dict[str, Any] = Field(default_factory=dict)
-    action_descriptor: dict[str, Any] = Field(default_factory=dict)
     preparation_error: str | None = None
     file_preconditions: list[FileEffectPrecondition] = Field(default_factory=list)
     credential_bindings: list[CredentialBinding] = Field(default_factory=list)
@@ -293,11 +291,6 @@ class Approval(BaseModel):
     decided_at: datetime | None = None
     version: int = Field(default=1, ge=1)
     created_at: datetime = Field(default_factory=_now)
-    scope_kind: ApprovalScopeKind = ApprovalScopeKind.ONCE
-    grant_id: str | None = None
-    expires_at: datetime | None = None
-    supersedes_approval_id: str | None = None
-    decision_reason: str | None = Field(default=None, max_length=2_000)
 
     def same_request(self, other: Approval) -> bool:
         return (
@@ -310,20 +303,8 @@ class Approval(BaseModel):
             and self.resource_summary == other.resource_summary
             and self.policy_version == other.policy_version
             and self.config_version == other.config_version
-            and self.scope_kind is other.scope_kind
-            and self.grant_id == other.grant_id
-            and self.expires_at == other.expires_at
             and self.status is other.status is ApprovalStatus.PENDING
         )
-
-    def is_expired(self, now: datetime | None = None) -> bool:
-        if self.expires_at is None:
-            return False
-        current = now or _now()
-        expiry = self.expires_at
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=UTC)
-        return expiry <= current
 
     def matches_execution_conditions(
         self,
@@ -375,12 +356,6 @@ class Approval(BaseModel):
     ) -> Approval:
         """Consume an approved request after rechecking its exact execution binding."""
 
-        if self.is_expired():
-            from patchloop.persistence_contracts import ApprovalConflict
-
-            raise ApprovalConflict(
-                self.id, ApprovalStatus.EXPIRED.value, ApprovalStatus.CONSUMED.value
-            )
         if self.status is not ApprovalStatus.APPROVED:
             from patchloop.persistence_contracts import ApprovalConflict
 

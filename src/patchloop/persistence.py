@@ -44,7 +44,6 @@ from patchloop.execution.models import (
     RecoveryDispositionKind,
     WorkspaceLease,
 )
-from patchloop.execution.policy import ApprovalGrant, GrantStatus, PolicyRule
 from patchloop.execution.recovery import validate_recovery_resolution
 from patchloop.memory.episodic import EpisodicMemorySnapshot
 from patchloop.memory.manager import MemoryManagerSnapshot
@@ -95,7 +94,7 @@ from patchloop.sqlite_support import (
 )
 from patchloop.storage import TaskNotFoundError
 
-RUNTIME_SCHEMA_VERSION = 6
+RUNTIME_SCHEMA_VERSION = 5
 _RUNTIME_TABLES = {
     "tasks",
     "agent_steps",
@@ -114,8 +113,6 @@ _RUNTIME_TABLES = {
     "managed_commands",
     "provider_requests",
     "provider_attempts",
-    "policy_rules",
-    "approval_grants",
 }
 
 _RUNTIME_TASK_COLUMNS = {"session_id", "outcome", "runtime_condition", "version"}
@@ -422,41 +419,6 @@ _RUNTIME_MIGRATION_V5 = (
     "CREATE INDEX idx_provider_attempts_execution ON provider_attempts(execution_id)",
 )
 
-_RUNTIME_MIGRATION_V6 = (
-    """
-    CREATE TABLE IF NOT EXISTS policy_rules (
-        id TEXT PRIMARY KEY,
-        workspace_ref TEXT,
-        session_id TEXT,
-        action TEXT NOT NULL,
-        resource_kind TEXT,
-        effect TEXT NOT NULL,
-        priority INTEGER NOT NULL,
-        enabled INTEGER NOT NULL,
-        policy_version TEXT NOT NULL,
-        payload_json TEXT NOT NULL
-    )
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_policy_rules_scope "
-    "ON policy_rules(workspace_ref, session_id, enabled)",
-    """
-    CREATE TABLE IF NOT EXISTS approval_grants (
-        id TEXT PRIMARY KEY,
-        workspace_ref TEXT NOT NULL,
-        session_id TEXT,
-        action TEXT NOT NULL,
-        status TEXT NOT NULL,
-        policy_version TEXT NOT NULL,
-        config_version TEXT NOT NULL,
-        version INTEGER NOT NULL,
-        expires_at TEXT,
-        payload_json TEXT NOT NULL
-    )
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_approval_grants_scope "
-    "ON approval_grants(workspace_ref, session_id, status)",
-)
-
 
 class RuntimeSchemaError(RuntimeError):
     """Raised when the runtime schema cannot be migrated or is unusable."""
@@ -537,18 +499,6 @@ def initialize_runtime_schema(connection: sqlite3.Connection) -> None:
                 """,
                 (5, datetime.now(UTC).isoformat()),
             )
-            version = 5
-        if version < 6:
-            for statement in _RUNTIME_MIGRATION_V6:
-                connection.execute(statement)
-            connection.execute(
-                """
-                UPDATE patchloop_schema_migrations
-                SET version = ?, updated_at = ? WHERE component = 'runtime'
-                """,
-                (6, datetime.now(UTC).isoformat()),
-            )
-            version = 6
         tables = {
             str(table[0])
             for table in connection.execute(
@@ -4428,115 +4378,6 @@ class SQLiteStore:
         )
         if cursor.rowcount != 1:
             raise KeyError(f"effect not found: {effect.id}")
-
-    def save_policy_rule(self, rule: PolicyRule) -> PolicyRule:
-        """Upsert a versioned rule without storing unredacted input."""
-        with connect_write(self.path) as connection:
-            connection.execute(
-                """
-                INSERT INTO policy_rules
-                    (id, workspace_ref, session_id, action, resource_kind, effect,
-                     priority, enabled, policy_version, payload_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    workspace_ref=excluded.workspace_ref, session_id=excluded.session_id,
-                    action=excluded.action, resource_kind=excluded.resource_kind,
-                    effect=excluded.effect, priority=excluded.priority,
-                    enabled=excluded.enabled, policy_version=excluded.policy_version,
-                    payload_json=excluded.payload_json
-                """,
-                (
-                    rule.id,
-                    rule.workspace_ref,
-                    rule.session_id,
-                    rule.action.value,
-                    None if rule.resource_kind is None else rule.resource_kind.value,
-                    rule.effect.value,
-                    rule.priority,
-                    int(rule.enabled),
-                    rule.policy_version,
-                    self._redacted_json(rule),
-                ),
-            )
-        return rule
-
-    def list_policy_rules(
-        self, *, workspace_ref: str | None = None, session_id: str | None = None
-    ) -> list[PolicyRule]:
-        with connect(self.path) as connection:
-            rows = connection.execute(
-                "SELECT payload_json FROM policy_rules "
-                "WHERE (? IS NULL OR workspace_ref = ?) "
-                "AND (? IS NULL OR session_id = ?) ORDER BY id",
-                (workspace_ref, workspace_ref, session_id, session_id),
-            ).fetchall()
-        return [PolicyRule.model_validate_json(row["payload_json"]) for row in rows]
-
-    def save_approval_grant(self, grant: ApprovalGrant) -> ApprovalGrant:
-        with connect_write(self.path) as connection:
-            connection.execute(
-                """
-                INSERT INTO approval_grants
-                    (id, workspace_ref, session_id, action, status, policy_version,
-                     config_version, version, expires_at, payload_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET status=excluded.status,
-                    version=excluded.version, expires_at=excluded.expires_at,
-                    payload_json=excluded.payload_json
-                """,
-                (
-                    grant.id,
-                    grant.workspace_ref,
-                    grant.session_id,
-                    grant.action.value,
-                    grant.status.value,
-                    grant.policy_version,
-                    grant.config_version,
-                    grant.version,
-                    None if grant.expires_at is None else grant.expires_at.isoformat(),
-                    self._redacted_json(grant),
-                ),
-            )
-        return grant
-
-    def list_approval_grants(
-        self, scope_id: str, *, workspace_ref: str | None = None
-    ) -> list[ApprovalGrant]:
-        with connect(self.path) as connection:
-            rows = connection.execute(
-                "SELECT payload_json FROM approval_grants "
-                "WHERE (session_id = ? OR workspace_ref = ?) ORDER BY id",
-                (scope_id, scope_id if workspace_ref is None else workspace_ref),
-            ).fetchall()
-        return [ApprovalGrant.model_validate_json(row["payload_json"]) for row in rows]
-
-    def revoke_approval_grant(
-        self, grant_id: str, *, expected_version: int | None = None
-    ) -> ApprovalGrant:
-        with connect_write(self.path) as connection:
-            row = connection.execute(
-                "SELECT payload_json FROM approval_grants WHERE id = ?", (grant_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"approval grant not found: {grant_id}")
-            current = ApprovalGrant.model_validate_json(row["payload_json"])
-            if expected_version is not None and current.version != expected_version:
-                raise StaleVersion(grant_id, expected_version, current.version)
-            revoked = current.model_copy(
-                update={"status": GrantStatus.REVOKED, "version": current.version + 1}
-            )
-            connection.execute(
-                "UPDATE approval_grants SET status = ?, version = ?, payload_json = ? "
-                "WHERE id = ? AND version = ?",
-                (
-                    revoked.status.value,
-                    revoked.version,
-                    self._redacted_json(revoked),
-                    grant_id,
-                    current.version,
-                ),
-            )
-        return revoked
 
     def _insert_approval_row(self, connection: sqlite3.Connection, approval: Approval) -> None:
         connection.execute(

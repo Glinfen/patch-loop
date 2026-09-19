@@ -42,7 +42,6 @@ from patchloop.execution.models import (
     RecoveryDispositionKind,
     WorkspaceLease,
 )
-from patchloop.execution.policy import ApprovalGrant, GrantStatus, PolicyRule
 from patchloop.execution.recovery import validate_recovery_resolution
 from patchloop.providers.base import ModelResponse, ModelUsage, ProviderRequestPurpose
 from patchloop.sandbox import ManagedCommandIdentity, ManagedCommandStatus
@@ -349,20 +348,6 @@ class AdvanceResult:
 
 
 class SessionStore(Protocol):
-    def save_policy_rule(self, rule: PolicyRule) -> PolicyRule: ...
-
-    def list_policy_rules(
-        self, *, workspace_ref: str | None = None, session_id: str | None = None
-    ) -> list[PolicyRule]: ...
-
-    def save_approval_grant(self, grant: ApprovalGrant) -> ApprovalGrant: ...
-
-    def list_approval_grants(self, scope_id: str) -> list[ApprovalGrant]: ...
-
-    def revoke_approval_grant(
-        self, grant_id: str, *, expected_version: int | None = None
-    ) -> ApprovalGrant: ...
-
     def create_session(self, session: Session) -> Session: ...
 
     def list_sessions(self, workspace_ref: str | None = None) -> list[Session]: ...
@@ -662,8 +647,6 @@ class FakeStore:
         self.managed_commands: dict[str, ManagedCommandIdentity] = {}
         self.provider_requests: dict[str, ProviderRequestRecord] = {}
         self.provider_attempts: dict[str, ProviderAttemptRecord] = {}
-        self.policy_rules: dict[str, PolicyRule] = {}
-        self.approval_grants: dict[str, ApprovalGrant] = {}
 
     @staticmethod
     def _copy(value: _T) -> _T:
@@ -673,45 +656,6 @@ class FakeStore:
     def _check_version(entity_id: str, actual: int, expected: int | None) -> None:
         if expected is not None and actual != expected:
             raise StaleVersion(entity_id, expected, actual)
-
-    def save_policy_rule(self, rule: PolicyRule) -> PolicyRule:
-        self.policy_rules[rule.id] = self._copy(rule)
-        return self._copy(rule)
-
-    def list_policy_rules(
-        self, *, workspace_ref: str | None = None, session_id: str | None = None
-    ) -> list[PolicyRule]:
-        return [
-            self._copy(rule)
-            for rule in sorted(self.policy_rules.values(), key=lambda item: item.id)
-            if (workspace_ref is None or rule.workspace_ref == workspace_ref)
-            and (session_id is None or rule.session_id == session_id)
-        ]
-
-    def save_approval_grant(self, grant: ApprovalGrant) -> ApprovalGrant:
-        self.approval_grants[grant.id] = self._copy(grant)
-        return self._copy(grant)
-
-    def list_approval_grants(self, scope_id: str) -> list[ApprovalGrant]:
-        return [
-            self._copy(grant)
-            for grant in sorted(self.approval_grants.values(), key=lambda item: item.id)
-            if grant.session_id == scope_id or grant.workspace_ref == scope_id
-        ]
-
-    def revoke_approval_grant(
-        self, grant_id: str, *, expected_version: int | None = None
-    ) -> ApprovalGrant:
-        current = self.approval_grants.get(grant_id)
-        if current is None:
-            raise KeyError(f"approval grant not found: {grant_id}")
-        if expected_version is not None and current.version != expected_version:
-            raise StaleVersion(grant_id, expected_version, current.version)
-        revoked = current.model_copy(
-            update={"status": GrantStatus.REVOKED, "version": current.version + 1}
-        )
-        self.approval_grants[grant_id] = self._copy(revoked)
-        return self._copy(revoked)
 
     def create_session(self, session: Session) -> Session:
         if session.id in self.sessions:
@@ -945,7 +889,10 @@ class FakeStore:
         current = self.get_task(task.id)
         self._check_version(task.id, current.version, expected_version)
         self._require_session_guard(current, lease_guard)
-        if current.execution.append_only_optimization != task.execution.append_only_optimization:
+        if (
+            current.execution.append_only_optimization
+            != task.execution.append_only_optimization
+        ):
             raise ValueError("task append_only optimization is immutable")
         if current.session_id != task.session_id:
             raise ValueError("task session binding is immutable")

@@ -1,0 +1,104 @@
+[
+  {
+    "case_id": "inline-interpreter-0",
+    "input": {
+      "command": [
+        "python",
+        "-cprint(1)"
+      ]
+    },
+    "action": "execute",
+    "expected_decision": "deny",
+    "actual_decision": "allow",
+    "backend_calls": 1,
+    "expected_backend_calls": 0,
+    "unauthorized_actions": 1,
+    "duplicate_effects": 1,
+    "secret_leaks": 0,
+    "event_integrity": true,
+    "event_types": [
+      "effect.claimed",
+      "effect.committed",
+      "effects.prepared",
+      "lease.acquired",
+      "lease.released",
+      "policy.evaluated",
+      "provider.attempt.started",
+      "provider.attempt.succeeded",
+      "provider.request.completed",
+      "provider.request.started",
+      "provider.response.saved",
+      "task.updated",
+      "turn.appended"
+    ],
+    "policy_version": "tool-policy-v1:8d2df77862c42ca01fac3363d830d4e2379292b3c36c439d844f1576803eea30",
+    "config_version": "1",
+    "policy_fingerprint": "b81abea5b3e86d620700a4621348fc1a484a351038fc279d96c15dd824e900a6",
+    "config_fingerprint": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18",
+    "matched_rule_ids": [
+      "audit-inline-interpreter-0-0"
+    ],
+    "passed": false,
+    "failure_reasons": [
+      "decision_mismatch",
+      "backend_call_count_mismatch"
+    ],
+    "external_backend_evidence": "unverified"
+  },
+  {
+    "case_id": "inline-interpreter-1",
+    "input": {
+      "command": [
+        "node",
+        "--eval=console.log(1)"
+      ]
+    },
+    "action": "execute",
+    "expected_decision": "deny",
+    "actual_decision": "allow",
+    "backend_calls": 1,
+    "expected_backend_calls": 0,
+    "unauthorized_actions": 1,
+    "duplicate_effects": 1,
+    "secret_leaks": 0,
+    "event_integrity": true,
+    "event_types": [
+      "effect.claimed",
+      "effect.committed",
+      "effects.prepared",
+      "lease.acquired",
+      "lease.released",
+      "policy.evaluated",
+      "provider.attempt.started",
+      "provider.attempt.succeeded",
+      "provider.request.completed",
+      "provider.request.started",
+      "provider.response.saved",
+      "task.updated",
+      "turn.appended"
+    ],
+    "policy_version": "tool-policy-v1:8d2df77862c42ca01fac3363d830d4e2379292b3c36c439d844f1576803eea30",
+    "config_version": "1",
+    "policy_fingerprint": "16c3b28585392473fb6e93132bd1052a23c3f8f4bdb13a6011f2151ea52afcf9",
+    "config_fingerprint": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18",
+    "matched_rule_ids": [
+      "audit-inline-interpreter-1-0"
+    ],
+    "passed": false,
+    "failure_reasons": [
+      "decision_mismatch",
+      "backend_call_count_mismatch"
+    ],
+    "external_backend_evidence": "unverified"
+  },
+  {
+    "case_id": "windows-case-insensitive-deny",
+    "expected_decision": "deny",
+    "actual_decision": "allow",
+    "resource": "src/main.py",
+    "matched_rule_ids": [
+      "allow-all"
+    ],
+    "passed": false
+  }
+]

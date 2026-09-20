@@ -21,6 +21,12 @@ PPS 最新两场景四任务均完成、隐藏测试 20/20 通过，但它们是
 [SRF 计划](SESSION_RUNTIME_FOUNDATION_PLAN.md)第 13 节、[PGW 计划](PROVIDER_GATEWAY_DEVELOPMENT_PLAN.md)
 和 [PPS 计划](PROMPT_PREFIX_STABILITY_PLAN.md)。
 
+2026-09-20 更新：[Approval / Policy 扩展](APPROVAL_POLICY_EXTENSION_PLAN.md) TASK-01～07
+已完成控制面实现和本机离线验收。范围授权、撤销/过期、修改后重新审批、跨进程恢复和旧审批
+迁移已有测试证据；全量回归 974 项通过、2 项环境跳过，27 项绕过矩阵与 16 组安全审计通过。
+网络、依赖安装和 Skill 的证据来自计数适配器，真实外部后端及 Sandbox 隔离仍为 `unverified`。
+此进展不代表 S2-G4、S2-G5 或第二阶段整体完成，详见[修复后验收报告](../benchmarks/results/policy_fix_acceptance.json)。
+
 ## 2. 目标用户与核心场景
 
 目标用户：
@@ -76,6 +82,12 @@ Approval 必须是持久化状态机，而不是同步 CLI 中的一次布尔询
 - 授权范围可以限定工具、路径、命令、网络目标、时限和 Session。
 - 拒绝结果作为结构化观察返回 Agent，使其能够选择安全替代方案。
 - 所有审批决定可审计、可回放且不能被 resume 或 Provider 切换绕过。
+
+当前状态（2026-09-20）：控制面专项已完成实现及离线验收。`once/session/resource` 三种范围
+均已验证独立进程中的准备、批准、恢复与跨 Session 边界；旧 pending/approved Approval
+迁移后保持一次性消费。解释器参数变体和 Windows 路径大小写导致的策略漏匹配已修复，
+回归测试验证硬拒绝不能被 allow 或旧 grant 覆盖。面向真实网络、安装和 Skill 后端的集成
+验收随对应模块继续推进，不将适配器调用计数作为真实隔离证据。
 
 ### S2-G4：建立安全、按需加载的 Skills 系统
 

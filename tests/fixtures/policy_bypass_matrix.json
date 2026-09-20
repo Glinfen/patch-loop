@@ -1,0 +1,315 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "id": "network-default",
+      "action": "network",
+      "arguments": {
+        "url": "https://example.org/api"
+      },
+      "rule": null,
+      "expected_decision": "require_approval"
+    },
+    {
+      "id": "network-allow",
+      "action": "network",
+      "arguments": {
+        "url": "https://example.org/api"
+      },
+      "rule": "allow",
+      "expected_decision": "allow"
+    },
+    {
+      "id": "network-deny",
+      "action": "network",
+      "arguments": {
+        "url": "https://example.org/api"
+      },
+      "rule": "deny",
+      "expected_decision": "deny"
+    },
+    {
+      "id": "dependency_install-default",
+      "action": "dependency_install",
+      "arguments": {
+        "manager": "pip",
+        "name": "demo",
+        "version": "1.2.3",
+        "source": "https://pypi.org/simple"
+      },
+      "rule": null,
+      "expected_decision": "require_approval"
+    },
+    {
+      "id": "dependency_install-allow",
+      "action": "dependency_install",
+      "arguments": {
+        "manager": "pip",
+        "name": "demo",
+        "version": "1.2.3",
+        "source": "https://pypi.org/simple"
+      },
+      "rule": "allow",
+      "expected_decision": "allow"
+    },
+    {
+      "id": "dependency_install-deny",
+      "action": "dependency_install",
+      "arguments": {
+        "manager": "pip",
+        "name": "demo",
+        "version": "1.2.3",
+        "source": "https://pypi.org/simple"
+      },
+      "rule": "deny",
+      "expected_decision": "deny"
+    },
+    {
+      "id": "skill_load-default",
+      "action": "skill_load",
+      "arguments": {
+        "registry": "project",
+        "id": "review",
+        "version": "1"
+      },
+      "rule": null,
+      "expected_decision": "require_approval"
+    },
+    {
+      "id": "skill_load-allow",
+      "action": "skill_load",
+      "arguments": {
+        "registry": "project",
+        "id": "review",
+        "version": "1"
+      },
+      "rule": "allow",
+      "expected_decision": "allow"
+    },
+    {
+      "id": "skill_load-deny",
+      "action": "skill_load",
+      "arguments": {
+        "registry": "project",
+        "id": "review",
+        "version": "1"
+      },
+      "rule": "deny",
+      "expected_decision": "deny"
+    },
+    {
+      "id": "skill_execute-default",
+      "action": "skill_execute",
+      "arguments": {
+        "registry": "project",
+        "id": "review",
+        "version": "1"
+      },
+      "rule": null,
+      "expected_decision": "require_approval"
+    },
+    {
+      "id": "skill_execute-allow",
+      "action": "skill_execute",
+      "arguments": {
+        "registry": "project",
+        "id": "review",
+        "version": "1"
+      },
+      "rule": "allow",
+      "expected_decision": "allow"
+    },
+    {
+      "id": "skill_execute-deny",
+      "action": "skill_execute",
+      "arguments": {
+        "registry": "project",
+        "id": "review",
+        "version": "1"
+      },
+      "rule": "deny",
+      "expected_decision": "deny"
+    },
+    {
+      "id": "shell",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "bash",
+          "-c",
+          "echo x"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "pipeline",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "echo",
+          "x|sh"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "redirect",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "echo",
+          "x>file"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "interpreter",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "python",
+          "-c",
+          "print(1)"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "network-command",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "curl",
+          "https://example.org"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "git-push",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "git",
+          "push"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "path-traversal",
+      "action": "edit",
+      "arguments": {
+        "path": "../outside"
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "url-credentials",
+      "action": "network",
+      "arguments": {
+        "url": "https://operator:matrix-password-42@example.org"
+      },
+      "expected_decision": "deny",
+      "secret_sentinels": [
+        "matrix-password-42"
+      ]
+    },
+    {
+      "id": "package-credentials",
+      "action": "dependency_install",
+      "arguments": {
+        "manager": "pip",
+        "name": "demo",
+        "version": "1",
+        "source": "https://operator:matrix-password-42@example.org"
+      },
+      "expected_decision": "deny",
+      "secret_sentinels": [
+        "matrix-password-42"
+      ]
+    },
+    {
+      "id": "skill-credentials",
+      "action": "skill_execute",
+      "arguments": {
+        "registry": "https://operator:matrix-password-42@example.org",
+        "id": "demo",
+        "version": "1"
+      },
+      "expected_decision": "deny",
+      "secret_sentinels": [
+        "matrix-password-42"
+      ]
+    },
+    {
+      "id": "interpreter-attached-python",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "python",
+          "-cprint(1)"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "interpreter-clustered-python",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "python",
+          "-Icprint(1)"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "interpreter-equals-node",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "node",
+          "--eval=console.log(1)"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "interpreter-print-node",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "node",
+          "-p1"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    },
+    {
+      "id": "interpreter-clustered-perl",
+      "action": "execute",
+      "arguments": {
+        "command": [
+          "perl",
+          "-weprint(1)"
+        ]
+      },
+      "expected_decision": "deny",
+      "rule": "allow"
+    }
+  ]
+}

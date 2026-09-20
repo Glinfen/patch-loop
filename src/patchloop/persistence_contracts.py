@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Protocol, TypeVar
+from functools import wraps
+from threading import RLock
+from typing import Concatenate, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -29,6 +31,13 @@ from patchloop.events import (
     journal_event_id,
     lease_owner_summary,
 )
+from patchloop.execution.approvals import (
+    ApprovalResolution,
+    evaluate_claim_policy,
+    scope_approval,
+    supersede_approval,
+    validate_grant_consumption,
+)
 from patchloop.execution.models import (
     Approval,
     ApprovalStatus,
@@ -42,9 +51,17 @@ from patchloop.execution.models import (
     RecoveryDispositionKind,
     WorkspaceLease,
 )
+from patchloop.execution.policy import (
+    ActionDescriptor,
+    ApprovalGrant,
+    ApprovalScopeKind,
+    PolicyEvaluation,
+    PolicyRule,
+)
 from patchloop.execution.recovery import validate_recovery_resolution
 from patchloop.providers.base import ModelResponse, ModelUsage, ProviderRequestPurpose
 from patchloop.sandbox import ManagedCommandIdentity, ManagedCommandStatus
+from patchloop.security import SecretRedactor
 from patchloop.session.models import Session, SessionCheckpoint, Turn
 
 _T = TypeVar("_T")
@@ -378,6 +395,16 @@ class SessionStore(Protocol):
 
 
 class RuntimeStore(Protocol):
+    def replace_effect_approval(
+        self,
+        effect_id: str,
+        replacement: Effect,
+        approval: Approval,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard,
+    ) -> tuple[Effect, Approval, Task]: ...
+
     def create_task(self, task: Task) -> Task: ...
 
     def get_task(self, task_id: str) -> Task: ...
@@ -517,7 +544,10 @@ class RuntimeStore(Protocol):
         workspace_ref: str,
         policy_version: str,
         config_version: str,
-    ) -> tuple[Approval, Effect, Task]: ...
+        scope_kind: ApprovalScopeKind = ApprovalScopeKind.ONCE,
+        expires_at: datetime | None = None,
+        reason: str | None = None,
+    ) -> ApprovalResolution: ...
 
     def claim_effect(
         self,
@@ -530,6 +560,8 @@ class RuntimeStore(Protocol):
         policy_version: str | None = None,
         config_version: str | None = None,
         policy_decision: str | None = None,
+        configured_rules: tuple[PolicyRule, ...] = (),
+        current_evaluation: PolicyEvaluation | None = None,
         expected_input_sequence: int | None = None,
     ) -> Effect: ...
 
@@ -609,7 +641,32 @@ class RuntimeStore(Protocol):
     def get_session_checkpoint(self, task_id: str) -> SessionCheckpoint: ...
 
 
-class Store(SessionStore, RuntimeStore, Protocol):
+class PolicyStore(Protocol):
+    def put_policy_rule(self, rule: PolicyRule) -> PolicyRule: ...
+
+    def list_policy_rules(self, workspace_ref: str) -> list[PolicyRule]: ...
+
+    def get_grant(self, grant_id: str) -> ApprovalGrant: ...
+
+    def list_grants(self, scope_id: str) -> list[ApprovalGrant]: ...
+
+    def consume_grant(
+        self,
+        grant_id: str,
+        descriptor: ActionDescriptor,
+        *,
+        expected_version: int,
+        policy_version: str,
+        config_version: str,
+        configured_rules: tuple[PolicyRule, ...] = (),
+    ) -> ApprovalGrant: ...
+
+    def revoke_grant(
+        self, grant_id: str, *, source: str, reason: str | None = None, expected_version: int
+    ) -> ApprovalGrant: ...
+
+
+class Store(SessionStore, RuntimeStore, PolicyStore, Protocol):
     """Combined backend boundary for a composition root."""
 
     pass
@@ -627,10 +684,22 @@ class EffectPort(Protocol):
     def reconcile(self, execution: Execution, effect: Effect) -> Effect: ...
 
 
+def _policy_atomic[**P, T](
+    method: Callable[Concatenate[FakeStore, P], T],
+) -> Callable[Concatenate[FakeStore, P], T]:
+    @wraps(method)
+    def locked(self: FakeStore, /, *args: P.args, **kwargs: P.kwargs) -> T:
+        with self._policy_lock:
+            return method(self, *args, **kwargs)
+
+    return locked
+
+
 class FakeStore:
     """Small in-memory store implementing SRF-01 semantics for service tests."""
 
     def __init__(self) -> None:
+        self._policy_lock = RLock()
         self.sessions: dict[str, Session] = {}
         self.tasks: dict[str, Task] = {}
         self.turns: dict[str, list[Turn]] = {}
@@ -639,6 +708,8 @@ class FakeStore:
         self.effects: dict[str, Effect] = {}
         self.steps: dict[tuple[str, int], AgentStep] = {}
         self.approvals: dict[str, Approval] = {}
+        self.grants: dict[str, ApprovalGrant] = {}
+        self.policy_rules: dict[str, PolicyRule] = {}
         self.controls: dict[str, ControlRequest] = {}
         self.recoveries: dict[str, RecoveryDisposition] = {}
         self.checkpoints: dict[str, SessionCheckpoint] = {}
@@ -824,17 +895,24 @@ class FakeStore:
             key=lambda effect: (effect.step_id, effect.batch_position),
         )
 
+    @_policy_atomic
     def get_approval(self, approval_id: str) -> Approval:
         try:
-            return self._copy(self.approvals[approval_id])
+            approval = self.approvals[approval_id]
+            expired = approval.expire()
+            if expired != approval:
+                self.approvals[approval_id] = self._copy(expired)
+                self._journal_approval(expired, "approval.expired")
+            return self._copy(expired)
         except KeyError as exc:
             raise KeyError(f"approval not found: {approval_id}") from exc
 
+    @_policy_atomic
     def list_approvals(self, task_id: str) -> list[Approval]:
         effect_ids = {effect.id for effect in self.effects.values() if effect.task_id == task_id}
         return sorted(
             [
-                self._copy(approval)
+                self.get_approval(approval.id)
                 for approval in self.approvals.values()
                 if approval.effect_id in effect_ids
             ],
@@ -889,10 +967,7 @@ class FakeStore:
         current = self.get_task(task.id)
         self._check_version(task.id, current.version, expected_version)
         self._require_session_guard(current, lease_guard)
-        if (
-            current.execution.append_only_optimization
-            != task.execution.append_only_optimization
-        ):
+        if current.execution.append_only_optimization != task.execution.append_only_optimization:
             raise ValueError("task append_only optimization is immutable")
         if current.session_id != task.session_id:
             raise ValueError("task session binding is immutable")
@@ -1311,6 +1386,14 @@ class FakeStore:
             self._check_version(task_id, task.version, expected_version)
             for effect in new_effects:
                 self.effects[effect.id] = self._copy(effect)
+            if effect.policy_evaluation is not None:
+                self._journal_policy(
+                    effect, effect.policy_evaluation.model_dump(mode="json"), "prepared"
+                )
+                if effect.policy_evaluation is not None:
+                    self._journal_policy(
+                        effect, effect.policy_evaluation.model_dump(mode="json"), "prepared"
+                    )
             if task.session_id is not None:
                 effect_ids = [effect.id for effect in new_effects]
                 self._journal(
@@ -1403,6 +1486,10 @@ class FakeStore:
         self.steps[key] = self._copy(safe_step)
         for effect in new_effects:
             self.effects[effect.id] = self._copy(effect)
+            if effect.policy_evaluation is not None:
+                self._journal_policy(
+                    effect, effect.policy_evaluation.model_dump(mode="json"), "prepared"
+                )
         if (
             provider_request is not None
             and provider_request.status is ProviderRequestStatus.RESPONSE_READY
@@ -1712,6 +1799,7 @@ class FakeStore:
 
         return ContinuationCodec().to_storage(value)
 
+    @_policy_atomic
     def decide_approval(
         self, approval: Approval, *, expected_version: int | None = None
     ) -> Approval:
@@ -1743,6 +1831,47 @@ class FakeStore:
         self._journal_approval(approval, "approval.decided")
         return self._copy(approval)
 
+    @_policy_atomic
+    def replace_effect_approval(
+        self,
+        effect_id: str,
+        replacement: Effect,
+        approval: Approval,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard,
+    ) -> tuple[Effect, Approval, Task]:
+        from patchloop.execution.approvals import validate_replacement
+
+        self._assert_guard(lease_guard)
+        original = self.get_effect(effect_id)
+        self._check_version(original.id, original.version, expected_version)
+        validate_replacement(original, replacement, approval)
+        if any(
+            item.id == replacement.id or item.identity_key() == replacement.identity_key()
+            for item in self.effects.values()
+        ):
+            raise EffectIdentityConflict(replacement.id, replacement.identity_key())
+        names = ("effects", "approvals", "grants", "tasks", "sessions", "executions", "events")
+        snapshot = {name: deepcopy(getattr(self, name)) for name in names}
+        try:
+            self.effects[replacement.id] = self._copy(replacement)
+            if replacement.policy_evaluation is not None:
+                self._journal_policy(
+                    replacement, replacement.policy_evaluation.model_dump(mode="json"), "prepared"
+                )
+            return self.request_effect_approval(
+                replacement.id,
+                approval,
+                expected_version=replacement.version,
+                lease_guard=lease_guard,
+            )
+        except Exception:
+            for name, value in snapshot.items():
+                setattr(self, name, value)
+            raise
+
+    @_policy_atomic
     def request_effect_approval(
         self,
         effect_id: str,
@@ -1789,6 +1918,25 @@ class FakeStore:
         task = self.get_task(current.task_id)
         if task.runtime_condition is not TaskRuntimeCondition.RUNNING:
             raise ValueError("approval can only pause a running Task")
+        if approval.supersedes_approval_id is not None:
+            previous = self.approvals[approval.supersedes_approval_id]
+            original = self.get_effect(previous.effect_id)
+            expired, cancelled = supersede_approval(previous, original, current)
+            self.approvals[expired.id] = self._copy(expired)
+            self.effects[cancelled.id] = self._copy(cancelled)
+            if previous.grant_id is not None:
+                grant = self.grants[previous.grant_id]
+                if grant.status == "active":
+                    revoked = grant.model_copy(
+                        update={
+                            "status": "revoked",
+                            "version": grant.version + 1,
+                            "revoked_at": datetime.now(UTC),
+                            "revoked_by": "superseded",
+                        }
+                    )
+                    self.grants[grant.id] = self._copy(revoked)
+                    self._journal_grant(revoked, "approval.grant_revoked")
         waiting_effect = current.model_copy(
             update={
                 "status": EffectStatus.WAITING_FOR_APPROVAL,
@@ -1813,12 +1961,15 @@ class FakeStore:
         self.executions[execution.id] = self._copy(waiting_execution)
         self.tasks[task.id] = self._copy(waiting_task)
         self._journal_approval(approval, "approval.requested")
+        if approval.supersedes_approval_id is not None:
+            self._journal_approval(approval, "approval.superseded")
         return (
             self._copy(waiting_effect),
             self._copy(approval),
             self._copy(waiting_task),
         )
 
+    @_policy_atomic
     def resolve_effect_approval(
         self,
         approval_id: str,
@@ -1829,7 +1980,10 @@ class FakeStore:
         workspace_ref: str,
         policy_version: str,
         config_version: str,
-    ) -> tuple[Approval, Effect, Task]:
+        scope_kind: ApprovalScopeKind = ApprovalScopeKind.ONCE,
+        expires_at: datetime | None = None,
+        reason: str | None = None,
+    ) -> ApprovalResolution:
         try:
             current = self._copy(self.approvals[approval_id])
         except KeyError as exc:
@@ -1838,14 +1992,26 @@ class FakeStore:
         task = self.get_task(effect.task_id)
         target = ApprovalStatus.APPROVED if approved else ApprovalStatus.DENIED
         if current.status is not ApprovalStatus.PENDING:
+            if current.scope_kind != scope_kind or current.expires_at != expires_at:
+                raise ApprovalConflict(current.id, "scope_mismatch", target.value)
             if (
                 approved
                 and current.status is ApprovalStatus.CONSUMED
                 and current.decision_source == source
             ):
-                return current, effect, task
+                return ApprovalResolution(
+                    current,
+                    effect,
+                    task,
+                    None if current.grant_id is None else self.get_grant(current.grant_id),
+                )
             if current.status is target and current.decision_source == source:
-                return current, effect, task
+                return ApprovalResolution(
+                    current,
+                    effect,
+                    task,
+                    None if current.grant_id is None else self.get_grant(current.grant_id),
+                )
             raise ApprovalConflict(current.id, current.status.value, target.value)
         self._check_version(current.id, current.version, expected_version)
         actual_config: str = (
@@ -1891,12 +2057,18 @@ class FakeStore:
             self.effects[effect.id] = self._copy(released_effect)
             self.tasks[task.id] = self._copy(released_task)
             self._journal_approval(decided, "approval.expired")
-            return (
-                self._copy(decided),
-                self._copy(released_effect),
-                self._copy(released_task),
+            return ApprovalResolution(
+                self._copy(decided), self._copy(released_effect), self._copy(released_task)
             )
-        decided = current.decide(approved, source)
+        scoped, grant = scope_approval(
+            current,
+            effect,
+            task,
+            scope_kind=scope_kind if approved else ApprovalScopeKind.ONCE,
+            expires_at=expires_at,
+            reason=reason,
+        )
+        decided = scoped.decide(approved, source)
         next_effect_status = EffectStatus.PREPARED if approved else EffectStatus.DENIED
         resolved_effect = effect.model_copy(
             update={
@@ -1916,8 +2088,119 @@ class FakeStore:
         self.effects[effect.id] = self._copy(resolved_effect)
         self.tasks[task.id] = self._copy(resolved_task)
         self._journal_approval(decided, "approval.decided")
-        return self._copy(decided), self._copy(resolved_effect), self._copy(resolved_task)
+        if grant is not None:
+            self.grants[grant.id] = self._copy(grant)
+            self._journal_grant(grant, "approval.grant_created")
+        return ApprovalResolution(
+            self._copy(decided),
+            self._copy(resolved_effect),
+            self._copy(resolved_task),
+            None if grant is None else self._copy(grant),
+        )
 
+    @_policy_atomic
+    def put_policy_rule(self, rule: PolicyRule) -> PolicyRule:
+        self.policy_rules[rule.id] = self._copy(rule)
+        return self._copy(rule)
+
+    @_policy_atomic
+    def list_policy_rules(self, workspace_ref: str) -> list[PolicyRule]:
+        return [
+            self._copy(rule)
+            for rule in sorted(self.policy_rules.values(), key=lambda r: r.id)
+            if rule.workspace_ref == workspace_ref
+        ]
+
+    def _journal_policy(self, effect: Effect, data: dict[str, object], phase: str) -> None:
+        task = self.get_task(effect.task_id)
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id("policy.evaluated", effect.id, phase),
+                event_type="policy.evaluated",
+                task_id=task.id,
+                data={"effect_id": effect.id, "phase": phase, "evaluation": data},
+            )
+
+    def _journal_grant(self, grant: ApprovalGrant, event_type: str) -> None:
+        approval = self.approvals[grant.source_approval_id]
+        effect = self.get_effect(approval.effect_id)
+        task = self.get_task(effect.task_id)
+        if task.session_id is not None:
+            self._journal(
+                self.get_session(task.session_id),
+                event_id=journal_event_id(event_type, grant.id, grant.version),
+                event_type=event_type,
+                task_id=task.id,
+                data={"grant": grant.model_dump(mode="json")},
+            )
+
+    @_policy_atomic
+    def get_grant(self, grant_id: str) -> ApprovalGrant:
+        grant = self.grants[grant_id]
+        expired = grant.expire()
+        if expired != grant:
+            self.grants[grant_id] = self._copy(expired)
+            self._journal_grant(expired, "approval.expired")
+        return self._copy(expired)
+
+    @_policy_atomic
+    def list_grants(self, scope_id: str) -> list[ApprovalGrant]:
+        return [
+            self.get_grant(grant.id)
+            for grant in sorted(self.grants.values(), key=lambda g: g.id)
+            if scope_id in {grant.workspace_ref, grant.session_id}
+        ]
+
+    @_policy_atomic
+    def consume_grant(
+        self,
+        grant_id: str,
+        descriptor: ActionDescriptor,
+        *,
+        expected_version: int,
+        policy_version: str,
+        config_version: str,
+        configured_rules: tuple[PolicyRule, ...] = (),
+    ) -> ApprovalGrant:
+        grant = self.get_grant(grant_id)
+        self._check_version(grant.id, grant.version, expected_version)
+        validate_grant_consumption(
+            grant,
+            descriptor,
+            rules=(*configured_rules, *self.list_policy_rules(descriptor.workspace_ref)),
+            policy_version=policy_version,
+            config_version=config_version,
+        )
+        consumed = grant.consume(
+            descriptor, policy_version=policy_version, config_version=config_version
+        )
+        self.grants[grant_id] = self._copy(consumed)
+        self._journal_grant(consumed, "approval.grant_consumed")
+        return self._copy(consumed)
+
+    @_policy_atomic
+    def revoke_grant(
+        self, grant_id: str, *, source: str, reason: str | None = None, expected_version: int
+    ) -> ApprovalGrant:
+        grant = self.get_grant(grant_id)
+        self._check_version(grant.id, grant.version, expected_version)
+        if grant.status != "active":
+            raise ApprovalConflict(grant.id, grant.status, "revoked")
+        revoked = grant.model_copy(
+            update={
+                "status": "revoked",
+                "revoked_at": datetime.now(UTC),
+                "revoked_by": SecretRedactor().redact_text(source),
+                "revoked_reason": None if reason is None else SecretRedactor().redact_text(reason),
+                "version": grant.version + 1,
+            }
+        )
+        self.grants[grant_id] = self._copy(revoked)
+        self._journal_grant(revoked, "approval.grant_revoked")
+        return self._copy(revoked)
+
+    @_policy_atomic
     def claim_effect(
         self,
         effect_id: str,
@@ -1929,8 +2212,14 @@ class FakeStore:
         policy_version: str | None = None,
         config_version: str | None = None,
         policy_decision: str | None = None,
+        configured_rules: tuple[PolicyRule, ...] = (),
+        current_evaluation: PolicyEvaluation | None = None,
         expected_input_sequence: int | None = None,
     ) -> Effect:
+        observed = self.get_effect(effect_id)
+        if observed.approval_id is not None:
+            self.get_approval(observed.approval_id)
+        self.list_grants(self.get_task(observed.task_id).repository)
         self._assert_guard(lease_guard)
         current = self._copy(self.effects[effect_id])
         self._check_version(effect_id, current.version, expected_version)
@@ -1966,26 +2255,77 @@ class FakeStore:
             raise ValueError(f"Effect is not executable: {effect_id}")
         if policy_decision is not None and policy_decision != persisted_decision:
             raise ValueError(f"Effect policy changed before execution: {effect_id}")
+        rules = tuple(self.list_policy_rules(actual_workspace))
+        grants = tuple(self.list_grants(actual_workspace))
+        policy_effect = current
+        if current.action_descriptor is None and current_evaluation is not None:
+            policy_effect = current.model_copy(
+                update={"action_descriptor": current_evaluation.descriptor}
+            )
+        claim_evaluation = evaluate_claim_policy(
+            policy_effect,
+            task,
+            rules=(*configured_rules, *rules),
+            grants=grants if current.action_descriptor is not None else (),
+            policy_version=policy_version or "",
+            config_version=config_version or actual_config,
+        )
+        matched_grant = next(
+            (
+                grant
+                for grant in grants
+                if claim_evaluation is not None and grant.id == claim_evaluation.matched_grant_id
+            ),
+            None,
+        )
+        consumed_grant = None
         consumed_approval = None
         if current.approval_id is not None:
             approval = self._copy(self.approvals[current.approval_id])
+            if approval.grant_id is not None:
+                bound_grant = next(
+                    (grant for grant in grants if grant.id == approval.grant_id), None
+                )
+                if (
+                    bound_grant is None
+                    or current.action_descriptor is None
+                    or not bound_grant.matches(
+                        current.action_descriptor,
+                        policy_version or approval.policy_version,
+                        config_version or actual_config,
+                    )
+                ):
+                    raise ApprovalConflict(approval.id, "grant_invalid", "consumed")
+                matched_grant = bound_grant
             consumed_approval = approval.consume(
                 current,
                 workspace_ref=workspace_ref or actual_workspace,
                 policy_version=policy_version or approval.policy_version,
                 config_version=config_version or actual_config,
             )
-        elif persisted_decision == "require_approval":
+        elif persisted_decision == "require_approval" and matched_grant is None:
             raise ApprovalConflict(effect_id, "missing", "consumed")
+        if matched_grant is not None and current.action_descriptor is not None:
+            consumed_grant = matched_grant.consume(
+                current.action_descriptor,
+                policy_version=policy_version or "",
+                config_version=config_version or actual_config,
+            )
         claimed = current.model_copy(
             update={
                 "status": EffectStatus.EXECUTING,
+                "action_descriptor": policy_effect.action_descriptor,
+                "policy_evaluation": current.policy_evaluation or current_evaluation,
                 "approval_id": None,
-                "approval_consumed": consumed_approval is not None,
+                "approval_consumed": consumed_approval is not None or consumed_grant is not None,
+                "consumed_grant_id": None if consumed_grant is None else consumed_grant.id,
                 "version": current.version + 1,
             }
         )
         self.effects[effect_id] = self._copy(claimed)
+        if consumed_grant is not None:
+            self.grants[consumed_grant.id] = self._copy(consumed_grant)
+            self._journal_grant(consumed_grant, "approval.grant_consumed")
         if consumed_approval is not None:
             self.approvals[consumed_approval.id] = self._copy(consumed_approval)
             self._journal_approval(consumed_approval, "approval.consumed")
@@ -1998,6 +2338,8 @@ class FakeStore:
                 trace_id=claimed.provider_call_id,
                 data={"effect_id": claimed.id},
             )
+        if claim_evaluation is not None:
+            self._journal_policy(claimed, claim_evaluation.model_dump(mode="json"), "claimed")
         return claimed
 
     def commit_effect(
@@ -2575,6 +2917,12 @@ class FakeStore:
                 "approval_id": approval.id,
                 "effect_id": effect.id,
                 "status": approval.status.value,
+                "supersedes_approval_id": approval.supersedes_approval_id,
+                "scope_kind": approval.scope_kind.value,
+                "grant_id": approval.grant_id,
+                "policy_version": approval.policy_version,
+                "config_version": approval.config_version,
+                "resource_summary": approval.resource_summary,
             },
         )
 

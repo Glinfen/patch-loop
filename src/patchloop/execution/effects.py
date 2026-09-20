@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from patchloop.domain import AgentStep, Task, ToolCall, ToolResult
 from patchloop.execution.models import Effect, EffectStatus, FileEffectPrecondition
+from patchloop.execution.policy import digest, normalize_path
 from patchloop.providers.base import ModelResponse
 from patchloop.security import PolicyDecision
 from patchloop.tools.gateway import ToolGateway
@@ -110,6 +111,25 @@ def persist_model_response_batch(
                         ),
                     }
                 )
+        descriptor = preparation.action_descriptor
+        evaluation = preparation.policy_evaluation
+        if descriptor is not None and preconditions:
+            descriptor = descriptor.model_copy(
+                update={
+                    "resource_state_fingerprint": digest(
+                        [
+                            {
+                                "path": normalize_path(item.path, gateway.context).value,
+                                "existed": item.existed,
+                                "sha256": item.original_sha256,
+                            }
+                            for item in preconditions
+                        ]
+                    )
+                }
+            )
+            if evaluation is not None:
+                evaluation = evaluation.model_copy(update={"descriptor": descriptor})
         effects.append(
             Effect(
                 id=stable_effect_id(task.id, step.id, position),
@@ -122,6 +142,8 @@ def persist_model_response_batch(
                 arguments_summary=preparation.normalized_arguments,
                 arguments_fingerprint=arguments_fingerprint(preparation.normalized_arguments),
                 policy_result=preparation.policy_result.model_dump(mode="json"),
+                action_descriptor=descriptor,
+                policy_evaluation=evaluation,
                 preparation_error=preparation_error,
                 file_preconditions=preconditions,
             )
@@ -167,11 +189,28 @@ def revalidate_effect_call(effect: Effect, call: ToolCall, gateway: ToolGateway)
         raise ValueError(f"action kind changed for prepared Effect: {effect.id}")
     if arguments_fingerprint(preparation.normalized_arguments) != effect.arguments_fingerprint:
         raise ValueError(f"arguments changed for prepared Effect: {effect.id}")
+    if (
+        effect.action_descriptor is not None
+        and effect.action_descriptor != preparation.action_descriptor
+    ):
+        raise ValueError(f"action descriptor changed for prepared Effect: {effect.id}")
+    if effect.policy_evaluation is not None and preparation.policy_evaluation is not None:
+        previous = effect.policy_evaluation
+        current = preparation.policy_evaluation
+        if (
+            previous.policy_version != current.policy_version
+            or previous.config_version != current.config_version
+        ):
+            raise ValueError(f"policy or config version changed for prepared Effect: {effect.id}")
     persisted_decision = effect.policy_result.get("decision")
     current_decision = preparation.policy_result.decision or PolicyDecision.DENY
     if current_decision is PolicyDecision.DENY:
         raise ValueError(preparation.policy_result.reason)
-    if current_decision.value != persisted_decision:
+    if current_decision.value != persisted_decision and not (
+        effect.supersedes_effect_id is not None
+        and persisted_decision == "require_approval"
+        and current_decision is PolicyDecision.ALLOW
+    ):
         raise ValueError(f"policy decision changed for prepared Effect: {effect.id}")
     return call.model_copy(update={"arguments": preparation.normalized_arguments})
 

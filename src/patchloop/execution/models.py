@@ -9,9 +9,10 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from patchloop.domain import TaskRuntimeCondition
+from patchloop.execution.policy import ActionDescriptor, ApprovalScopeKind, PolicyEvaluation
 from patchloop.security import CredentialBinding
 from patchloop.session.models import SessionCheckpoint
 
@@ -175,11 +176,14 @@ class Effect(BaseModel):
     batch_position: int = Field(ge=0)
     provider_call_id: str = Field(min_length=1)
     retry_of_effect_id: str | None = Field(default=None, min_length=1)
+    supersedes_effect_id: str | None = Field(default=None, min_length=1)
     tool_name: str = Field(min_length=1, max_length=256)
     action_kind: str = Field(default="unknown", min_length=1, max_length=64)
     arguments_summary: dict[str, Any] = Field(default_factory=dict)
     arguments_fingerprint: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
     policy_result: dict[str, Any] = Field(default_factory=dict)
+    action_descriptor: ActionDescriptor | None = None
+    policy_evaluation: PolicyEvaluation | None = None
     preparation_error: str | None = None
     file_preconditions: list[FileEffectPrecondition] = Field(default_factory=list)
     credential_bindings: list[CredentialBinding] = Field(default_factory=list)
@@ -187,6 +191,7 @@ class Effect(BaseModel):
     status: EffectStatus = EffectStatus.PREPARED
     approval_id: str | None = Field(default=None, min_length=1)
     approval_consumed: bool = False
+    consumed_grant_id: str | None = None
     reconciliation_evidence: dict[str, Any] = Field(default_factory=dict)
     result_ref: str | None = Field(default=None, min_length=1)
     observation_ref: str | None = Field(default=None, min_length=1)
@@ -228,6 +233,11 @@ class Effect(BaseModel):
             ],
             "tool_name": self.tool_name,
         }
+        # Preserve old persisted fingerprints until a descriptor has been regenerated.
+        if self.action_descriptor is not None:
+            payload["action_descriptor"] = self.action_descriptor.model_dump(mode="json")
+        if self.supersedes_effect_id is not None:
+            payload["supersedes_effect_id"] = self.supersedes_effect_id
         return hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -287,10 +297,36 @@ class Approval(BaseModel):
     policy_version: str = Field(min_length=1, max_length=128)
     config_version: str = Field(min_length=1, max_length=128)
     status: ApprovalStatus = ApprovalStatus.PENDING
+    scope_kind: ApprovalScopeKind = ApprovalScopeKind.ONCE
+    grant_id: str | None = None
+    expires_at: datetime | None = None
+    supersedes_approval_id: str | None = None
+    decision_reason: str | None = None
     decision_source: str | None = Field(default=None, min_length=1, max_length=256)
     decided_at: datetime | None = None
     version: int = Field(default=1, ge=1)
     created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("expires_at")
+    @classmethod
+    def timezone_required(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("expiry requires a timezone")
+        return value
+
+    def expire(self) -> Approval:
+        if (
+            self.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}
+            and self.expires_at is not None
+            and self.expires_at <= _now()
+        ):
+            return self.model_copy(
+                update={
+                    "status": ApprovalStatus.EXPIRED,
+                    "version": self.version + 1,
+                }
+            )
+        return self
 
     def same_request(self, other: Approval) -> bool:
         return (
@@ -303,6 +339,8 @@ class Approval(BaseModel):
             and self.resource_summary == other.resource_summary
             and self.policy_version == other.policy_version
             and self.config_version == other.config_version
+            and self.scope_kind == other.scope_kind
+            and self.expires_at == other.expires_at
             and self.status is other.status is ApprovalStatus.PENDING
         )
 
@@ -321,6 +359,7 @@ class Approval(BaseModel):
             and self.workspace_ref == workspace_ref
             and self.policy_version == policy_version
             and self.config_version == config_version
+            and (self.expires_at is None or self.expires_at > _now())
         )
 
     def decide(self, approved: bool, source: str) -> Approval:

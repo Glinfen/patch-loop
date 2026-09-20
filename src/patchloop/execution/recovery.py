@@ -147,6 +147,8 @@ class RecoveryService:
                 "status": EffectStatus.PREPARED,
                 "approval_id": None,
                 "approval_consumed": False,
+                "consumed_grant_id": None,
+                "policy_evaluation": None,
                 "reconciliation_evidence": {},
                 "result_ref": None,
                 "observation_ref": None,

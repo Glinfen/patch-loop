@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="3" skipped="0" tests="3" time="2.151" timestamp="2026-09-20T22:41:19.198435+08:00" hostname="门"><testcase classname="benchmarks.results.policy_review_repro" name="test_inline_interpreter_variants_remain_hard_denied[command0]" time="0.696"><failure message="AssertionError: {'case_id': 'inline-interpreter-variant', 'input': {'command': ['python', '-cprint(1)']}, 'action': 'execute', 'expected_decision': 'deny', ...}&#10;assert 'allow' == 'deny'&#10;  &#10;  - deny&#10;  + allow">tmp_path = WindowsPath('C:/Users/31677/AppData/Local/Temp/patchloop-policy-probes-0920/test_inline_interpreter_varian0')
+command = ['python', '-cprint(1)']
+
+    @pytest.mark.parametrize(
+        "command", [["python", "-cprint(1)"], ["node", "--eval=console.log(1)"]]
+    )
+    def test_inline_interpreter_variants_remain_hard_denied(tmp_path, command):
+        case = PolicyBypassCase(
+            id="inline-interpreter-variant",
+            action="execute",
+            arguments={"command": command},
+            expected_decision="deny",
+            rule="allow",
+        )
+        result = run_policy_case(case, tmp_path)
+        # The adapter only counts dispatches; it does not execute the command.
+&gt;       assert result["actual_decision"] == "deny", result
+E       AssertionError: {'case_id': 'inline-interpreter-variant', 'input': {'command': ['python', '-cprint(1)']}, 'action': 'execute', 'expected_decision': 'deny', ...}
+E       assert 'allow' == 'deny'
+E
+E         - deny
+E         + allow
+
+benchmarks\results\policy_review_repro.py:31: AssertionError</failure></testcase><testcase classname="benchmarks.results.policy_review_repro" name="test_inline_interpreter_variants_remain_hard_denied[command1]" time="0.638"><failure message="AssertionError: {'case_id': 'inline-interpreter-variant', 'input': {'command': ['node', '--eval=console.log(1)']}, 'action': 'execute', 'expected_decision': 'deny', ...}&#10;assert 'allow' == 'deny'&#10;  &#10;  - deny&#10;  + allow">tmp_path = WindowsPath('C:/Users/31677/AppData/Local/Temp/patchloop-policy-probes-0920/test_inline_interpreter_varian1')
+command = ['node', '--eval=console.log(1)']
+
+    @pytest.mark.parametrize(
+        "command", [["python", "-cprint(1)"], ["node", "--eval=console.log(1)"]]
+    )
+    def test_inline_interpreter_variants_remain_hard_denied(tmp_path, command):
+        case = PolicyBypassCase(
+            id="inline-interpreter-variant",
+            action="execute",
+            arguments={"command": command},
+            expected_decision="deny",
+            rule="allow",
+        )
+        result = run_policy_case(case, tmp_path)
+        # The adapter only counts dispatches; it does not execute the command.
+&gt;       assert result["actual_decision"] == "deny", result
+E       AssertionError: {'case_id': 'inline-interpreter-variant', 'input': {'command': ['node', '--eval=console.log(1)']}, 'action': 'execute', 'expected_decision': 'deny', ...}
+E       assert 'allow' == 'deny'
+E
+E         - deny
+E         + allow
+
+benchmarks\results\policy_review_repro.py:31: AssertionError</failure></testcase><testcase classname="benchmarks.results.policy_review_repro" name="test_windows_deny_pattern_matches_case_insensitively" time="0.003"><failure message="AssertionError: {'decision': 'allow', 'risk': 'medium', 'reason': 'policy decision: allow', 'descriptor': {'action': 'edit', 'tool_nam...Local\\Temp\\patchloop-policy-probes-0920\\test_windows_deny_pattern_matc0', 'session_id': 'review-session', ...}, ...}&#10;assert 'allow' == 'deny'&#10;  &#10;  - deny&#10;  + allow">tmp_path = WindowsPath('C:/Users/31677/AppData/Local/Temp/patchloop-policy-probes-0920/test_windows_deny_pattern_matc0')
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows case-insensitive path contract")
+    def test_windows_deny_pattern_matches_case_insensitively(tmp_path):
+        context = ToolContext(tmp_path)
+        descriptor = ActionDescriptor(
+            action="edit",
+            tool_name="edit_file",
+            workspace_ref=str(tmp_path),
+            session_id="review-session",
+            resources=(normalize_path("SRC/Main.py", context),),
+            arguments_fingerprint=digest({}),
+            side_effect=True,
+            risk="medium",
+        )
+        rules = tuple(
+            PolicyRule(
+                id=identifier,
+                source="project",
+                workspace_ref=str(tmp_path),
+                action="edit",
+                resource_kind="path",
+                pattern=pattern,
+                effect=effect,
+                policy_version="review-v1",
+            )
+            for identifier, pattern, effect in (
+                ("deny-uppercase", "SRC/**", "deny"),
+                ("allow-all", "**", "allow"),
+            )
+        )
+        result = PolicyEngine().evaluate(
+            descriptor, rules=rules, policy_version="review-v1", config_version="review-v1"
+        )
+&gt;       assert result.decision.value == "deny", result.model_dump(mode="json")
+E       AssertionError: {'decision': 'allow', 'risk': 'medium', 'reason': 'policy decision: allow', 'descriptor': {'action': 'edit', 'tool_nam...Local\\Temp\\patchloop-policy-probes-0920\\test_windows_deny_pattern_matc0', 'session_id': 'review-session', ...}, ...}
+E       assert 'allow' == 'deny'
+E
+E         - deny
+E         + allow
+
+benchmarks\results\policy_review_repro.py:67: AssertionError</failure></testcase></testsuite></testsuites>

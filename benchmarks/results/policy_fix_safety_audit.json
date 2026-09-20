@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "matrix_schema_version": 1,
+  "passed": true,
+  "failed_checks_by_metric": {
+    "confirmed_effect_reexecutions": 0,
+    "unknown_automatic_retries": 0,
+    "unauthorized_actions": 0,
+    "stale_owner_successful_commits": 0,
+    "approval_decision_failures": 0,
+    "event_integrity_failures": 0,
+    "cross_source_mismatches": 0,
+    "credential_leaks": 0,
+    "lease_token_leaks": 0
+  },
+  "results": [
+    {
+      "case_id": "independent-cross-source-recovery",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 2621.951100009028,
+      "stdout": ".                                                                        [100%]\n1 passed in 1.44s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "unknown-effect-does-not-auto-retry",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 1868.553600012092,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.96s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "noninteractive-write-requires-approval",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 3422.6524000114296,
+      "stdout": ".                                                                        [100%]\n1 passed in 2.49s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "stale-owner-cannot-commit",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 1595.6399999849964,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.67s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "approval-decision-is-persisted-once",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 4446.152499993332,
+      "stdout": "..                                                                       [100%]\n2 passed in 3.54s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "effect-event-transaction-rolls-back",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 1366.2600000097882,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.53s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "credential-redaction-across-database-and-trace",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 1968.5447000083514,
+      "stdout": ".                                                                        [100%]\n1 passed in 1.18s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "lease-events-hide-raw-tokens",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 1329.1538000048604,
+      "stdout": ".                                                                        [100%]\n1 passed in 0.49s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "policy-bypass-adapters",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 19991.95530000725,
+      "stdout": "...........................                                              [100%]\n27 passed in 19.03s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "policy-eight-worker-grants",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 5913.682699989295,
+      "stdout": "....                                                                     [100%]\n4 passed in 5.07s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "policy-stale-owner-grant",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 1454.5441000082064,
+      "stdout": "..                                                                       [100%]\n2 passed in 0.65s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "policy-revoked-source",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 2465.839300013613,
+      "stdout": ".                                                                        [100%]\n1 passed in 1.58s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "policy-inline-interpreter-variants",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 1154.7776999941561,
+      "stdout": "............                                                             [100%]\n12 passed in 0.34s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "policy-path-case-contract",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 1190.9971999994013,
+      "stdout": "....                                                                     [100%]\n4 passed in 0.41s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "policy-cross-process-scopes",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 18268.84139998583,
+      "stdout": "...                                                                      [100%]\n3 passed in 17.41s\n",
+      "stderr": "",
+      "error": null
+    },
+    {
+      "case_id": "policy-legacy-approval-migration",
+      "passed": true,
+      "exit_code": 0,
+      "duration_ms": 3714.98600000632,
+      "stdout": "..                                                                       [100%]\n2 passed in 2.82s\n",
+      "stderr": "",
+      "error": null
+    }
+  ],
+  "generated_at": "2026-09-20T14:53:12.229053+00:00"
+}

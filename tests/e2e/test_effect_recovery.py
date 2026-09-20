@@ -514,8 +514,10 @@ def test_explicit_approved_retry_executes_new_effect_once(tmp_path: Path) -> Non
         name=unknown.tool_name,
         arguments=unknown.arguments_summary,
     )
+    retry_context = ToolContext(repository)
+    retry_context.session_id = recovery_task.session_id or ""
     retry_preparation = ToolGateway(
-        ToolContext(repository),
+        retry_context,
         [ListFilesTool()],
         policy=retry_policy,
     ).prepare_call(task.id, retry_call)
@@ -531,6 +533,8 @@ def test_explicit_approved_retry_executes_new_effect_once(tmp_path: Path) -> Non
             "arguments_summary": retry_preparation.normalized_arguments,
             "arguments_fingerprint": arguments_fingerprint(retry_preparation.normalized_arguments),
             "policy_result": retry_preparation.policy_result.model_dump(mode="json"),
+            "policy_evaluation": retry_preparation.policy_evaluation,
+            "action_descriptor": retry_preparation.action_descriptor,
             "reconciliation_evidence": {},
             "result_ref": None,
             "observation_ref": None,

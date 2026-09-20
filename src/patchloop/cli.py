@@ -57,6 +57,8 @@ from patchloop.evaluation import (
 from patchloop.events import EventLogger, lease_owner_summary
 from patchloop.execution.approvals import ApprovalService
 from patchloop.execution.models import Approval, Effect
+from patchloop.execution.policy import ApprovalScopeKind
+from patchloop.execution.policy_config import load_policy_configuration
 from patchloop.execution.recovery import RecoveryService
 from patchloop.intelligence import (
     RepositoryIndexer,
@@ -123,10 +125,14 @@ app = typer.Typer(help="PatchLoop local-first coding agent runtime.", no_args_is
 task_app = typer.Typer(help="Create and inspect local tasks.", no_args_is_help=True)
 session_app = typer.Typer(help="Manage persistent PatchLoop sessions.", no_args_is_help=True)
 approval_app = typer.Typer(help="Inspect and decide persistent approvals.", no_args_is_help=True)
+grant_app = typer.Typer(help="Inspect and revoke exact scope grants.", no_args_is_help=True)
+policy_app = typer.Typer(help="Inspect policy rules and execution evidence.", no_args_is_help=True)
 provider_app = typer.Typer(help="Inspect and validate provider profiles.", no_args_is_help=True)
 app.add_typer(task_app, name="task")
 app.add_typer(session_app, name="session")
 app.add_typer(approval_app, name="approval")
+approval_app.add_typer(grant_app, name="grant")
+app.add_typer(policy_app, name="policy")
 app.add_typer(provider_app, name="provider")
 
 CLI_SCHEMA_VERSION = "1.0"
@@ -217,6 +223,7 @@ def session_group(
 
 
 @approval_app.callback()
+@policy_app.callback()
 def approval_group(
     context: typer.Context,
     repo: Annotated[
@@ -318,9 +325,7 @@ def _parse_append_only_optimization(
     layout: PromptCacheLayout,
 ) -> AppendOnlyOptimizationVersion:
     if value not in {"baseline_v1", "balanced_v1"}:
-        raise CliUsageError(
-            "append_only_optimization must be baseline_v1 or balanced_v1"
-        )
+        raise CliUsageError("append_only_optimization must be baseline_v1 or balanced_v1")
     optimization = cast(AppendOnlyOptimizationVersion, value)
     if optimization == "balanced_v1" and layout is not PromptCacheLayout.APPEND_ONLY:
         raise CliUsageError("balanced_v1 optimization requires append_only prompt layout")
@@ -391,6 +396,7 @@ def _session_runtime_service(
     provider: RuntimeProvider | None = None,
     provider_event_observer: ProviderEventObserver | None = None,
 ) -> SessionService:
+    policy = _tool_policy(task)
     if provider is None:
         binding = task.execution.provider
         provider = (
@@ -407,7 +413,7 @@ def _session_runtime_service(
         ToolContext(services.repository, sandbox),
         _all_tools(),
         trace,
-        _tool_policy(task),
+        policy,
     )
     runtime = AgentRuntime(
         provider,
@@ -502,11 +508,16 @@ def _echo_human_task(task: Task) -> None:
 
 def _tool_policy(task: Task) -> ToolPolicy:
     permissions = frozenset(PermissionLevel(value) for value in task.execution.allowed_permissions)
-    return ToolPolicy(
+    configuration = load_policy_configuration(Path(task.repository), session_id=task.session_id)
+    policy = ToolPolicy(
         permissions,
         approval_threshold=RiskLevel.MEDIUM,
         approval_handler=None,
+        policy_extension=configuration.enabled,
+        configuration_fingerprint=configuration.fingerprint,
     )
+    policy.rules = configuration.rules_for(policy.version)
+    return policy
 
 
 def _pause_interrupted_session(services: WorkspaceServices, session_id: str) -> None:
@@ -743,6 +754,22 @@ def _task_exit_code(task: Task) -> CliExitCode:
     }.get(_effective_task_status(task), CliExitCode.SUCCESS)
 
 
+def _approval_projection(services: WorkspaceServices, approval: Approval) -> dict[str, object]:
+    effect = services.store.get_effect(approval.effect_id)
+    evaluation = effect.policy_evaluation
+    return {
+        **approval.model_dump(mode="json"),
+        "action": approval.action_summary,
+        "resources": approval.resource_summary,
+        "matched_rule_ids": [] if evaluation is None else list(evaluation.matched_rule_ids),
+        "matched_grant_id": effect.consumed_grant_id
+        or (None if evaluation is None else evaluation.matched_grant_id),
+        "descriptor": None
+        if effect.action_descriptor is None
+        else effect.action_descriptor.model_dump(mode="json"),
+    }
+
+
 def _command_payload(
     services: WorkspaceServices,
     *,
@@ -787,13 +814,7 @@ def _command_payload(
             "status": status,
             "latest_sequence": 0 if session is None else session.event_sequence,
             "pending_approvals": [
-                {
-                    "id": approval.id,
-                    "effect_id": approval.effect_id,
-                    "status": approval.status.value,
-                    "action": approval.action_summary,
-                    "resources": approval.resource_summary,
-                }
+                _approval_projection(services, approval)
                 for approval in approvals
                 if approval.status.value == "pending"
             ],
@@ -999,7 +1020,7 @@ def show_session(
         "workspace": str(services.repository),
         "turns": [turn.model_dump(mode="json") for turn in turns],
         "active_task": presentation,
-        "approvals": [approval.model_dump(mode="json") for approval in approvals],
+        "approvals": [_approval_projection(services, approval) for approval in approvals],
         "recovery_required": [effect.model_dump(mode="json") for effect in recoveries],
         "next_commands": _next_commands(
             services,
@@ -1067,6 +1088,7 @@ def start_session_task(
         active_task = services.session.active_task(session_id)
         if active_task is not None:
             raise LeaseConflict(session_id, active_task.id)
+        load_policy_configuration(services.repository)
         provider, binding = _selected_provider(
             provider_profile,
             model=model,
@@ -1210,6 +1232,7 @@ def resume_session(
         task = services.session.active_task(session_id)
         if task is None:
             raise ValueError(f"session {session_id} has no active task")
+        load_policy_configuration(services.repository, session_id=task.session_id)
         provider = None
         if legacy_provider is not None:
             if task.execution.provider is not None:
@@ -1492,7 +1515,7 @@ def list_approvals(
     repository = json.dumps(str(services.repository), ensure_ascii=False)
     items = [
         {
-            **approval.model_dump(mode="json"),
+            **_approval_projection(services, approval),
             "next_commands": (
                 [
                     f"patchloop approval --repo {repository} decide {approval.id} --approve",
@@ -1504,6 +1527,16 @@ def list_approvals(
         }
         for approval in approvals
     ]
+    if not services.json_output:
+        for item in items:
+            typer.echo(
+                f"{item['id']} {item['status']} scope={item['scope_kind']} "
+                f"expires={item['expires_at']} policy={item['policy_version']}\n"
+                f"  {item['resources']}\n  rules={item['matched_rule_ids']}"
+            )
+            for command in cast(list[str], item["next_commands"]):
+                typer.echo(f"  {command}")
+        return
     _echo_json(
         _command_payload(
             services,
@@ -1524,6 +1557,11 @@ def decide_approval(
     approval_id: Annotated[str, typer.Argument()],
     approved: Optional[bool] = typer.Option(None, "--approve/--deny"),  # noqa: UP045
     source: Annotated[str, typer.Option()] = "cli",
+    scope: Annotated[ApprovalScopeKind, typer.Option()] = ApprovalScopeKind.ONCE,
+    expires: Annotated[
+        str | None, typer.Option(help="ISO-8601 expiry with timezone, within 24h.")
+    ] = None,
+    reason: Annotated[str | None, typer.Option()] = None,
 ) -> None:
     """Approve once or deny an exact persisted Effect request."""
 
@@ -1531,18 +1569,32 @@ def decide_approval(
     try:
         if approved is None:
             raise ValueError("choose exactly one of --approve or --deny")
-        approval, effect, task = services.approval.decide_current(
+        resolution = services.approval.decide_current(
             approval_id,
             approved=approved,
             source=source,
+            scope_kind=scope,
+            expires_at=None if expires is None else datetime.fromisoformat(expires),
+            reason=reason,
         )
     except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
         _command_error(exc)
+    approval, effect, task = resolution
+    if not services.json_output:
+        typer.echo(
+            f"{approval.id} {approval.status.value} scope={approval.scope_kind.value} "
+            f"grant={approval.grant_id} expires={approval.expires_at}\n"
+            f"{approval.resource_summary}"
+        )
+        return
     _echo_json(
         _command_payload(
             services,
             data={
-                "approval": approval.model_dump(mode="json"),
+                "approval": _approval_projection(services, approval),
+                "grant": None
+                if resolution.grant is None
+                else resolution.grant.model_dump(mode="json"),
                 "effect": effect.model_dump(mode="json"),
                 "task": task.model_dump(mode="json"),
             },
@@ -1550,6 +1602,118 @@ def decide_approval(
             task=task,
         )
     )
+
+
+@grant_app.command("list")
+def list_approval_grants(
+    context: typer.Context, scope_id: Annotated[str, typer.Argument()]
+) -> None:
+    services = _services_from_context(context)
+    try:
+        grants = services.approval.list_grants(scope_id)
+    except (ContractError, KeyError, ValueError) as exc:
+        _command_error(exc)
+    if not services.json_output:
+        for grant in grants:
+            typer.echo(
+                f"{grant.id} {grant.status} scope={grant.scope_kind.value} "
+                f"workspace={grant.workspace_ref} session={grant.session_id} "
+                f"expires={grant.expires_at} resources="
+                + ", ".join(resource.value for resource in grant.resources)
+            )
+        return
+    _echo_json(
+        _command_payload(
+            services,
+            data={
+                "items": [
+                    {
+                        **grant.model_dump(mode="json"),
+                        "next_commands": [
+                            f"patchloop approval --repo {json.dumps(str(services.repository))} "
+                            f"grant revoke {grant.id}"
+                        ]
+                        if grant.status == "active"
+                        else [],
+                    }
+                    for grant in grants
+                ]
+            },
+        )
+    )
+
+
+@grant_app.command("revoke")
+def revoke_approval_grant(
+    context: typer.Context,
+    grant_id: Annotated[str, typer.Argument()],
+    reason: Annotated[str | None, typer.Option()] = None,
+    source: Annotated[str, typer.Option()] = "cli",
+) -> None:
+    services = _services_from_context(context)
+    try:
+        grant = services.approval.revoke_grant(grant_id, source=source, reason=reason)
+    except (ContractError, KeyError, ValueError) as exc:
+        _command_error(exc)
+    if services.json_output:
+        _echo_json(_command_payload(services, data={"grant": grant.model_dump(mode="json")}))
+    else:
+        typer.echo(f"Revoked {grant.id}; subsequent effects require authorization.")
+
+
+@policy_app.command("list")
+def list_policy(context: typer.Context) -> None:
+    services = _services_from_context(context)
+    try:
+        configuration = load_policy_configuration(services.repository)
+        rules = [*configuration.rules, *services.store.list_policy_rules(str(services.repository))]
+    except (ContractError, KeyError, ValueError) as exc:
+        _command_error(exc)
+    if services.json_output:
+        _echo_json(
+            _command_payload(
+                services, data={"items": [rule.model_dump(mode="json") for rule in rules]}
+            )
+        )
+    else:
+        for rule in rules:
+            typer.echo(
+                f"{rule.id} {rule.source} {rule.effect.value} {rule.action.value} "
+                f"{rule.pattern} policy={rule.policy_version}"
+            )
+
+
+@policy_app.command("explain")
+def explain_policy(context: typer.Context, identifier: Annotated[str, typer.Argument()]) -> None:
+    services = _services_from_context(context)
+    try:
+        try:
+            effects = [services.store.get_effect(identifier)]
+        except KeyError:
+            services.store.get_task(identifier)
+            effects = services.store.list_effects(identifier)
+    except (ContractError, KeyError, TaskNotFoundError, ValueError) as exc:
+        _command_error(exc)
+    items = [
+        {
+            "effect_id": effect.id,
+            "status": effect.status.value,
+            "descriptor": None
+            if effect.action_descriptor is None
+            else effect.action_descriptor.model_dump(mode="json"),
+            "evaluation": None
+            if effect.policy_evaluation is None
+            else effect.policy_evaluation.model_dump(mode="json"),
+            "matched_grant_id": effect.consumed_grant_id,
+            "policy_result": effect.policy_result,
+        }
+        for effect in effects
+    ]
+    if services.json_output:
+        _echo_json(_command_payload(services, data={"items": items}))
+    else:
+        for item in items:
+            typer.echo(json.dumps(item, ensure_ascii=False, indent=2))
 
 
 def _all_tools() -> list[Tool]:
@@ -2510,13 +2674,14 @@ def run_task(
     try:
         if sum((json_output, events_jsonl, human)) > 1:
             raise CliUsageError("--json, --events-jsonl, and --human are mutually exclusive")
+        load_policy_configuration(services.repository)
         provider, binding = _selected_provider(
             provider_profile,
             model=model,
             config_path=provider_config,
             env_file=env_file,
         )
-    except (CliUsageError, ProviderError) as exc:
+    except (ValueError, ProviderError) as exc:
         _command_error(exc)
     budget = TaskBudget(
         max_steps=max_steps,
@@ -2620,6 +2785,7 @@ def resume_task(
     services = _workspace_services(repository)
     try:
         task = services.session.task(task_id)
+        load_policy_configuration(services.repository, session_id=task.session_id)
         provider = None
         if legacy_provider is not None:
             if task.execution.provider is not None:

@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "independent-cross-source-recovery",
+      "metrics": [
+        "confirmed_effect_reexecutions",
+        "event_integrity_failures",
+        "cross_source_mismatches",
+        "lease_token_leaks"
+      ],
+      "test_nodeid": "tests/e2e/test_srf07_consistency_audit.py::test_independent_audit_matches_database_trace_and_final_file"
+    },
+    {
+      "id": "unknown-effect-does-not-auto-retry",
+      "metrics": [
+        "unknown_automatic_retries"
+      ],
+      "test_nodeid": "tests/integration/test_session_runtime.py::test_ordinary_session_resume_stops_at_existing_recovery_requirement"
+    },
+    {
+      "id": "noninteractive-write-requires-approval",
+      "metrics": [
+        "unauthorized_actions"
+      ],
+      "test_nodeid": "tests/integration/test_cli.py::test_legacy_run_requires_persisted_approval_before_non_interactive_write"
+    },
+    {
+      "id": "stale-owner-cannot-commit",
+      "metrics": [
+        "stale_owner_successful_commits"
+      ],
+      "test_nodeid": "tests/integration/test_runtime_ownership.py::test_stale_owner_cannot_write_runtime_or_memory_records"
+    },
+    {
+      "id": "approval-decision-is-persisted-once",
+      "metrics": [
+        "approval_decision_failures"
+      ],
+      "test_nodeid": "tests/e2e/test_approval_recovery.py::test_runtime_persists_approval_and_yields_without_tool_failure"
+    },
+    {
+      "id": "effect-event-transaction-rolls-back",
+      "metrics": [
+        "event_integrity_failures"
+      ],
+      "test_nodeid": "tests/unit/test_session_store_transactions.py::test_commit_effect_rolls_back_when_event_insert_fails"
+    },
+    {
+      "id": "credential-redaction-across-database-and-trace",
+      "metrics": [
+        "credential_leaks"
+      ],
+      "test_nodeid": "tests/e2e/test_security_observability.py::test_repository_prompt_injection_and_memory_credentials_are_filtered"
+    },
+    {
+      "id": "lease-events-hide-raw-tokens",
+      "metrics": [
+        "lease_token_leaks"
+      ],
+      "test_nodeid": "tests/integration/test_execution_ownership.py::test_lease_events_are_safe_and_actionable"
+    },
+    {
+      "id": "policy-bypass-adapters",
+      "metrics": [
+        "unauthorized_actions",
+        "credential_leaks",
+        "event_integrity_failures"
+      ],
+      "test_nodeid": "tests/e2e/test_policy_bypass_matrix.py::test_policy_bypass_matrix"
+    },
+    {
+      "id": "policy-eight-worker-grants",
+      "metrics": [
+        "unauthorized_actions",
+        "event_integrity_failures",
+        "approval_decision_failures"
+      ],
+      "test_nodeid": "tests/integration/test_policy_persistence.py::test_eight_workers_consume_or_revoke_finite_grant_atomically"
+    },
+    {
+      "id": "policy-stale-owner-grant",
+      "metrics": [
+        "stale_owner_successful_commits",
+        "unauthorized_actions"
+      ],
+      "test_nodeid": "tests/integration/test_policy_persistence.py::test_released_owner_cannot_consume_grant_on_claim"
+    },
+    {
+      "id": "policy-revoked-source",
+      "metrics": [
+        "unauthorized_actions",
+        "approval_decision_failures"
+      ],
+      "test_nodeid": "tests/e2e/test_policy_runtime.py::test_revoked_grant_blocks_even_its_source_approval_before_backend"
+    },
+    {
+      "id": "policy-inline-interpreter-variants",
+      "metrics": [
+        "unauthorized_actions",
+        "approval_decision_failures"
+      ],
+      "test_nodeid": "tests/unit/test_policy_engine.py::test_inline_interpreter_variants_cannot_be_allowed_or_granted"
+    },
+    {
+      "id": "policy-path-case-contract",
+      "metrics": [
+        "unauthorized_actions",
+        "approval_decision_failures"
+      ],
+      "test_nodeid": "tests/unit/test_policy_engine.py::test_path_rule_case_matches_platform_contract"
+    },
+    {
+      "id": "policy-cross-process-scopes",
+      "metrics": [
+        "unauthorized_actions",
+        "approval_decision_failures"
+      ],
+      "test_nodeid": "tests/e2e/test_policy_runtime.py::test_scope_approval_and_resume_in_separate_processes"
+    },
+    {
+      "id": "policy-legacy-approval-migration",
+      "metrics": [
+        "unauthorized_actions",
+        "approval_decision_failures"
+      ],
+      "test_nodeid": "tests/e2e/test_policy_runtime.py::test_legacy_once_approval_regenerates_descriptor_without_creating_grant"
+    }
+  ]
+}

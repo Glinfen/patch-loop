@@ -1,0 +1,620 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-09-20T14:35:02.547798+00:00",
+  "revision": "5141f58b41dc65268f5259b6e07bb7fa910fe84a",
+  "working_tree_fingerprint": "45e9b69ce56767bb7e49873ef2c3742560d02302399c0069fc662a638233aeed",
+  "status": "passed",
+  "scope": "Approval/Policy control-plane development; external execution isolation is outside this plan",
+  "tasks": [
+    {
+      "id": "TASK-01",
+      "status": "passed",
+      "requirement": "Canonical descriptors, normalizers, cross-process digest and Windows junction boundary",
+      "test_evidence": [
+        "tests.unit.test_policy_engine::test_canonical_descriptor_order_and_digest",
+        "tests.unit.test_policy_engine::test_resource_digest_cannot_be_forged",
+        "tests.unit.test_policy_engine::test_path_normalization_and_escape",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv0]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv1]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv2]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv3]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv4]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv5]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv6]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv7]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv8]",
+        "tests.unit.test_policy_engine::test_network_normalization",
+        "tests.unit.test_policy_engine::test_package_and_skill_versions_remain_distinct",
+        "tests.unit.test_policy_engine::test_multiresource_deny_and_ask_aggregation",
+        "tests.unit.test_policy_engine::test_grants_are_exact_and_deny_still_wins",
+        "tests.unit.test_policy_engine::test_default_side_effect_asks_and_source_tie_is_deterministic",
+        "tests.unit.test_policy_engine::test_raw_selector_cannot_name_sensitive_path[.env]",
+        "tests.unit.test_policy_engine::test_raw_selector_cannot_name_sensitive_path[.env.local]",
+        "tests.unit.test_policy_engine::test_raw_selector_cannot_name_sensitive_path[.git/config]",
+        "tests.unit.test_policy_engine::test_raw_selector_cannot_name_sensitive_path[.ssh/id_ed25519]",
+        "tests.unit.test_policy_engine::test_raw_external_selector_fails_closed[network-network_target-{\"host\":\"example.org\"}]",
+        "tests.unit.test_policy_engine::test_raw_external_selector_fails_closed[dependency_install-package-[\"pip\",\"demo\"]]",
+        "tests.unit.test_policy_engine::test_raw_external_selector_fails_closed[skill_execute-skill-[\"registry\",\"demo\"]]",
+        "tests.unit.test_policy_engine::test_digest_is_stable_in_a_fresh_python_process",
+        "tests.unit.test_policy_engine::test_windows_junction_cannot_escape_workspace"
+      ]
+    },
+    {
+      "id": "TASK-02",
+      "status": "passed",
+      "requirement": "Deny precedence, precise matching, multi-resource aggregation and compatible ToolPolicy",
+      "test_evidence": [
+        "tests.unit.test_policy_engine::test_canonical_descriptor_order_and_digest",
+        "tests.unit.test_policy_engine::test_resource_digest_cannot_be_forged",
+        "tests.unit.test_policy_engine::test_path_normalization_and_escape",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv0]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv1]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv2]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv3]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv4]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv5]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv6]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv7]",
+        "tests.unit.test_policy_engine::test_unsafe_commands_have_safe_errors[argv8]",
+        "tests.unit.test_policy_engine::test_network_normalization",
+        "tests.unit.test_policy_engine::test_package_and_skill_versions_remain_distinct",
+        "tests.unit.test_policy_engine::test_multiresource_deny_and_ask_aggregation",
+        "tests.unit.test_policy_engine::test_grants_are_exact_and_deny_still_wins",
+        "tests.unit.test_policy_engine::test_default_side_effect_asks_and_source_tie_is_deterministic",
+        "tests.unit.test_policy_engine::test_raw_selector_cannot_name_sensitive_path[.env]",
+        "tests.unit.test_policy_engine::test_raw_selector_cannot_name_sensitive_path[.env.local]",
+        "tests.unit.test_policy_engine::test_raw_selector_cannot_name_sensitive_path[.git/config]",
+        "tests.unit.test_policy_engine::test_raw_selector_cannot_name_sensitive_path[.ssh/id_ed25519]",
+        "tests.unit.test_policy_engine::test_raw_external_selector_fails_closed[network-network_target-{\"host\":\"example.org\"}]",
+        "tests.unit.test_policy_engine::test_raw_external_selector_fails_closed[dependency_install-package-[\"pip\",\"demo\"]]",
+        "tests.unit.test_policy_engine::test_raw_external_selector_fails_closed[skill_execute-skill-[\"registry\",\"demo\"]]",
+        "tests.unit.test_security::test_secret_redactor_covers_api_keys_bearer_tokens_and_named_fields",
+        "tests.unit.test_security::test_persisted_tool_arguments_resolve_only_declared_credential_references",
+        "tests.unit.test_security::test_unreferenced_redaction_cannot_be_materialized_as_a_tool_argument",
+        "tests.unit.test_security::test_gateway_rejects_unresolved_persisted_arguments[arguments0]",
+        "tests.unit.test_security::test_gateway_rejects_unresolved_persisted_arguments[arguments1]",
+        "tests.unit.test_security::test_untrusted_content_guard_redacts_credentials_and_blocks_instructions",
+        "tests.unit.test_security::test_trace_and_sqlite_persistence_redact_secrets",
+        "tests.unit.test_security::test_medium_risk_write_requires_and_records_approval",
+        "tests.unit.test_security::test_network_capable_command_is_denied_before_execution",
+        "tests.unit.test_security::test_path_denial_cannot_be_overridden_by_approval_callback",
+        "tests.unit.test_security::test_security_decision_arguments_are_valid_json",
+        "tests.unit.test_policy_engine::test_digest_is_stable_in_a_fresh_python_process",
+        "tests.unit.test_policy_engine::test_windows_junction_cannot_escape_workspace"
+      ]
+    },
+    {
+      "id": "TASK-03",
+      "status": "passed",
+      "requirement": "SQLite/Fake schema, atomic scoped decisions and eight-worker consumption/revocation",
+      "test_evidence": [
+        "tests.integration.test_policy_persistence::test_scope_creation_consumption_revocation_and_events[sqlite]",
+        "tests.integration.test_policy_persistence::test_scope_creation_consumption_revocation_and_events[fake]",
+        "tests.integration.test_policy_persistence::test_resource_requires_expiry_and_duplicate_cannot_expand_scope[sqlite]",
+        "tests.integration.test_policy_persistence::test_resource_requires_expiry_and_duplicate_cannot_expand_scope[fake]",
+        "tests.integration.test_policy_persistence::test_lazy_expiry_is_persisted_once[sqlite]",
+        "tests.integration.test_policy_persistence::test_lazy_expiry_is_persisted_once[fake]",
+        "tests.integration.test_policy_persistence::test_v5_database_upgrades_to_v6_without_changing_legacy_approval_defaults",
+        "tests.integration.test_policy_persistence::test_cli_scope_grant_list_explain_and_revoke[sqlite]",
+        "tests.integration.test_policy_persistence::test_cli_scope_grant_list_explain_and_revoke[fake]",
+        "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[sqlite-False]",
+        "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[sqlite-True]",
+        "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[fake-False]",
+        "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[fake-True]",
+        "tests.integration.test_policy_persistence::test_released_owner_cannot_consume_grant_on_claim[sqlite]",
+        "tests.integration.test_policy_persistence::test_released_owner_cannot_consume_grant_on_claim[fake]",
+        "tests.integration.test_policy_persistence::test_approval_replacement_preserves_history_and_rejects_stale_submission[sqlite]",
+        "tests.integration.test_policy_persistence::test_approval_replacement_preserves_history_and_rejects_stale_submission[fake]",
+        "tests.integration.test_policy_persistence::test_direct_grant_consumption_rechecks_deny_rules[sqlite]",
+        "tests.integration.test_policy_persistence::test_direct_grant_consumption_rechecks_deny_rules[fake]",
+        "tests.unit.test_sqlite_support::test_open_connection_reads_back_required_configuration",
+        "tests.unit.test_sqlite_support::test_verify_connection_config_rejects_unconfigured_connection",
+        "tests.unit.test_sqlite_support::test_connect_commits_on_success_and_rolls_back_on_failure",
+        "tests.unit.test_sqlite_support::test_connect_write_commits_and_rolls_back_immediate_transactions",
+        "tests.unit.test_sqlite_support::test_runtime_schema_migration_runs_before_memory_migration",
+        "tests.unit.test_sqlite_support::test_memory_migration_still_requires_runtime_tables",
+        "tests.unit.test_sqlite_support::test_future_runtime_schema_version_refuses_to_start",
+        "tests.unit.test_sqlite_support::test_incomplete_runtime_schema_refuses_to_start",
+        "tests.unit.test_sqlite_support::test_incomplete_task_projection_columns_refuse_to_start",
+        "tests.unit.test_sqlite_support::test_runtime_migration_failure_rolls_back_fresh_schema",
+        "tests.unit.test_sqlite_support::test_runtime_migration_failure_preserves_legacy_task_rows",
+        "tests.unit.test_sqlite_support::test_initialize_runtime_schema_is_idempotent",
+        "tests.unit.test_sqlite_support::test_runtime_v4_migrates_provider_tables_once_and_preserves_tasks",
+        "tests.unit.test_sqlite_support::test_runtime_v5_migration_failure_rolls_back_only_new_schema"
+      ]
+    },
+    {
+      "id": "TASK-04",
+      "status": "passed",
+      "requirement": "Once/session/resource lifecycle, renewal, supersedes and explicit recovery",
+      "test_evidence": [
+        "tests.e2e.test_approval_recovery::test_runtime_persists_approval_and_yields_without_tool_failure[legacy]",
+        "tests.e2e.test_approval_recovery::test_runtime_persists_approval_and_yields_without_tool_failure[append_only]",
+        "tests.e2e.test_approval_recovery::test_hard_permission_denial_cannot_be_approved",
+        "tests.e2e.test_approval_recovery::test_operator_can_deny_pending_effect[legacy-baseline_v1]",
+        "tests.e2e.test_approval_recovery::test_operator_can_deny_pending_effect[append_only-baseline_v1]",
+        "tests.e2e.test_approval_recovery::test_operator_can_deny_pending_effect[append_only-balanced_v1]",
+        "tests.e2e.test_approval_recovery::test_changed_execution_conditions_expire_old_approval",
+        "tests.e2e.test_policy_runtime::test_session_grant_survives_restart_and_is_consumed_for_each_effect",
+        "tests.e2e.test_policy_runtime::test_revoked_grant_blocks_even_its_source_approval_before_backend",
+        "tests.e2e.test_policy_runtime::test_changed_network_target_creates_linked_approval_and_revokes_old_grant",
+        "tests.e2e.test_policy_runtime::test_resource_grant_reuses_exact_target_across_new_session_after_restart",
+        "tests.e2e.test_policy_runtime::test_legacy_once_approval_regenerates_descriptor_without_creating_grant",
+        "tests.e2e.test_policy_runtime::test_direct_tool_call_cannot_bypass_gateway",
+        "tests.e2e.test_policy_runtime::test_policy_version_drift_requires_new_approval_before_backend",
+        "tests.e2e.test_policy_runtime::test_expired_resource_grant_renews_before_backend",
+        "tests.unit.test_approval_service::test_exact_preauthorization_matches_every_execution_dimension",
+        "tests.unit.test_approval_service::test_preauthorization_is_not_a_fuzzy_or_reusable_match",
+        "tests.unit.test_approval_service::test_approval_binding_detects_effect_or_environment_changes",
+        "tests.e2e.test_policy_runtime::test_changed_package_or_skill_requires_linked_new_approval[dependency_install-initial0-changed0]",
+        "tests.e2e.test_policy_runtime::test_changed_package_or_skill_requires_linked_new_approval[dependency_install-initial1-changed1]",
+        "tests.e2e.test_policy_runtime::test_changed_package_or_skill_requires_linked_new_approval[skill_execute-initial2-changed2]"
+      ]
+    },
+    {
+      "id": "TASK-05",
+      "status": "passed",
+      "requirement": "Runtime/Gateway claim checks, direct-call guard and external-action adapters",
+      "test_evidence": [
+        "tests.e2e.test_effect_recovery::test_effect_identity_is_stable_and_preserves_model_batch_order",
+        "tests.e2e.test_effect_recovery::test_resume_marks_unverifiable_executing_effect_unknown",
+        "tests.e2e.test_effect_recovery::test_resume_confirms_completed_file_effect_from_target_digest[baseline_v1]",
+        "tests.e2e.test_effect_recovery::test_resume_confirms_completed_file_effect_from_target_digest[balanced_v1]",
+        "tests.e2e.test_effect_recovery::test_resume_requires_recovery_when_file_state_cannot_be_proven",
+        "tests.e2e.test_effect_recovery::test_confirmed_failure_is_replayed_without_becoming_unknown",
+        "tests.e2e.test_effect_recovery::test_cancelled_prepared_effect_is_paired_without_backend_execution",
+        "tests.e2e.test_effect_recovery::test_changed_file_cancels_prepared_effect_with_paired_observation",
+        "tests.e2e.test_effect_recovery::test_explicit_approved_retry_executes_new_effect_once",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[network-default]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[network-allow]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[network-deny]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[dependency_install-default]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[dependency_install-allow]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[dependency_install-deny]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_load-default]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_load-allow]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_load-deny]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_execute-default]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_execute-allow]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_execute-deny]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[shell]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[pipeline]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[redirect]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[interpreter]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[network-command]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[git-push]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[path-traversal]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[url-credentials]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[package-credentials]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill-credentials]",
+        "tests.e2e.test_policy_runtime::test_session_grant_survives_restart_and_is_consumed_for_each_effect",
+        "tests.e2e.test_policy_runtime::test_revoked_grant_blocks_even_its_source_approval_before_backend",
+        "tests.e2e.test_policy_runtime::test_changed_network_target_creates_linked_approval_and_revokes_old_grant",
+        "tests.e2e.test_policy_runtime::test_resource_grant_reuses_exact_target_across_new_session_after_restart",
+        "tests.e2e.test_policy_runtime::test_legacy_once_approval_regenerates_descriptor_without_creating_grant",
+        "tests.e2e.test_policy_runtime::test_direct_tool_call_cannot_bypass_gateway",
+        "tests.e2e.test_policy_runtime::test_policy_version_drift_requires_new_approval_before_backend",
+        "tests.e2e.test_policy_runtime::test_expired_resource_grant_renews_before_backend",
+        "tests.integration.test_execution_ownership::test_execution_claim_reserves_session_and_task_slot",
+        "tests.integration.test_execution_ownership::test_invalid_workspace_fails_before_claiming_execution",
+        "tests.integration.test_execution_ownership::test_workspace_alias_contends_and_failure_releases_execution",
+        "tests.integration.test_execution_ownership::test_different_workspaces_have_independent_writers",
+        "tests.integration.test_execution_ownership::test_default_lease_policy_pins_ttl_and_heartbeat",
+        "tests.integration.test_execution_ownership::test_renew_and_assert_use_injected_clock[fake]",
+        "tests.integration.test_execution_ownership::test_renew_and_assert_use_injected_clock[sqlite]",
+        "tests.integration.test_execution_ownership::test_expired_owner_is_fenced_by_takeover_with_new_generation[fake]",
+        "tests.integration.test_execution_ownership::test_expired_owner_is_fenced_by_takeover_with_new_generation[sqlite]",
+        "tests.integration.test_execution_ownership::test_owner_is_part_of_renew_release_and_assert_guard[fake]",
+        "tests.integration.test_execution_ownership::test_owner_is_part_of_renew_release_and_assert_guard[sqlite]",
+        "tests.integration.test_execution_ownership::test_release_preserves_fencing_generation_for_next_owner[fake]",
+        "tests.integration.test_execution_ownership::test_release_preserves_fencing_generation_for_next_owner[sqlite]",
+        "tests.integration.test_execution_ownership::test_lease_events_are_safe_and_actionable",
+        "tests.integration.test_execution_ownership::test_contention_release_and_takeover_events",
+        "tests.integration.test_execution_takeover_recovery::test_takeover_confirms_absent_command_before_new_writer",
+        "tests.integration.test_execution_takeover_recovery::test_takeover_terminates_verified_live_command_before_new_writer",
+        "tests.integration.test_execution_takeover_recovery::test_unverifiable_cleanup_blocks_takeover_and_requires_recovery",
+        "tests.integration.test_execution_takeover_recovery::test_workspace_takeover_reconciles_command_from_another_task",
+        "tests.integration.test_execution_takeover_recovery::test_workspace_recovery_failure_releases_new_execution",
+        "tests.e2e.test_policy_runtime::test_changed_package_or_skill_requires_linked_new_approval[dependency_install-initial0-changed0]",
+        "tests.e2e.test_policy_runtime::test_changed_package_or_skill_requires_linked_new_approval[dependency_install-initial1-changed1]",
+        "tests.e2e.test_policy_runtime::test_changed_package_or_skill_requires_linked_new_approval[skill_execute-initial2-changed2]"
+      ]
+    },
+    {
+      "id": "TASK-06",
+      "status": "passed",
+      "requirement": "CLI projections, scope/revoke/explain and configuration provenance",
+      "test_evidence": [
+        "tests.integration.test_policy_persistence::test_cli_scope_grant_list_explain_and_revoke[sqlite]",
+        "tests.integration.test_policy_persistence::test_cli_scope_grant_list_explain_and_revoke[fake]",
+        "tests.integration.test_session_cli::test_cli_registers_session_and_approval_groups",
+        "tests.integration.test_session_cli::test_session_group_resolves_explicit_workspace_for_services",
+        "tests.integration.test_session_cli::test_approval_group_defaults_to_current_workspace",
+        "tests.integration.test_session_cli::test_session_and_approval_groups_reject_missing_repository",
+        "tests.integration.test_session_cli::test_session_cli_emits_stable_json_errors_and_conflict_exit_code",
+        "tests.integration.test_session_cli::test_competing_resume_returns_machine_readable_conflict",
+        "tests.integration.test_session_cli::test_task_runtime_states_have_distinct_exit_codes[waiting_for_approval-active-10]",
+        "tests.integration.test_session_cli::test_task_runtime_states_have_distinct_exit_codes[paused-active-11]",
+        "tests.integration.test_session_cli::test_task_runtime_states_have_distinct_exit_codes[recovery_required-active-13]",
+        "tests.integration.test_session_cli::test_task_runtime_states_have_distinct_exit_codes[ended-failed-1]",
+        "tests.integration.test_session_cli::test_task_runtime_states_have_distinct_exit_codes[ended-cancelled-14]",
+        "tests.integration.test_session_cli::test_session_cli_creates_lists_shows_and_closes",
+        "tests.integration.test_session_cli::test_session_cli_sends_messages_and_requests_controls",
+        "tests.integration.test_session_cli::test_session_enter_persists_messages_and_exit_does_not_cancel",
+        "tests.integration.test_session_cli::test_runtime_ctrl_c_persists_pause_and_waits_for_settlement",
+        "tests.integration.test_session_cli::test_enter_ctrl_c_requests_pause_instead_of_normal_exit",
+        "tests.integration.test_session_cli::test_second_terminal_process_can_send_and_pause_blocked_runtime",
+        "tests.integration.test_session_cli::test_session_start_and_approval_commands_use_persisted_services",
+        "tests.integration.test_session_cli::test_session_recover_requires_separate_duplicate_risk_acknowledgement",
+        "tests.unit.test_policy_config::test_configuration_is_stable_and_changes_invalidate_policy_version",
+        "tests.unit.test_policy_config::test_invalid_or_forged_rules_fail_closed[entry0]",
+        "tests.unit.test_policy_config::test_invalid_or_forged_rules_fail_closed[entry1]",
+        "tests.unit.test_policy_config::test_invalid_or_forged_rules_fail_closed[entry2]",
+        "tests.unit.test_policy_config::test_invalid_or_forged_rules_fail_closed[entry3]",
+        "tests.unit.test_policy_config::test_invalid_or_forged_rules_fail_closed[entry4]",
+        "tests.unit.test_policy_config::test_invalid_or_forged_rules_fail_closed[entry5]",
+        "tests.unit.test_policy_config::test_system_deny_survives_project_allow",
+        "tests.unit.test_policy_config::test_invalid_policy_is_rejected_before_provider_initialization",
+        "tests.unit.test_policy_config::test_explicit_missing_configuration_is_not_silently_ignored"
+      ]
+    },
+    {
+      "id": "TASK-07",
+      "status": "passed",
+      "requirement": "Bypass matrix, safety audit, concurrency, migrations and regression",
+      "test_evidence": [
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[network-default]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[network-allow]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[network-deny]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[dependency_install-default]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[dependency_install-allow]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[dependency_install-deny]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_load-default]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_load-allow]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_load-deny]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_execute-default]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_execute-allow]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill_execute-deny]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[shell]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[pipeline]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[redirect]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[interpreter]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[network-command]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[git-push]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[path-traversal]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[url-credentials]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[package-credentials]",
+        "tests.e2e.test_policy_bypass_matrix::test_policy_bypass_matrix[skill-credentials]",
+        "tests.e2e.test_security_observability::test_network_attack_is_blocked_redacted_and_replayable",
+        "tests.e2e.test_security_observability::test_repository_prompt_injection_and_memory_credentials_are_filtered",
+        "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[sqlite-False]",
+        "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[sqlite-True]",
+        "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[fake-False]",
+        "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[fake-True]",
+        "tests.integration.test_policy_persistence::test_released_owner_cannot_consume_grant_on_claim[sqlite]",
+        "tests.integration.test_policy_persistence::test_released_owner_cannot_consume_grant_on_claim[fake]"
+      ]
+    }
+  ],
+  "verification": {
+    "policy_regression.xml": {
+      "tests": 941,
+      "passed": 939,
+      "failed": 0,
+      "skipped": 2
+    },
+    "policy_supplemental.xml": {
+      "tests": 37,
+      "passed": 37,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "distinct_test_results": {
+    "passed": 944,
+    "failed": 0,
+    "skipped": 2
+  },
+  "static_checks": {
+    "ruff_check_src_tests": "passed",
+    "mypy_src_patchloop": "passed",
+    "git_diff_check": "passed"
+  },
+  "policy_config_fingerprints": [
+    {
+      "case_id": "network-default",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "network-allow",
+      "policy": "033e2da45874da64c9fe90078bfc79f4e71bb85113677645ab35cf4d6bd12409",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "network-deny",
+      "policy": "5fcfdc4ac60d7204215f1b486865eaee7059bd3d749c9496c6a5fbb651ed17e4",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "dependency_install-default",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "dependency_install-allow",
+      "policy": "bc6fcb96b663ce773e17e614ea1457a33b7006d0c7adfa1b841c94ba592e5dde",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "dependency_install-deny",
+      "policy": "ae84e54ba9c2a27b73f0b5c3fdda94bd096ce67b603ceee5bb94021cec455a29",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "skill_load-default",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "skill_load-allow",
+      "policy": "75602ea712d8150ac3513cbd0ecf03c280a52d9a2cddbca527f8bb6bd068ca3e",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "skill_load-deny",
+      "policy": "dafd7d713eddbdd5530ee221118d9f0312fafafcd60d43efaa600a1a194177aa",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "skill_execute-default",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "skill_execute-allow",
+      "policy": "5249ebe9ce97dad319413e9b5ad88841ca2213af5b04ad8845e7e2ac6ecb34aa",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "skill_execute-deny",
+      "policy": "ce0c76c5a7f628e9933b8e507999549d8ba88821e0b2f96bd20d28f615137d6e",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "shell",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "pipeline",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "redirect",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "interpreter",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "network-command",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "git-push",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "path-traversal",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "url-credentials",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "package-credentials",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    },
+    {
+      "case_id": "skill-credentials",
+      "policy": "1a6db864f8722e605598fd98cc9f910242baf1f6a5101247d0ed56649892c016",
+      "config": "95008affdb0aac572888952de04c4beb179d45ee0aff8fa0ff3956180813ca18"
+    }
+  ],
+  "rule_hits": [
+    {
+      "case_id": "network-default",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "network-allow",
+      "matched_rule_ids": [
+        "audit-network-allow-0"
+      ]
+    },
+    {
+      "case_id": "network-deny",
+      "matched_rule_ids": [
+        "audit-network-deny-0"
+      ]
+    },
+    {
+      "case_id": "dependency_install-default",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "dependency_install-allow",
+      "matched_rule_ids": [
+        "audit-dependency_install-allow-0"
+      ]
+    },
+    {
+      "case_id": "dependency_install-deny",
+      "matched_rule_ids": [
+        "audit-dependency_install-deny-0"
+      ]
+    },
+    {
+      "case_id": "skill_load-default",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "skill_load-allow",
+      "matched_rule_ids": [
+        "audit-skill_load-allow-0"
+      ]
+    },
+    {
+      "case_id": "skill_load-deny",
+      "matched_rule_ids": [
+        "audit-skill_load-deny-0"
+      ]
+    },
+    {
+      "case_id": "skill_execute-default",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "skill_execute-allow",
+      "matched_rule_ids": [
+        "audit-skill_execute-allow-0"
+      ]
+    },
+    {
+      "case_id": "skill_execute-deny",
+      "matched_rule_ids": [
+        "audit-skill_execute-deny-0"
+      ]
+    },
+    {
+      "case_id": "shell",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "pipeline",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "redirect",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "interpreter",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "network-command",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "git-push",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "path-traversal",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "url-credentials",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "package-credentials",
+      "matched_rule_ids": []
+    },
+    {
+      "case_id": "skill-credentials",
+      "matched_rule_ids": []
+    }
+  ],
+  "grant_lifecycle": {
+    "status": "passed",
+    "evidence": [
+      "tests.e2e.test_policy_runtime::test_revoked_grant_blocks_even_its_source_approval_before_backend",
+      "tests.e2e.test_policy_runtime::test_resource_grant_reuses_exact_target_across_new_session_after_restart",
+      "tests.e2e.test_policy_runtime::test_legacy_once_approval_regenerates_descriptor_without_creating_grant",
+      "tests.e2e.test_policy_runtime::test_expired_resource_grant_renews_before_backend",
+      "tests.integration.test_policy_persistence::test_scope_creation_consumption_revocation_and_events[sqlite]",
+      "tests.integration.test_policy_persistence::test_scope_creation_consumption_revocation_and_events[fake]",
+      "tests.integration.test_policy_persistence::test_lazy_expiry_is_persisted_once[sqlite]",
+      "tests.integration.test_policy_persistence::test_lazy_expiry_is_persisted_once[fake]",
+      "tests.integration.test_policy_persistence::test_approval_replacement_preserves_history_and_rejects_stale_submission[sqlite]",
+      "tests.integration.test_policy_persistence::test_approval_replacement_preserves_history_and_rejects_stale_submission[fake]",
+      "tests.e2e.test_policy_runtime::test_changed_package_or_skill_requires_linked_new_approval[dependency_install-initial0-changed0]",
+      "tests.e2e.test_policy_runtime::test_changed_package_or_skill_requires_linked_new_approval[dependency_install-initial1-changed1]",
+      "tests.e2e.test_policy_runtime::test_changed_package_or_skill_requires_linked_new_approval[skill_execute-initial2-changed2]"
+    ]
+  },
+  "concurrency": {
+    "status": "passed",
+    "sqlite_workers": 8,
+    "fake_workers": 8,
+    "synchronization": "barrier",
+    "asserted_successful_transitions_per_race": 1,
+    "evidence": [
+      "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[sqlite-False]",
+      "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[sqlite-True]",
+      "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[fake-False]",
+      "tests.integration.test_policy_persistence::test_eight_workers_consume_or_revoke_finite_grant_atomically[fake-True]",
+      "tests.integration.test_policy_persistence::test_released_owner_cannot_consume_grant_on_claim[sqlite]",
+      "tests.integration.test_policy_persistence::test_released_owner_cannot_consume_grant_on_claim[fake]"
+    ]
+  },
+  "measured_adapter_counts": {
+    "backend_calls": 4,
+    "unauthorized_actions": 0,
+    "duplicate_effects": 0,
+    "secret_leaks": 0
+  },
+  "safety_audit_failed_checks": {
+    "confirmed_effect_reexecutions": 0,
+    "unknown_automatic_retries": 0,
+    "unauthorized_actions": 0,
+    "stale_owner_successful_commits": 0,
+    "approval_decision_failures": 0,
+    "event_integrity_failures": 0,
+    "cross_source_mismatches": 0,
+    "credential_leaks": 0,
+    "lease_token_leaks": 0
+  },
+  "secret_scan": {
+    "matrix_secret_leaks": 0,
+    "credential_leak_failed_checks": 0,
+    "lease_token_leak_failed_checks": 0
+  },
+  "failures": [],
+  "unverified": [
+    {
+      "capability": "Real external network/package/Skill backends and Sandbox isolation",
+      "status": "unverified",
+      "reason": "Policy audit uses recording adapters; the plan excludes implementing Skills Runtime and Sandbox isolation."
+    },
+    {
+      "capability": "tests.e2e.test_provider_session::test_real_provider_session_trial",
+      "status": "unverified",
+      "reason": "PGW real-provider acceptance is not explicitly configured"
+    },
+    {
+      "capability": "tests.unit.test_tools::test_file_enumeration_does_not_follow_external_symlink",
+      "status": "unverified",
+      "reason": "symbolic links are unavailable on this Windows host"
+    }
+  ],
+  "artifacts": [
+    "policy_bypass_audit.json",
+    "policy_safety_audit.json",
+    "policy_regression.xml",
+    "policy_supplemental.xml"
+  ]
+}

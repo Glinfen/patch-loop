@@ -99,6 +99,11 @@ class SecretRedactor:
     )
 
     def redact_text(self, value: str) -> str:
+        value = re.sub(
+            r"(?i)([a-z][a-z0-9+.-]*://)[^/\s@]+@",
+            lambda match: match.group(1) + self.replacement + "@",
+            value,
+        )
         redacted = self._patterns[0].sub("Bearer " + self.replacement, value)
         redacted = self._patterns[1].sub(self.replacement, redacted)
         return self._patterns[2].sub(

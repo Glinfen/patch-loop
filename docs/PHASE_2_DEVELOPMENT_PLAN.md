@@ -8,7 +8,7 @@
 
 截至 2026-09-15，[SRF](SESSION_RUNTIME_FOUNDATION_PLAN.md) 基础实现与本机门禁通过，但真实仓库三次试用失败、真实 Docker 未验收；[PGW](PROVIDER_GATEWAY_DEVELOPMENT_PLAN.md) 两协议与兼容路径已实现，最新离线矩阵与当前 Luna Chat profile 三次基础试用通过，完整多 Provider 真实矩阵仍未通过。[PPS](PROMPT_PREFIX_STABILITY_PLAN.md) 最新四个小型任务均完成、隐藏测试 20/20 通过，但收益门禁未通过，默认继续 legacy。
 
-[append_only 开销优化 AOP-01～08](APPEND_ONLY_OPTIMIZATION_PLAN.md) 已于 2026-09-16 完成实现、离线 L0 门禁和有预算真实入口。本轮没有执行真实模型请求；旧 readiness 在源码提交后自动失效，后续 L1 必须先在提交后的同一修订重新生成并归档 L0 产物，再由执行者显式增加 `--execute-real`。其他模块仍只确定边界和顺序，各自启动前再编写专项方案。既有失败结果保留，真实 Docker 安全验证和不调用模型的开发测试可以继续。
+[append_only 开销优化 AOP-01～08](APPEND_ONLY_OPTIMIZATION_PLAN.md) 已于 2026-09-16 完成实现、离线 L0 门禁和有预算真实入口。本轮没有执行真实模型请求；旧 readiness 在源码提交后自动失效，后续 L1 必须先在提交后的同一修订重新生成并归档 L0 产物，再由执行者显式增加 `--execute-real`。[Approval / Policy 扩展](APPROVAL_POLICY_EXTENSION_PLAN.md) TASK-01～07 已于 2026-09-20 完成实现与离线验收：全量回归 974 项通过、2 项环境跳过，27 项绕过矩阵、16 组安全审计及静态检查通过；真实外部后端和 Sandbox 隔离未验证。其余模块仍只确定边界和顺序，各自启动前再编写专项方案。既有失败结果保留，真实 Docker 安全验证和不调用模型的开发测试可以继续。
 
 ## 2. 开发原则
 
@@ -69,6 +69,8 @@
 - 保证非交互模式、恢复流程和 Provider 切换不能绕过策略。
 
 模块产物：Policy 模型、Approval Store、CLI/TUI 审批流、审计事件和绕过回归测试。
+
+当前交付（2026-09-20）：PolicyEngine、规范化资源、SQLite/Fake Store 范围授权、CLI 与审计投影已实现；解释器参数变体及 Windows 路径规则漏匹配已修复。跨进程授权恢复与旧审批记录迁移测试通过，详见[专项验收记录](APPROVAL_POLICY_EXTENSION_PLAN.md#81-实现与验收记录2026-09-20)和[机器报告](../benchmarks/results/policy_fix_acceptance.json)。本次完成控制面与 CLI，不包含 TUI、Skills Runtime 或真实 Sandbox 隔离。
 
 ### Skills Runtime
 
@@ -223,12 +225,12 @@ SRF 和 PGW 已有实现继续作为公共基础，不重新开发同名状态�
 
 ### 5.1 当前开发批次与模块顺序
 
-下表是模块级路线，不作为低成本执行模型的完整开发指令；只有 AOP 已在本轮给出详细任务、接口和验收。其余模块启动前按 PLANNING_GUIDE 形成专项计划。
+下表是模块级路线，不作为低成本执行模型的完整开发指令；AOP 和 Approval / Policy 均已有专项任务、接口和离线验收。其余模块启动前按 PLANNING_GUIDE 形成专项计划。
 
 | 顺序 / 模块 | 当前基础与缺口 | 下一交付范围 | 依赖与出口 |
 | --- | --- | --- | --- |
 | 1. AOP 开销优化 | AOP-01～08 与离线 L0 已完成；真实收益尚未验证 | 后续仅执行显式、有预算的 L1，两场景各一对 | L1 异常立即停批；默认布局不自动切换 |
-| 2. Approval / Policy 扩展 | 已有持久化批准/拒绝和精确动作绑定 | 限时/Session/资源范围授权、修改参数后重新审批、网络与依赖动作统一入口 | 复用 ApprovalService 与 Effect；任何新授权都需可撤销、可审计，先离线绕过测试 |
+| 2. [Approval / Policy 扩展](APPROVAL_POLICY_EXTENSION_PLAN.md) | TASK-01～07 实现与离线验收完成；解释器变体、Windows 规则漏匹配已修复 | 随 Sandbox / Skills 接入真实后端，维护范围授权与恢复回归 | 974 passed / 2 skipped；27 项绕过矩阵和 16 组安全审计通过；外部执行与真实隔离未验证 |
 | 3. Sandbox 隔离验收与补齐 | 已有 Docker/local 后端和清理；真实 Docker 未通过 | 威胁模型、真实后端攻击性验证、网络/安装策略、跨平台路径及进程清理 | 可与 AOP/Policy 的独立部分并行；模型可替身，不冒充真实 Docker 隔离证据 |
 | 4. Workspace / Git 工作流 | FileChangeTracker 保存初始内容并输出 diff，尚无完整 Workspace Manager | dirty 基线、Session worktree、用户/Agent 变更归属、局部审查撤销、验证版本绑定提交 | 依赖 SRF 所有权与 Policy；必须先证明不会覆盖或误提交用户修改 |
 | 5. Skills Runtime | 无完整发现/安装/加载模块 | 元数据/版本/信任来源、按需加载、受控脚本与资源、选择和执行审计 | 依赖 Policy 与 Sandbox 契约；资源加载追加到当前会话，权限不来自 Skill 文本 |
@@ -267,3 +269,10 @@ Policy + Sandbox + Workspace + Skills + CLI 集成
 - 文档准确区分已实现能力、实验结果、限制和未来计划。
 
 每个模块启动前再新增对应专项开发计划，包含现状调查、ADR、任务拆分、迁移方案、自动化验收和回退策略。本总计划只维护模块边界、依赖关系和第二阶段总体方向。
+
+## 7. 第二阶段完成后优化备忘
+
+以下事项不属于第二阶段退出条件。第二阶段开发与验收完成后，应提醒并单独规划：
+
+- 上下文压缩策略：评估对工具调用结果进行压缩；优化整个对话的压缩决策，不应等到上下文窗口接近耗尽时才触发压缩。
+- 状态栏：补充状态栏设计，使关键运行状态和用户需要关注的信息有稳定、集中的展示位置。

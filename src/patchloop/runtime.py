@@ -31,6 +31,7 @@ from patchloop.execution.approvals import ApprovalPending, build_approval
 from patchloop.execution.driver import RuntimeAdvance, RuntimeDriver, advance_status_for_task
 from patchloop.execution.effects import (
     ReconcileOutcome,
+    arguments_fingerprint,
     assert_file_preconditions,
     persist_model_response_batch,
     reconcile_effect,
@@ -39,6 +40,7 @@ from patchloop.execution.effects import (
     revalidate_effect_call,
 )
 from patchloop.execution.models import (
+    ApprovalStatus,
     ControlKind,
     ControlRequest,
     ControlStatus,
@@ -181,6 +183,9 @@ class AgentRuntime:
         self.gateway = gateway
         self.event_logger = event_logger
         self.state_store = state_store
+        if state_store is not None:
+            self.gateway.policy.rule_loader = state_store.list_policy_rules
+            self.gateway.claim_validator = self._validate_claimed_call
         self.context_engine = context_engine
         self.ownership_manager = ownership_manager
         self.owner_id = owner_id or f"process-{os.getpid()}-{uuid4().hex}"
@@ -1496,12 +1501,6 @@ class AgentRuntime:
                 )
                 return result
             try:
-                executable_call = revalidate_effect_call(effect, call, self.gateway)
-            except ValueError as exc:
-                result = self.gateway.reject_prepared(task.id, call, str(exc))
-                self._settle_unexecuted_effect(effect, call, result)
-                return result
-            try:
                 assert_file_preconditions(effect, self.gateway)
             except ValueError as exc:
                 result = self.gateway.observe_unexecuted(
@@ -1519,12 +1518,25 @@ class AgentRuntime:
                     status=EffectStatus.CANCELLED,
                 )
                 return result
+            try:
+                executable_call = revalidate_effect_call(effect, call, self.gateway)
+            except ValueError as exc:
+                result = self.gateway.reject_prepared(task.id, call, str(exc))
+                self._settle_unexecuted_effect(effect, call, result)
+                return result
             guard = self._lease_guard()
             if guard is None:
                 raise LeaseLost(task.id)
             config_version = self._effect_config_version(task)
-            current_assessment = self.gateway.prepare_call(task.id, executable_call).policy_result
+            current_preparation = self.gateway.prepare_call(task.id, executable_call)
+            current_assessment = current_preparation.policy_result
             current_decision = current_assessment.decision or PolicyDecision.DENY
+            if (
+                effect.supersedes_effect_id is not None
+                and effect.policy_result.get("decision") == "require_approval"
+                and current_decision is PolicyDecision.ALLOW
+            ):
+                current_decision = PolicyDecision.REQUIRE_APPROVAL
             claimed_effect = self.state_store.claim_effect(
                 effect.id,
                 expected_version=effect.version,
@@ -1534,6 +1546,8 @@ class AgentRuntime:
                 policy_version=self.gateway.policy.version,
                 config_version=config_version,
                 policy_decision=current_decision.value,
+                configured_rules=self.gateway.policy.rules,
+                current_evaluation=current_preparation.policy_evaluation,
                 expected_input_sequence=expected_input_sequence,
             )
             approval_consumed = claimed_effect.approval_consumed
@@ -1641,6 +1655,19 @@ class AgentRuntime:
         if self.state_store is None or task.session_id is None:
             return "1"
         return self.state_store.get_session(task.session_id).config_version
+
+    def _validate_claimed_call(self, task_id: str, call: ToolCall) -> bool:
+        self._assert_ownership()
+        if self.state_store is None:
+            return False
+        return any(
+            effect.provider_call_id == call.id
+            and effect.tool_name == call.name
+            and effect.status is EffectStatus.EXECUTING
+            and effect.approval_consumed
+            and effect.arguments_fingerprint == arguments_fingerprint(call.arguments)
+            for effect in self.state_store.list_effects(task_id)
+        )
 
     def _settle_unexecuted_effect(
         self,
@@ -1813,8 +1840,49 @@ class AgentRuntime:
             EffectStatus.UNKNOWN,
         }:
             return
-        if effect.approval_id is not None and effect.status is EffectStatus.PREPARED:
-            return
+        if effect.approval_id is not None and self.state_store is not None:
+            approval = self.state_store.get_approval(effect.approval_id)
+            call = ToolCall(
+                id=effect.provider_call_id,
+                name=effect.tool_name,
+                arguments=effect.arguments_summary,
+            )
+            self.gateway.context.config_version = self._effect_config_version(task)
+            current = self.gateway.prepare_call(task.id, call)
+            unchanged = (
+                approval.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}
+                and approval.matches_execution_conditions(
+                    effect,
+                    workspace_ref=task.repository,
+                    policy_version=self.gateway.policy.version,
+                    config_version=self._effect_config_version(task),
+                )
+                and (
+                    effect.action_descriptor is None
+                    or effect.action_descriptor == current.action_descriptor
+                )
+                and (
+                    effect.policy_evaluation is None
+                    or (current.policy_evaluation is not None
+                    and effect.policy_evaluation.rules_fingerprint
+                    == current.policy_evaluation.rules_fingerprint)
+                )
+            )
+            if unchanged and approval.grant_id is not None:
+                grant = self.state_store.get_grant(approval.grant_id)
+                unchanged = current.action_descriptor is not None and grant.matches(
+                    current.action_descriptor,
+                    self.gateway.policy.version,
+                    self._effect_config_version(task),
+                )
+            if (
+                not unchanged
+                and current.error is None
+                and current.policy_result.decision is not PolicyDecision.DENY
+            ):
+                self._renew_effect_approval(task, effect, call)
+            if effect.status is EffectStatus.PREPARED:
+                return
         raw_decision = effect.policy_result.get("decision", PolicyDecision.ALLOW.value)
         decision = PolicyDecision(raw_decision)
         if effect.status is not EffectStatus.WAITING_FOR_APPROVAL and (
@@ -1827,11 +1895,46 @@ class AgentRuntime:
         if guard is None:
             raise LeaseLost(task.id)
         config_version = self._effect_config_version(task)
+        if effect.action_descriptor is not None and effect.retry_of_effect_id is None:
+            current = self.gateway.prepare_call(
+                task.id,
+                ToolCall(
+                    id=effect.provider_call_id,
+                    name=effect.tool_name,
+                    arguments=effect.arguments_summary,
+                ),
+            )
+            if current.policy_result.decision is not PolicyDecision.DENY and any(
+                grant.matches(effect.action_descriptor, self.gateway.policy.version, config_version)
+                and current.policy_evaluation is not None
+                and grant.rules_fingerprint == current.policy_evaluation.rules_fingerprint
+                for grant in self.state_store.list_grants(task.repository)
+            ):
+                return
+        previous_approval_id = None
+        for previous in reversed(self.state_store.list_approvals(task.id)):
+            previous_effect = self.state_store.get_effect(previous.effect_id)
+            if previous_effect.id == effect.id:
+                continue
+            if previous_effect.status in {EffectStatus.EXECUTING, EffectStatus.UNKNOWN}:
+                continue
+            if (
+                previous_effect.tool_name == effect.tool_name
+                or previous_effect.status is EffectStatus.CANCELLED
+            ) and (
+                previous_effect.arguments_fingerprint != effect.arguments_fingerprint
+                or previous_effect.action_descriptor != effect.action_descriptor
+                or previous.policy_version != self.gateway.policy.version
+                or previous.config_version != config_version
+            ):
+                previous_approval_id = previous.id
+                break
         approval = build_approval(
             task,
             effect,
             policy_version=self.gateway.policy.version,
             config_version=config_version,
+            supersedes_approval_id=previous_approval_id,
         )
         _, persisted_approval, waiting_task = self.state_store.request_effect_approval(
             effect.id,
@@ -1851,6 +1954,49 @@ class AgentRuntime:
             },
         )
         raise ApprovalPending(persisted_approval)
+
+    def _renew_effect_approval(self, task: Task, original: Effect, call: ToolCall) -> None:
+        assert self.state_store is not None
+        guard = self._lease_guard()
+        if guard is None:
+            raise LeaseLost(task.id)
+        step = AgentStep(task_id=task.id, index=0, id=f"approval-renewal-{uuid4().hex}")
+        _, replacements = persist_model_response_batch(
+            task, step, ModelResponse(tool_calls=[call]), self.gateway
+        )
+        replacement = replacements[0].model_copy(
+            update={
+                "supersedes_effect_id": original.id,
+                "policy_result": {
+                    **replacements[0].policy_result,
+                    "decision": "require_approval",
+                    "allowed": False,
+                    "approval_required": True,
+                },
+            }
+        )
+        approval = build_approval(
+            task,
+            replacement,
+            policy_version=self.gateway.policy.version,
+            config_version=self._effect_config_version(task),
+            supersedes_approval_id=original.approval_id,
+        )
+        _, persisted, waiting = self.state_store.replace_effect_approval(
+            original.id, replacement, approval, expected_version=original.version, lease_guard=guard
+        )
+        object.__setattr__(task, "version", waiting.version)
+        object.__setattr__(task, "runtime_condition", waiting.runtime_condition)
+        self._emit(
+            "approval.waiting",
+            task,
+            {
+                "approval_id": persisted.id,
+                "effect_id": replacement.id,
+                "supersedes_approval_id": original.approval_id,
+            },
+        )
+        raise ApprovalPending(persisted)
 
     def _fail(self, task: Task, kind: ErrorKind, message: str) -> Task:
         task.plan = self.gateway.context.plan
@@ -2665,9 +2811,7 @@ class AgentRuntime:
             "optimization_version": prefix.optimization_version,
             "projection_format": projection_format,
             "projection_fallback_reason": projection_fallback_reason,
-            "new_memory_tokens": sum(
-                engine.estimate_message(item) for item in memory_messages
-            ),
+            "new_memory_tokens": sum(engine.estimate_message(item) for item in memory_messages),
             "working_item_count": memory_diagnostics["working_item_count"],
             "opaque_working_blob_count": memory_diagnostics["opaque_working_blob_count"],
             "decision_reason": decision.reason,
@@ -2831,8 +2975,7 @@ class AgentRuntime:
                                 <= completion.summary_target_tokens
                             ),
                             "freed_input_tokens": (
-                                completion.candidate_input_tokens
-                                - completion.rebased_input_tokens
+                                completion.candidate_input_tokens - completion.rebased_input_tokens
                             ),
                             "headroom_after_rebase": (
                                 budget.ordinary_limit - completion.rebased_input_tokens
@@ -3684,7 +3827,22 @@ class AgentRuntime:
         if self.state_store is None:
             return []
         effects = {effect.id: effect for effect in self.state_store.list_effects(step.task_id)}
-        return [effects[effect_id] for effect_id in step.effect_ids]
+        replacements = {
+            effect.supersedes_effect_id: effect
+            for effect in effects.values()
+            if effect.supersedes_effect_id is not None
+        }
+        result = []
+        for effect_id in step.effect_ids:
+            current = effects[effect_id]
+            visited: set[str] = set()
+            while current.id in replacements:
+                if current.id in visited:
+                    raise ValueError("cyclic approval replacement chain")
+                visited.add(current.id)
+                current = replacements[current.id]
+            result.append(current)
+        return result
 
     def _with_execution_ownership(self, task: Task, action: Callable[[Task], Task]) -> Task:
         if self.state_store is None:
@@ -3702,6 +3860,8 @@ class AgentRuntime:
             workspace_writer=workspace_writer,
         )
         prepared = self.state_store.get_task(prepared.id)
+        self.gateway.context.session_id = prepared.session_id or ""
+        self.gateway.context.config_version = self._effect_config_version(prepared)
         self.ownership_manager = manager
         self._ownership = ownership
         self._heartbeat = LeaseHeartbeat(manager, ownership)

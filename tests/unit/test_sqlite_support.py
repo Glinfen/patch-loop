@@ -239,6 +239,8 @@ def test_runtime_v4_migrates_provider_tables_once_and_preserves_tasks(tmp_path: 
     store = SQLiteStore(database)
     task = store.create_task(Task(id="preserved-task", goal="keep me", repository="."))
     with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("DROP TABLE policy_rules")
+        connection.execute("DROP TABLE approval_grants")
         connection.execute("DROP TABLE provider_attempts")
         connection.execute("DROP TABLE provider_requests")
         connection.execute(
@@ -261,6 +263,8 @@ def test_runtime_v5_migration_failure_rolls_back_only_new_schema(
     store = SQLiteStore(database)
     task = store.create_task(Task(id="preserved-task", goal="keep me", repository="."))
     with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("DROP TABLE policy_rules")
+        connection.execute("DROP TABLE approval_grants")
         connection.execute("DROP TABLE provider_attempts")
         connection.execute("DROP TABLE provider_requests")
         connection.execute(

@@ -327,7 +327,7 @@ def test_run_tests_rejects_arbitrary_python(tmp_path: Path) -> None:
     )
 
     assert not result.success
-    assert result.error_kind is ErrorKind.EXECUTION_ERROR
+    assert result.error_kind is ErrorKind.PERMISSION_DENIED
 
 
 def test_agent_contract_explains_test_and_efficiency_boundaries() -> None:
@@ -468,6 +468,6 @@ def test_run_command_allows_safe_diagnostic_variants(tmp_path: Path) -> None:
     assert scoped_compile.success and '"exit_code": 0' in scoped_compile.output
     assert RunCommandTool._normalize_command(["git", "status"]) == ["git", "status"]
     assert not denied.success
-    assert denied.error_kind is ErrorKind.EXECUTION_ERROR
+    assert denied.error_kind is ErrorKind.PERMISSION_DENIED
     with pytest.raises(ValueError, match="escapes repository"):
         RunCommandTool._normalize_command(["python", "-m", "compileall", "../outside.py"])

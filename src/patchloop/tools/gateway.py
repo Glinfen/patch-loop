@@ -5,12 +5,21 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from contextlib import suppress
 from time import perf_counter
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from patchloop.domain import ErrorKind, ToolCall, ToolResult
 from patchloop.events import Event, EventLogger
+from patchloop.execution.policy import (
+    ActionDescriptor,
+    PolicyAction,
+    PolicyEngine,
+    PolicyEvaluation,
+    PolicyRule,
+    digest,
+)
 from patchloop.providers.base import ToolSpec
 from patchloop.security import (
     RISK_ORDER,
@@ -37,6 +46,10 @@ class ToolPolicy:
         require_plan_for_mutations: bool = True,
         approval_threshold: RiskLevel | None = None,
         approval_handler: Callable[[ApprovalRequest], bool] | None = None,
+        *,
+        policy_extension: bool = False,
+        rules: tuple[PolicyRule, ...] = (),
+        configuration_fingerprint: str = "",
     ) -> None:
         self.allowed_permissions = (
             frozenset({PermissionLevel.READ})
@@ -46,6 +59,11 @@ class ToolPolicy:
         self.require_plan_for_mutations = require_plan_for_mutations
         self.approval_threshold = approval_threshold
         self.approval_handler = approval_handler
+        self.policy_extension = policy_extension
+        self.rules = rules
+        self.configuration_fingerprint = configuration_fingerprint
+        self.rule_loader: Callable[[str], list[PolicyRule]] | None = None
+        self.engine = PolicyEngine()
 
     def allows(self, tool: Tool) -> bool:
         return tool.permission in self.allowed_permissions
@@ -59,6 +77,10 @@ class ToolPolicy:
             ),
             "require_plan_for_mutations": self.require_plan_for_mutations,
         }
+        if self.policy_extension:
+            payload["policy_extension"] = True
+        if self.configuration_fingerprint:
+            payload["configuration_fingerprint"] = self.configuration_fingerprint
         digest = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -84,7 +106,75 @@ class ToolPolicy:
 
         return self._assess(task_id, call, tool, context)
 
+    def evaluate(
+        self, task_id: str, call: ToolCall, tool: Tool, context: ToolContext
+    ) -> PolicyEvaluation:
+        parsed = tool.input_model.model_validate(call.arguments)
+        descriptor = tool.policy_descriptor(parsed, context)
+        if (
+            descriptor.tool_name != tool.name
+            or descriptor.workspace_ref != str(context.repository)
+            or descriptor.session_id != context.session_id
+            or descriptor.arguments_fingerprint != digest(parsed.model_dump(mode="json"))
+        ):
+            raise ValueError("tool descriptor binding mismatch")
+        rules = self.rules
+        if self.rule_loader is not None:
+            rules = (*rules, *self.rule_loader(descriptor.workspace_ref))
+        evaluation = self.engine.evaluate(
+            descriptor,
+            rules=rules,
+            policy_version=self.version,
+            config_version=context.config_version,
+        )
+        legacy = self._legacy_assess(task_id, call, tool, context)
+        reason: str | None = None
+        if not self.allows(tool):
+            reason = f"permission denied for {tool.permission} tool: {call.name}"
+        elif legacy.decision is PolicyDecision.DENY:
+            reason = legacy.reason
+        elif self.require_plan_for_mutations and tool.permission != PermissionLevel.READ:
+            if context.plan is None:
+                reason = f"an execution plan is required before using {call.name}"
+            elif context.requires_replan:
+                reason = f"update_plan is required after the previous failure before {call.name}"
+        if reason is not None:
+            return evaluation.model_copy(update={"decision": PolicyDecision.DENY, "reason": reason})
+        if (
+            not self.policy_extension
+            and not rules
+            and descriptor.action in {PolicyAction.READ, PolicyAction.EDIT, PolicyAction.EXECUTE}
+            and evaluation.decision is not PolicyDecision.DENY
+        ):
+            return evaluation.model_copy(
+                update={"decision": legacy.decision, "reason": legacy.reason}
+            )
+        return evaluation
+
     def _assess(
+        self, task_id: str, call: ToolCall, tool: Tool, context: ToolContext
+    ) -> RiskAssessment:
+        legacy = self._legacy_assess(task_id, call, tool, context)
+        if legacy.decision is PolicyDecision.DENY:
+            return legacy
+        try:
+            evaluation = self.evaluate(task_id, call, tool, context)
+        except (ValueError, OSError):
+            return RiskAssessment(
+                risk=RiskLevel.CRITICAL,
+                allowed=False,
+                decision=PolicyDecision.DENY,
+                reason="action descriptor cannot be safely normalized",
+            )
+        return RiskAssessment(
+            risk=evaluation.risk,
+            decision=evaluation.decision,
+            allowed=evaluation.decision is PolicyDecision.ALLOW,
+            approval_required=evaluation.decision is PolicyDecision.REQUIRE_APPROVAL,
+            reason=evaluation.reason,
+        )
+
+    def _legacy_assess(
         self,
         task_id: str,
         call: ToolCall,
@@ -113,7 +203,7 @@ class ToolPolicy:
                         risk=RiskLevel.CRITICAL,
                         allowed=False,
                         decision=PolicyDecision.DENY,
-                        reason=f"path escapes repository: {value}",
+                        reason="path escapes repository",
                     )
         approval_required = (
             self.approval_threshold is not None
@@ -167,6 +257,8 @@ class ToolPreparation(BaseModel):
     action_kind: str
     normalized_arguments: dict[str, object] = Field(default_factory=dict)
     policy_result: RiskAssessment
+    policy_evaluation: PolicyEvaluation | None = None
+    action_descriptor: ActionDescriptor | None = None
     error: str | None = None
 
 
@@ -187,6 +279,8 @@ class ToolGateway:
         self.policy = policy or ToolPolicy()
         self.ownership_assertion = ownership_assertion
         self.history: list[ToolResult] = []
+        self.claim_validator: Callable[[str, ToolCall], bool] | None = None
+        self._executed_claims: set[tuple[str, str]] = set()
         self._consumed_approval_calls: set[tuple[str, str]] = set()
 
     def specifications(self) -> list[ToolSpec]:
@@ -210,6 +304,9 @@ class ToolGateway:
                 error=f"unknown tool: {call.name}",
             )
         assessment = self.policy.assess_for_preparation(task_id, call, tool, self.context)
+        evaluation = None
+        with suppress(ValueError, OSError):
+            evaluation = self.policy.evaluate(task_id, call, tool, self.context)
         error: str | None = None
         normalized: dict[str, object] = dict(call.arguments)
         if not self.policy.allows(tool):
@@ -259,6 +356,8 @@ class ToolGateway:
             action_kind=tool.permission.value,
             normalized_arguments=normalized,
             policy_result=assessment,
+            policy_evaluation=evaluation,
+            action_descriptor=None if evaluation is None else evaluation.descriptor,
             error=error,
         )
 
@@ -294,7 +393,8 @@ class ToolGateway:
             return self._finish(task_id, call, result, started)
         try:
             assert_executable_tool_arguments(call.arguments)
-        except UnresolvedToolArgument as exc:
+            tool.input_model.model_validate(call.arguments)
+        except (UnresolvedToolArgument, ValidationError) as exc:
             result = ToolResult(
                 call_id=call.id,
                 tool_name=call.name,
@@ -356,7 +456,7 @@ class ToolGateway:
             self.ownership_assertion(tool.permission)
         try:
             arguments = tool.input_model.model_validate(call.arguments)
-            output = tool.run(arguments, self.context)
+            output = self.context._run_policy_checked(tool, arguments)
             output_error = tool.classify_output(output)
             result = ToolResult(
                 call_id=call.id,
@@ -414,8 +514,14 @@ class ToolGateway:
         """Execute a store-claimed Effect, honoring only its consumed exact approval."""
 
         key = (task_id, call.id)
-        if approval_consumed:
+        if (
+            approval_consumed
+            and key not in self._executed_claims
+            and self.claim_validator is not None
+            and self.claim_validator(task_id, call)
+        ):
             self._consumed_approval_calls.add(key)
+            self._executed_claims.add(key)
         try:
             return self.execute(task_id, call)
         finally:

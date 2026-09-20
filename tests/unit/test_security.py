@@ -163,12 +163,12 @@ def test_medium_risk_write_requires_and_records_approval(tmp_path: Path) -> None
     assert decision.data["assessment"]["allowed"] is False
     assert decision.data["assessment"]["decision"] == PolicyDecision.REQUIRE_APPROVAL.value
 
-    approved = gateway.execute_claimed("task-1", call, approval_consumed=True)
+    forged = gateway.execute_claimed("task-1", call, approval_consumed=True)
 
-    assert approved.success is True
-    assert target.read_text(encoding="utf-8") == "new"
+    assert forged.success is False
+    assert target.read_text(encoding="utf-8") == "old"
     approved_decision = [event for event in logger.read() if event.type == "security.decision"][-1]
-    assert approved_decision.data["approval_consumed"] is True
+    assert approved_decision.data["approval_consumed"] is False
 
 
 def test_network_capable_command_is_denied_before_execution(tmp_path: Path) -> None:

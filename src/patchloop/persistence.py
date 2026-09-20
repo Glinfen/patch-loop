@@ -30,6 +30,13 @@ from patchloop.events import (
     journal_event_id,
     lease_owner_summary,
 )
+from patchloop.execution.approvals import (
+    ApprovalResolution,
+    evaluate_claim_policy,
+    scope_approval,
+    supersede_approval,
+    validate_grant_consumption,
+)
 from patchloop.execution.models import (
     Approval,
     ApprovalStatus,
@@ -43,6 +50,13 @@ from patchloop.execution.models import (
     RecoveryDisposition,
     RecoveryDispositionKind,
     WorkspaceLease,
+)
+from patchloop.execution.policy import (
+    ActionDescriptor,
+    ApprovalGrant,
+    ApprovalScopeKind,
+    PolicyEvaluation,
+    PolicyRule,
 )
 from patchloop.execution.recovery import validate_recovery_resolution
 from patchloop.memory.episodic import EpisodicMemorySnapshot
@@ -94,7 +108,7 @@ from patchloop.sqlite_support import (
 )
 from patchloop.storage import TaskNotFoundError
 
-RUNTIME_SCHEMA_VERSION = 5
+RUNTIME_SCHEMA_VERSION = 6
 _RUNTIME_TABLES = {
     "tasks",
     "agent_steps",
@@ -113,6 +127,8 @@ _RUNTIME_TABLES = {
     "managed_commands",
     "provider_requests",
     "provider_attempts",
+    "policy_rules",
+    "approval_grants",
 }
 
 _RUNTIME_TASK_COLUMNS = {"session_id", "outcome", "runtime_condition", "version"}
@@ -420,6 +436,20 @@ _RUNTIME_MIGRATION_V5 = (
 )
 
 
+_RUNTIME_MIGRATION_V6 = (
+    """CREATE TABLE policy_rules (
+        id TEXT PRIMARY KEY, workspace_ref TEXT NOT NULL, session_id TEXT,
+        policy_version TEXT NOT NULL, payload_json TEXT NOT NULL
+    )""",
+    """CREATE TABLE approval_grants (
+        id TEXT PRIMARY KEY, workspace_ref TEXT NOT NULL, session_id TEXT,
+        status TEXT NOT NULL, version INTEGER NOT NULL, payload_json TEXT NOT NULL
+    )""",
+    "CREATE INDEX idx_policy_rules_scope ON policy_rules(workspace_ref, session_id)",
+    "CREATE INDEX idx_approval_grants_scope ON approval_grants(workspace_ref, session_id, status)",
+)
+
+
 class RuntimeSchemaError(RuntimeError):
     """Raised when the runtime schema cannot be migrated or is unusable."""
 
@@ -498,6 +528,14 @@ def initialize_runtime_schema(connection: sqlite3.Connection) -> None:
                 SET version = ?, updated_at = ? WHERE component = 'runtime'
                 """,
                 (5, datetime.now(UTC).isoformat()),
+            )
+        if version < 6:
+            for statement in _RUNTIME_MIGRATION_V6:
+                connection.execute(statement)
+            connection.execute(
+                """UPDATE patchloop_schema_migrations SET version = ?, updated_at = ?
+                WHERE component = 'runtime'""",
+                (6, datetime.now(UTC).isoformat()),
             )
         tables = {
             str(table[0])
@@ -2612,83 +2650,154 @@ class SQLiteStore:
 
         safe_approval = self._redacted_model(approval, Approval)
         with connect_write(self.path) as connection:
-            execution = self._assert_guard(connection, lease_guard)
-            current = self._require_effect(connection, effect_id)
-            if current.task_id != execution.task_id:
-                raise LeaseLost(current.task_id)
-            self._check_version(effect_id, current.version, expected_version)
-            if safe_approval.effect_id != effect_id:
-                raise ValueError("approval does not belong to the Effect")
-            if current.status is EffectStatus.WAITING_FOR_APPROVAL:
-                row = connection.execute(
-                    "SELECT payload_json FROM approvals WHERE id = ?",
-                    (current.approval_id,),
-                ).fetchone()
-                existing = (
-                    None if row is None else Approval.model_validate_json(row["payload_json"])
+            return self._request_effect_approval_transaction(
+                connection,
+                effect_id,
+                safe_approval,
+                expected_version=expected_version,
+                lease_guard=lease_guard,
+            )
+
+    def replace_effect_approval(
+        self,
+        effect_id: str,
+        replacement: Effect,
+        approval: Approval,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard,
+    ) -> tuple[Effect, Approval, Task]:
+        from patchloop.execution.approvals import validate_replacement
+
+        safe = self._redacted_effect(replacement)
+        safe_approval = self._redacted_model(approval, Approval)
+        with connect_write(self.path) as connection:
+            self._assert_guard(connection, lease_guard)
+            original = self._require_effect(connection, effect_id)
+            self._check_version(original.id, original.version, expected_version)
+            validate_replacement(original, safe, safe_approval)
+            if self._effect_by_id_or_identity(connection, safe) is not None:
+                raise EffectIdentityConflict(safe.id, safe.identity_key())
+            self._insert_effect_row(connection, safe)
+            return self._request_effect_approval_transaction(
+                connection,
+                safe.id,
+                safe_approval,
+                expected_version=safe.version,
+                lease_guard=lease_guard,
+            )
+
+    def _request_effect_approval_transaction(
+        self,
+        connection: sqlite3.Connection,
+        effect_id: str,
+        safe_approval: Approval,
+        *,
+        expected_version: int,
+        lease_guard: LeaseGuard,
+    ) -> tuple[Effect, Approval, Task]:
+        execution = self._assert_guard(connection, lease_guard)
+        current = self._require_effect(connection, effect_id)
+        if current.task_id != execution.task_id:
+            raise LeaseLost(current.task_id)
+        self._check_version(effect_id, current.version, expected_version)
+        if safe_approval.effect_id != effect_id:
+            raise ValueError("approval does not belong to the Effect")
+        if current.status is EffectStatus.WAITING_FOR_APPROVAL:
+            row = connection.execute(
+                "SELECT payload_json FROM approvals WHERE id = ?",
+                (current.approval_id,),
+            ).fetchone()
+            existing = None if row is None else Approval.model_validate_json(row["payload_json"])
+            if existing is not None and existing.same_request(safe_approval):
+                task = self._require_task(connection, current.task_id)
+                now = datetime.now(UTC)
+                waiting_execution = execution.model_copy(
+                    update={
+                        "status": ExecutionStatus.WAITING_FOR_APPROVAL,
+                        "version": execution.version + 1,
+                        "updated_at": now,
+                    }
                 )
-                if existing is not None and existing.same_request(safe_approval):
-                    task = self._require_task(connection, current.task_id)
-                    now = datetime.now(UTC)
-                    waiting_execution = execution.model_copy(
+                waiting_task = task.model_copy(
+                    update={
+                        "runtime_condition": TaskRuntimeCondition.WAITING_FOR_APPROVAL,
+                        "version": task.version + 1,
+                        "updated_at": now,
+                    }
+                )
+                self._write_execution_row(connection, waiting_execution)
+                self._write_task_row(connection, waiting_task)
+                return current, existing, waiting_task
+            raise ApprovalConflict(safe_approval.id, "pending", "pending")
+        if current.status is not EffectStatus.PREPARED:
+            raise ValueError(f"Effect cannot request approval from {current.status}")
+        if safe_approval.status is not ApprovalStatus.PENDING:
+            raise ValueError("new approval request must be pending")
+        if connection.execute(
+            "SELECT 1 FROM approvals WHERE id = ? OR effect_id = ?",
+            (safe_approval.id, effect_id),
+        ).fetchone():
+            raise ApprovalConflict(safe_approval.id, "pending", "pending")
+        task = self._require_task(connection, current.task_id)
+        if task.runtime_condition is not TaskRuntimeCondition.RUNNING:
+            raise ValueError("approval can only pause a running Task")
+        if safe_approval.supersedes_approval_id is not None:
+            row = connection.execute(
+                "SELECT payload_json FROM approvals WHERE id = ?",
+                (safe_approval.supersedes_approval_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("superseded approval is missing")
+            previous = Approval.model_validate_json(row[0])
+            original = self._require_effect(connection, previous.effect_id)
+            expired, cancelled = supersede_approval(previous, original, current)
+            self._write_approval_row(connection, expired)
+            self._write_effect_row(connection, cancelled)
+            if previous.grant_id is not None:
+                grant = self._require_grant(connection, previous.grant_id)
+                if grant.status == "active":
+                    revoked = grant.model_copy(
                         update={
-                            "status": ExecutionStatus.WAITING_FOR_APPROVAL,
-                            "version": execution.version + 1,
-                            "updated_at": now,
+                            "status": "revoked",
+                            "version": grant.version + 1,
+                            "revoked_at": datetime.now(UTC),
+                            "revoked_by": "superseded",
                         }
                     )
-                    waiting_task = task.model_copy(
-                        update={
-                            "runtime_condition": TaskRuntimeCondition.WAITING_FOR_APPROVAL,
-                            "version": task.version + 1,
-                            "updated_at": now,
-                        }
-                    )
-                    self._write_execution_row(connection, waiting_execution)
-                    self._write_task_row(connection, waiting_task)
-                    return current, existing, waiting_task
-                raise ApprovalConflict(safe_approval.id, "pending", "pending")
-            if current.status is not EffectStatus.PREPARED:
-                raise ValueError(f"Effect cannot request approval from {current.status}")
-            if safe_approval.status is not ApprovalStatus.PENDING:
-                raise ValueError("new approval request must be pending")
-            if connection.execute(
-                "SELECT 1 FROM approvals WHERE id = ? OR effect_id = ?",
-                (safe_approval.id, effect_id),
-            ).fetchone():
-                raise ApprovalConflict(safe_approval.id, "pending", "pending")
-            task = self._require_task(connection, current.task_id)
-            if task.runtime_condition is not TaskRuntimeCondition.RUNNING:
-                raise ValueError("approval can only pause a running Task")
-            now = datetime.now(UTC)
-            waiting_effect = current.model_copy(
-                update={
-                    "status": EffectStatus.WAITING_FOR_APPROVAL,
-                    "approval_id": safe_approval.id,
-                    "version": current.version + 1,
-                    "updated_at": now,
-                }
-            )
-            waiting_execution = execution.model_copy(
-                update={
-                    "status": ExecutionStatus.WAITING_FOR_APPROVAL,
-                    "version": execution.version + 1,
-                    "updated_at": now,
-                }
-            )
-            waiting_task = task.model_copy(
-                update={
-                    "runtime_condition": TaskRuntimeCondition.WAITING_FOR_APPROVAL,
-                    "version": task.version + 1,
-                    "updated_at": now,
-                }
-            )
-            self._write_effect_row(connection, waiting_effect)
-            self._insert_approval_row(connection, safe_approval)
-            self._write_execution_row(connection, waiting_execution)
-            self._write_task_row(connection, waiting_task)
-            self._journal_approval(connection, safe_approval, "approval.requested")
-            return waiting_effect, safe_approval, waiting_task
+                    self._write_grant(connection, revoked)
+                    self._journal_grant(connection, revoked, "approval.grant_revoked")
+        now = datetime.now(UTC)
+        waiting_effect = current.model_copy(
+            update={
+                "status": EffectStatus.WAITING_FOR_APPROVAL,
+                "approval_id": safe_approval.id,
+                "version": current.version + 1,
+                "updated_at": now,
+            }
+        )
+        waiting_execution = execution.model_copy(
+            update={
+                "status": ExecutionStatus.WAITING_FOR_APPROVAL,
+                "version": execution.version + 1,
+                "updated_at": now,
+            }
+        )
+        waiting_task = task.model_copy(
+            update={
+                "runtime_condition": TaskRuntimeCondition.WAITING_FOR_APPROVAL,
+                "version": task.version + 1,
+                "updated_at": now,
+            }
+        )
+        self._write_effect_row(connection, waiting_effect)
+        self._insert_approval_row(connection, safe_approval)
+        self._write_execution_row(connection, waiting_execution)
+        self._write_task_row(connection, waiting_task)
+        self._journal_approval(connection, safe_approval, "approval.requested")
+        if safe_approval.supersedes_approval_id is not None:
+            self._journal_approval(connection, safe_approval, "approval.superseded")
+        return waiting_effect, safe_approval, waiting_task
 
     def resolve_effect_approval(
         self,
@@ -2700,9 +2809,13 @@ class SQLiteStore:
         workspace_ref: str,
         policy_version: str,
         config_version: str,
-    ) -> tuple[Approval, Effect, Task]:
+        scope_kind: ApprovalScopeKind = ApprovalScopeKind.ONCE,
+        expires_at: datetime | None = None,
+        reason: str | None = None,
+    ) -> ApprovalResolution:
         """Decide one request after atomically rechecking its exact binding."""
 
+        self.get_approval(approval_id)
         with connect_write(self.path) as connection:
             row = connection.execute(
                 "SELECT payload_json FROM approvals WHERE id = ?", (approval_id,)
@@ -2714,14 +2827,30 @@ class SQLiteStore:
             task = self._require_task(connection, effect.task_id)
             target = ApprovalStatus.APPROVED if approved else ApprovalStatus.DENIED
             if current.status is not ApprovalStatus.PENDING:
+                if current.scope_kind != scope_kind or current.expires_at != expires_at:
+                    raise ApprovalConflict(current.id, "scope_mismatch", target.value)
                 if (
                     approved
                     and current.status is ApprovalStatus.CONSUMED
                     and current.decision_source == source
                 ):
-                    return current, effect, task
+                    return ApprovalResolution(
+                        current,
+                        effect,
+                        task,
+                        None
+                        if current.grant_id is None
+                        else self._require_grant(connection, current.grant_id),
+                    )
                 if current.status is target and current.decision_source == source:
-                    return current, effect, task
+                    return ApprovalResolution(
+                        current,
+                        effect,
+                        task,
+                        None
+                        if current.grant_id is None
+                        else self._require_grant(connection, current.grant_id),
+                    )
                 raise ApprovalConflict(current.id, current.status.value, target.value)
             self._check_version(current.id, current.version, expected_version)
             actual_config = (
@@ -2770,8 +2899,16 @@ class SQLiteStore:
                 if released_task is not task:
                     self._write_task_row(connection, released_task)
                 self._journal_approval(connection, decided, "approval.expired")
-                return decided, released_effect, released_task
-            decided = current.decide(approved, source)
+                return ApprovalResolution(decided, released_effect, released_task)
+            scoped, grant = scope_approval(
+                current,
+                effect,
+                task,
+                scope_kind=scope_kind if approved else ApprovalScopeKind.ONCE,
+                expires_at=expires_at,
+                reason=reason,
+            )
+            decided = scoped.decide(approved, source)
             next_effect_status = EffectStatus.PREPARED if approved else EffectStatus.DENIED
             resolved_effect = effect.model_copy(
                 update={
@@ -2794,16 +2931,167 @@ class SQLiteStore:
             if resolved_task is not task:
                 self._write_task_row(connection, resolved_task)
             self._journal_approval(connection, decided, "approval.decided")
-            return decided, resolved_effect, resolved_task
+            if grant is not None:
+                self._write_grant(connection, grant)
+                self._journal_grant(connection, grant, "approval.grant_created")
+            return ApprovalResolution(decided, resolved_effect, resolved_task, grant)
+
+    def put_policy_rule(self, rule: PolicyRule) -> PolicyRule:
+        with connect_write(self.path) as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO policy_rules VALUES (?, ?, ?, ?, ?)",
+                (
+                    rule.id,
+                    rule.workspace_ref,
+                    rule.session_id,
+                    rule.policy_version,
+                    rule.model_dump_json(),
+                ),
+            )
+        return rule
+
+    def list_policy_rules(self, workspace_ref: str) -> list[PolicyRule]:
+        with connect(self.path) as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM policy_rules WHERE workspace_ref = ? ORDER BY id",
+                (workspace_ref,),
+            ).fetchall()
+        return [PolicyRule.model_validate_json(row[0]) for row in rows]
+
+    @staticmethod
+    def _write_grant(connection: sqlite3.Connection, grant: ApprovalGrant) -> None:
+        connection.execute(
+            "INSERT OR REPLACE INTO approval_grants VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                grant.id,
+                grant.workspace_ref,
+                grant.session_id,
+                grant.status,
+                grant.version,
+                grant.model_dump_json(),
+            ),
+        )
+
+    def _journal_grant(
+        self, connection: sqlite3.Connection, grant: ApprovalGrant, event_type: str
+    ) -> None:
+        row = connection.execute(
+            "SELECT payload_json FROM approvals WHERE id = ?", (grant.source_approval_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError("grant source approval is missing")
+        approval = Approval.model_validate_json(row[0])
+        effect = self._require_effect(connection, approval.effect_id)
+        task = self._require_task(connection, effect.task_id)
+        if task.session_id is not None:
+            self._journal(
+                connection,
+                self._require_session(connection, task.session_id),
+                event_id=journal_event_id(event_type, grant.id, grant.version),
+                event_type=event_type,
+                task_id=task.id,
+                data={"grant": grant.model_dump(mode="json")},
+            )
+
+    def _require_grant(self, connection: sqlite3.Connection, grant_id: str) -> ApprovalGrant:
+        row = connection.execute(
+            "SELECT payload_json FROM approval_grants WHERE id = ?", (grant_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"grant not found: {grant_id}")
+        grant = ApprovalGrant.model_validate_json(row[0])
+        expired = grant.expire()
+        if expired != grant:
+            self._write_grant(connection, expired)
+            self._journal_grant(connection, expired, "approval.expired")
+        return expired
+
+    def get_grant(self, grant_id: str) -> ApprovalGrant:
+        with connect_write(self.path) as connection:
+            return self._require_grant(connection, grant_id)
+
+    def list_grants(self, scope_id: str) -> list[ApprovalGrant]:
+        with connect_write(self.path) as connection:
+            rows = connection.execute(
+                "SELECT id FROM approval_grants "
+                "WHERE workspace_ref = ? OR session_id = ? ORDER BY id",
+                (scope_id, scope_id),
+            ).fetchall()
+            return [self._require_grant(connection, row[0]) for row in rows]
+
+    def consume_grant(
+        self,
+        grant_id: str,
+        descriptor: ActionDescriptor,
+        *,
+        expected_version: int,
+        policy_version: str,
+        config_version: str,
+        configured_rules: tuple[PolicyRule, ...] = (),
+    ) -> ApprovalGrant:
+        # Commit lazy expiry before raising a binding conflict in the consuming transaction.
+        self.get_grant(grant_id)
+        with connect_write(self.path) as connection:
+            grant = self._require_grant(connection, grant_id)
+            self._check_version(grant.id, grant.version, expected_version)
+            rules = tuple(
+                PolicyRule.model_validate_json(row[0])
+                for row in connection.execute(
+                    "SELECT payload_json FROM policy_rules WHERE workspace_ref = ?",
+                    (descriptor.workspace_ref,),
+                ).fetchall()
+            )
+            validate_grant_consumption(
+                grant,
+                descriptor,
+                rules=(*configured_rules, *rules),
+                policy_version=policy_version,
+                config_version=config_version,
+            )
+            consumed = grant.consume(
+                descriptor, policy_version=policy_version, config_version=config_version
+            )
+            self._write_grant(connection, consumed)
+            self._journal_grant(connection, consumed, "approval.grant_consumed")
+            return consumed
+
+    def revoke_grant(
+        self, grant_id: str, *, source: str, reason: str | None = None, expected_version: int
+    ) -> ApprovalGrant:
+        self.get_grant(grant_id)
+        with connect_write(self.path) as connection:
+            grant = self._require_grant(connection, grant_id)
+            self._check_version(grant.id, grant.version, expected_version)
+            if grant.status != "active":
+                raise ApprovalConflict(grant.id, grant.status, "revoked")
+            revoked = grant.model_copy(
+                update={
+                    "status": "revoked",
+                    "revoked_at": datetime.now(UTC),
+                    "revoked_by": SecretRedactor().redact_text(source),
+                    "revoked_reason": None
+                    if reason is None
+                    else SecretRedactor().redact_text(reason),
+                    "version": grant.version + 1,
+                }
+            )
+            self._write_grant(connection, revoked)
+            self._journal_grant(connection, revoked, "approval.grant_revoked")
+            return revoked
 
     def get_approval(self, approval_id: str) -> Approval:
-        with connect(self.path) as connection:
+        with connect_write(self.path) as connection:
             row = connection.execute(
                 "SELECT payload_json FROM approvals WHERE id = ?", (approval_id,)
             ).fetchone()
-        if row is None:
-            raise KeyError(f"approval not found: {approval_id}")
-        return Approval.model_validate_json(row["payload_json"])
+            if row is None:
+                raise KeyError(f"approval not found: {approval_id}")
+            approval = Approval.model_validate_json(row["payload_json"])
+            expired = approval.expire()
+            if expired != approval:
+                self._write_approval_row(connection, expired)
+                self._journal_approval(connection, expired, "approval.expired")
+            return expired
 
     def list_approvals(self, task_id: str) -> list[Approval]:
         with connect(self.path) as connection:
@@ -2815,7 +3103,9 @@ class SQLiteStore:
                 """,
                 (task_id,),
             ).fetchall()
-        return [Approval.model_validate_json(row["payload_json"]) for row in rows]
+        return [
+            self.get_approval(Approval.model_validate_json(row["payload_json"]).id) for row in rows
+        ]
 
     def claim_effect(
         self,
@@ -2828,8 +3118,15 @@ class SQLiteStore:
         policy_version: str | None = None,
         config_version: str | None = None,
         policy_decision: str | None = None,
+        configured_rules: tuple[PolicyRule, ...] = (),
+        current_evaluation: PolicyEvaluation | None = None,
         expected_input_sequence: int | None = None,
     ) -> Effect:
+        # Expiry is a lifecycle event even when the following claim is rejected.
+        observed = self.get_effect(effect_id)
+        if observed.approval_id is not None:
+            self.get_approval(observed.approval_id)
+        self.list_grants(self.get_task(observed.task_id).repository)
         with connect_write(self.path) as connection:
             self._assert_guard(connection, lease_guard)
             current = self._require_effect(connection, effect_id)
@@ -2884,6 +3181,43 @@ class SQLiteStore:
                 raise ValueError(f"Effect is not executable: {effect_id}")
             if policy_decision is not None and policy_decision != persisted_decision:
                 raise ValueError(f"Effect policy changed before execution: {effect_id}")
+            rules = tuple(
+                PolicyRule.model_validate_json(row[0])
+                for row in connection.execute(
+                    "SELECT payload_json FROM policy_rules WHERE workspace_ref = ?",
+                    (actual_workspace,),
+                ).fetchall()
+            )
+            grants = tuple(
+                ApprovalGrant.model_validate_json(row[0])
+                for row in connection.execute(
+                    "SELECT payload_json FROM approval_grants WHERE workspace_ref = ?",
+                    (actual_workspace,),
+                ).fetchall()
+            )
+            policy_effect = current
+            if current.action_descriptor is None and current_evaluation is not None:
+                policy_effect = current.model_copy(
+                    update={"action_descriptor": current_evaluation.descriptor}
+                )
+            claim_evaluation = evaluate_claim_policy(
+                policy_effect,
+                task,
+                rules=(*configured_rules, *rules),
+                grants=grants if current.action_descriptor is not None else (),
+                policy_version=policy_version or "",
+                config_version=config_version or actual_config,
+            )
+            matched_grant = next(
+                (
+                    grant
+                    for grant in grants
+                    if claim_evaluation is not None
+                    and grant.id == claim_evaluation.matched_grant_id
+                ),
+                None,
+            )
+            consumed_grant = None
             consumed_approval = None
             if current.approval_id is not None:
                 row = connection.execute(
@@ -2893,24 +3227,52 @@ class SQLiteStore:
                 if row is None:
                     raise ApprovalConflict(current.approval_id, "missing", "consumed")
                 approval = Approval.model_validate_json(row["payload_json"])
+                if approval.grant_id is not None:
+                    bound_grant = next(
+                        (grant for grant in grants if grant.id == approval.grant_id), None
+                    )
+                    if (
+                        bound_grant is None
+                        or current.action_descriptor is None
+                        or not bound_grant.matches(
+                            current.action_descriptor,
+                            policy_version or approval.policy_version,
+                            config_version or actual_config,
+                        )
+                    ):
+                        raise ApprovalConflict(approval.id, "grant_invalid", "consumed")
+                    matched_grant = bound_grant
                 consumed_approval = approval.consume(
                     current,
                     workspace_ref=workspace_ref or actual_workspace,
                     policy_version=policy_version or approval.policy_version,
                     config_version=config_version or actual_config,
                 )
-            elif persisted_decision == "require_approval":
+            elif persisted_decision == "require_approval" and matched_grant is None:
                 raise ApprovalConflict(effect_id, "missing", "consumed")
+            if matched_grant is not None and current.action_descriptor is not None:
+                consumed_grant = matched_grant.consume(
+                    current.action_descriptor,
+                    policy_version=policy_version or "",
+                    config_version=config_version or actual_config,
+                )
             claimed = current.model_copy(
                 update={
                     "status": EffectStatus.EXECUTING,
+                    "action_descriptor": policy_effect.action_descriptor,
+                    "policy_evaluation": current.policy_evaluation or current_evaluation,
                     "approval_id": None,
-                    "approval_consumed": consumed_approval is not None,
+                    "approval_consumed": consumed_approval is not None
+                    or consumed_grant is not None,
+                    "consumed_grant_id": None if consumed_grant is None else consumed_grant.id,
                     "version": current.version + 1,
                     "updated_at": datetime.now(UTC),
                 }
             )
             self._write_effect_row(connection, claimed)
+            if consumed_grant is not None:
+                self._write_grant(connection, consumed_grant)
+                self._journal_grant(connection, consumed_grant, "approval.grant_consumed")
             if consumed_approval is not None:
                 self._write_approval_row(connection, consumed_approval)
                 self._journal_approval(connection, consumed_approval, "approval.consumed")
@@ -2923,6 +3285,10 @@ class SQLiteStore:
                     task_id=task.id,
                     trace_id=claimed.provider_call_id,
                     data={"effect_id": claimed.id},
+                )
+            if claim_evaluation is not None:
+                self._journal_policy(
+                    connection, claimed, claim_evaluation.model_dump(mode="json"), "claimed"
                 )
             return claimed
 
@@ -4360,6 +4726,25 @@ class SQLiteStore:
             ),
         )
 
+        if effect.policy_evaluation is not None:
+            self._journal_policy(
+                connection, effect, effect.policy_evaluation.model_dump(mode="json"), "prepared"
+            )
+
+    def _journal_policy(
+        self, connection: sqlite3.Connection, effect: Effect, data: dict[str, object], phase: str
+    ) -> None:
+        task = self._require_task(connection, effect.task_id)
+        if task.session_id is not None:
+            self._journal(
+                connection,
+                self._require_session(connection, task.session_id),
+                event_id=journal_event_id("policy.evaluated", effect.id, phase),
+                event_type="policy.evaluated",
+                task_id=task.id,
+                data={"effect_id": effect.id, "phase": phase, "evaluation": data},
+            )
+
     def _write_effect_row(self, connection: sqlite3.Connection, effect: Effect) -> None:
         cursor = connection.execute(
             """
@@ -4483,6 +4868,12 @@ class SQLiteStore:
                 "approval_id": approval.id,
                 "effect_id": effect.id,
                 "status": approval.status.value,
+                "supersedes_approval_id": approval.supersedes_approval_id,
+                "scope_kind": approval.scope_kind.value,
+                "grant_id": approval.grant_id,
+                "policy_version": approval.policy_version,
+                "config_version": approval.config_version,
+                "resource_summary": approval.resource_summary,
             },
         )
 

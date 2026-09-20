@@ -559,7 +559,9 @@ patchloop memory <task-id> \
 | `patchloop session show/send` | 查看 Session 或追加持久化约束 |
 | `patchloop session pause/cancel/resume/close` | 控制 Session 生命周期 |
 | `patchloop session recover` | 检查并显式处置 unknown Effect |
-| `patchloop approval list/decide` | 查看和决定一次性精确审批 |
+| `patchloop approval list/decide` | 查看请求，选择 once/session/resource 精确审批 |
+| `patchloop approval grant list/revoke` | 查看或撤销可复用范围授权 |
+| `patchloop policy list/explain` | 查看持久化规则及 Effect 的规范化资源和评估证据 |
 | `patchloop run/resume` | 兼容的旧任务启动和恢复入口 |
 | `patchloop status` | 查看任务状态和报告 |
 | `patchloop diff` | 查看代码变更 |
@@ -573,3 +575,55 @@ patchloop memory <task-id> \
 | `patchloop tools` | 列出可用工具及输入 Schema |
 
 运行 `patchloop <command> --help` 可以查看某个命令的全部参数。
+
+### 审批范围与撤销
+
+`approval decide --approve` 默认只批准当前 Effect。需要复用时显式选择范围：
+
+```bash
+patchloop approval --repo /path/to/repository decide <approval-id> --approve
+patchloop approval --repo /path/to/repository decide <approval-id> --approve --scope session
+patchloop approval --repo /path/to/repository decide <approval-id> --approve --scope resource --expires <ISO-8601-with-timezone> --reason "本次维护窗口"
+patchloop approval --repo /path/to/repository grant list <session-id-or-workspace-path>
+patchloop approval --repo /path/to/repository grant revoke <grant-id> --reason "维护结束"
+patchloop policy --repo /path/to/repository list
+patchloop policy --repo /path/to/repository explain <task-id-or-effect-id>
+```
+
+Session 授权绑定当前 Session 和 workspace；resource 授权允许同一 workspace 的其他 Session
+复用，但必须提供未来 24 小时内、带时区的到期时间。资源由当前请求派生，CLI 不接受自定义通配符。
+两种范围均绑定工具、动作、精确资源、参数摘要和 policy/config version。修改关键参数需重新审批，
+硬拒绝始终优先。撤销保留审计记录，阻止后续认领，不回滚已执行的副作用。
+
+查看 `approval list` 和 `policy explain` 的实际资源后再批准；审批后仍需使用原 Session 的
+`resume` 命令继续。`--human` 放在 `approval` 或 `policy` 命令组之后可查看人类输出，默认输出
+带 `schema_version` 的 JSON。未知执行结果仍须先通过 `session recover` 显式处置；范围授权不会
+自动批准 unknown Effect 的 retry。
+
+在仓库的 `.patchloop/policy.json` 中显式启用扩展规则。例如：
+
+```json
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "rules": [
+    {"id": "ask-edits", "action": "edit", "resource_kind": "path", "pattern": "**", "effect": "ask"},
+    {"id": "protect-env", "action": "edit", "resource_kind": "path", "pattern": ".env*", "effect": "deny"}
+  ]
+}
+```
+
+规则来源由加载位置确定，项目文件不能冒充 system 或 user。用户级文件默认位于
+`~/.config/patchloop/policy.json`；可通过 `PATCHLOOP_USER_POLICY` 指定其他文件，系统级文件通过
+`PATCHLOOP_SYSTEM_POLICY` 显式指定。显式指定但不存在的文件，以及未知动作、来源、规则字段，
+都会在初始化 Provider 前导致失败。配置内容变化会改变有效 Policy 版本，旧授权不能自动迁移。
+启用扩展后，未匹配规则的副作用动作要求审批；已有权限开关和 Sandbox 边界继续有效。
+
+路径规则使用相对 POSIX glob；Windows 上匹配忽略大小写，POSIX 上保留大小写。
+解释器内联代码的拼接参数、等号形式及已覆盖的短选项组合仍受硬拒绝约束，不能通过 allow
+规则或旧 grant 放行。
+
+2026-09-20 控制面离线验收：全量 974 passed / 2 skipped，27 项绕过矩阵和 16 组安全审计通过，
+详见[专项记录](docs/APPROVAL_POLICY_EXTENSION_PLAN.md#81-实现与验收记录2026-09-20)和
+[机器报告](benchmarks/results/policy_fix_acceptance.json)。网络/安装/Skill 测试使用计数适配器，
+真实外部后端和 Sandbox 隔离仍未验证。

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import patchloop.sandbox as sandbox_module
 from patchloop.sandbox import (
     DockerSandbox,
     DockerSandboxConfig,
@@ -14,6 +15,7 @@ from patchloop.sandbox import (
     SandboxCleanupError,
     SandboxInterruptedError,
     SandboxTimeoutError,
+    _inspect_docker_container,
     reconcile_managed_command,
 )
 
@@ -80,10 +82,10 @@ def test_docker_recovery_distinguishes_absent_container_from_daemon_failure(
         container_name="patchloop-command-1",
     )
     monkeypatch.setattr(
-        subprocess,
-        "run",
+        sandbox_module,
+        "_run_docker_control",
         lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0], 1, "", "Error: No such object: patchloop-command-1"
+            args[0], 1, "", "error: no such object: patchloop-command-1"
         ),
     )
 
@@ -93,8 +95,8 @@ def test_docker_recovery_distinguishes_absent_container_from_daemon_failure(
     assert recovered.cleanup_reason == "recovery_already_stopped"
 
     monkeypatch.setattr(
-        subprocess,
-        "run",
+        sandbox_module,
+        "_run_docker_control",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args[0], 1, "", "Cannot connect to the Docker daemon"
         ),
@@ -116,17 +118,86 @@ def test_docker_recovery_verifies_label_removal_and_final_absence(
     )
     responses = iter(
         [
-            subprocess.CompletedProcess([], 0, "command-1\n", ""),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                '[{"Id":"container-id-1234567890","Name":"/patchloop-command-1",'
+                '"Config":{"Labels":{"patchloop.command_id":"command-1",'
+                '"patchloop.execution_id":"execution-1"}},"State":{"Running":true}}]',
+                "",
+            ),
             subprocess.CompletedProcess([], 0, "patchloop-command-1\n", ""),
-            subprocess.CompletedProcess([], 1, "", "Error: No such object: patchloop-command-1"),
+            subprocess.CompletedProcess(
+                [], 1, "", "Error: No such object: container-id-1234567890"
+            ),
         ]
     )
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(
+        sandbox_module, "_run_docker_control", lambda *args, **kwargs: next(responses)
+    )
 
     recovered = reconcile_managed_command(identity)
 
     assert recovered.status is ManagedCommandStatus.TERMINATED
     assert recovered.cleanup_reason == "recovery_terminated"
+
+
+@pytest.mark.parametrize(
+    ("stderr", "match"),
+    [
+        ("permission denied", "permission denied"),
+        ("Cannot connect to the Docker daemon", "Docker daemon"),
+        ("Error: No such object: some-other-container", "No such object"),
+    ],
+)
+def test_docker_inspect_does_not_treat_unknown_failures_as_absent(
+    monkeypatch: pytest.MonkeyPatch, stderr: str, match: str
+) -> None:
+    monkeypatch.setattr(
+        sandbox_module,
+        "_run_docker_control",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", stderr),
+    )
+
+    with pytest.raises(SandboxCleanupError, match=match):
+        _inspect_docker_container("patchloop-command-1")
+
+
+def test_docker_recovery_rejects_label_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    identity = ManagedCommandIdentity(
+        id="command-1",
+        execution_id="execution-1",
+        backend="docker",
+        process_id=1,
+        process_start_marker="docker-client",
+        container_name="patchloop-command-1",
+    )
+    monkeypatch.setattr(
+        sandbox_module,
+        "_run_docker_control",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            '[{"Id":"container-id-1234567890","Name":"/patchloop-command-1",'
+            '"Config":{"Labels":{"patchloop.command_id":"other",'
+            '"patchloop.execution_id":"execution-1"}},"State":{}}]',
+            "",
+        ),
+    )
+
+    with pytest.raises(SandboxCleanupError, match="identity changed"):
+        reconcile_managed_command(identity)
+
+
+def test_docker_inspect_rejects_malformed_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sandbox_module,
+        "_run_docker_control",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "not-json", ""),
+    )
+
+    with pytest.raises(SandboxCleanupError, match="malformed JSON"):
+        _inspect_docker_container("patchloop-command-1")
 
 
 def test_local_sandbox_records_verifiable_process_lifecycle(tmp_path: Path) -> None:
@@ -212,3 +283,33 @@ def test_local_sandbox_interrupts_for_runtime_control(tmp_path: Path) -> None:
 
     assert finished[0].status is ManagedCommandStatus.TERMINATED
     assert finished[0].cleanup_reason == "pause"
+
+
+def test_failed_outcome_callback_is_retried_without_regressing_status(tmp_path: Path) -> None:
+    attempts: list[ManagedCommandIdentity] = []
+
+    def finish(identity: ManagedCommandIdentity) -> None:
+        attempts.append(identity)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary database failure")
+
+    sandbox = LocalProcessSandbox()
+    sandbox.bind_execution(
+        "execution-1",
+        command_started=lambda identity: None,
+        command_finished=finish,
+        interruption_probe=lambda: None,
+    )
+
+    with pytest.raises(SandboxCleanupError, match="persist managed command outcome"):
+        sandbox.execute(
+            [sys.executable, "-c", "print('finished')"],
+            tmp_path,
+            timeout_seconds=5,
+            max_output_chars=1_000,
+        )
+    sandbox.terminate_all("late cleanup")
+    sandbox.unbind_execution()
+
+    assert len(attempts) == 2
+    assert attempts[0].status is attempts[1].status is ManagedCommandStatus.EXITED

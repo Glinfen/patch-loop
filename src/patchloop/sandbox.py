@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -12,10 +13,18 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from time import monotonic, sleep
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from patchloop.sandbox_output import (
+    CapturedOutput,
+    OutputCollectionError,
+    OutputCollectionInterrupted,
+    OutputCollectionTimeout,
+    collect_process_output,
+)
 
 
 class SandboxError(RuntimeError):
@@ -43,6 +52,15 @@ class ManagedCommandStatus(StrEnum):
     CLEANUP_FAILED = "cleanup_failed"
 
 
+def _validate_local_docker_host(value: str | None) -> str | None:
+    if value is None:
+        return None
+    socket_path = value.removeprefix("unix://")
+    if not value.startswith("unix:///") or not socket_path.startswith("/"):
+        raise ValueError("docker_host must be an absolute local unix socket URL")
+    return value
+
+
 class ManagedCommandIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -52,10 +70,18 @@ class ManagedCommandIdentity(BaseModel):
     process_id: int = Field(gt=0)
     process_start_marker: str = Field(min_length=1, max_length=256)
     container_name: str | None = Field(default=None, min_length=1, max_length=128)
+    container_id: str | None = Field(default=None, min_length=12, max_length=128)
+    docker_host: str | None = Field(default=None, max_length=4096)
+    purpose: Literal["workload", "preflight"] = "workload"
     status: ManagedCommandStatus = ManagedCommandStatus.RUNNING
     cleanup_reason: str | None = Field(default=None, max_length=256)
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("docker_host")
+    @classmethod
+    def _validate_docker_host(cls, value: str | None) -> str | None:
+        return _validate_local_docker_host(value)
 
 
 CommandStarted = Callable[[ManagedCommandIdentity], None]
@@ -67,6 +93,10 @@ class SandboxResult(BaseModel):
     exit_code: int
     output: str
     backend: str
+    output_truncated: bool = False
+    stdout_bytes: int = Field(default=0, ge=0)
+    stderr_bytes: int = Field(default=0, ge=0)
+    oom_killed: bool = False
 
 
 class CommandSandbox(Protocol):
@@ -114,7 +144,7 @@ def _windows_kernel32() -> Any:
     return ctypes.__dict__["windll"].kernel32
 
 
-def _process_start_marker(process: subprocess.Popen[str]) -> str:
+def _process_start_marker(process: subprocess.Popen[Any]) -> str:
     """Return an OS-issued creation marker so cleanup never trusts a PID alone."""
 
     if os.name == "nt":
@@ -264,32 +294,148 @@ def _terminate_windows_pid(pid: int) -> None:
         kernel32.CloseHandle(handle)
 
 
-def _docker_command_id(container_name: str) -> str | None:
-    inspected = subprocess.run(
-        [
-            "docker",
-            "inspect",
-            "--format",
-            '{{ index .Config.Labels "patchloop.command_id" }}',
-            container_name,
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=5,
-        check=False,
-        shell=False,
+class DockerContainerSnapshot(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    container_id: str
+    name: str
+    command_id: str | None = None
+    execution_id: str | None = None
+    state: dict[str, object] = Field(default_factory=dict)
+
+
+def _docker_environment(docker_host: str | None) -> dict[str, str]:
+    environment = _minimal_environment()
+    if docker_host is not None:
+        environment["DOCKER_HOST"] = docker_host
+    return environment
+
+
+def _run_docker_control(
+    command: list[str], *, timeout_seconds: float, docker_host: str | None
+) -> subprocess.CompletedProcess[str]:
+    try:
+        process = subprocess.Popen(
+            command,
+            env=_docker_environment(docker_host),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+        )
+    except FileNotFoundError as exc:
+        raise SandboxCleanupError("Docker is required for managed container cleanup") from exc
+
+    def terminate(_: str) -> None:
+        process.kill()
+        process.wait(timeout=2)
+
+    try:
+        captured = collect_process_output(
+            process,
+            max_output_chars=8192,
+            deadline=monotonic() + timeout_seconds,
+            interruption_probe=None,
+            terminate=terminate,
+        )
+    except OutputCollectionTimeout as exc:
+        raise SandboxCleanupError(f"docker control command timed out: {command[1]}") from exc
+    except OutputCollectionError as exc:
+        raise SandboxCleanupError(f"docker control command output failed: {command[1]}") from exc
+    stdout = captured.stdout_tail
+    stderr = captured.stderr_tail
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _is_absent_docker_error(error: str, reference: str) -> bool:
+    folded = error.casefold()
+    absent = "no such object" in folded or "no such container" in folded
+    return absent and reference.casefold() in folded
+
+
+def _inspect_docker_container(
+    reference: str, *, docker_host: str | None = None
+) -> DockerContainerSnapshot | None:
+    inspected = _run_docker_control(
+        ["docker", "inspect", "--type", "container", reference],
+        timeout_seconds=5,
+        docker_host=docker_host,
     )
-    if inspected.returncode == 0:
-        return inspected.stdout.strip()
-    error = inspected.stderr.strip()
-    if "No such object" in error or "No such container" in error:
-        return None
-    raise SandboxCleanupError(error or "docker inspect failed")
+    if inspected.returncode != 0:
+        error = inspected.stderr.strip()
+        if _is_absent_docker_error(error, reference):
+            return None
+        raise SandboxCleanupError(error or "docker inspect failed")
+    try:
+        payload = json.loads(inspected.stdout)
+        if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
+            raise ValueError("inspect response must contain exactly one container")
+        item = payload[0]
+        container_id = item["Id"]
+        name = item["Name"]
+        config = item["Config"]
+        state = item["State"]
+        if not isinstance(container_id, str) or not container_id:
+            raise ValueError("container ID is missing")
+        if not isinstance(name, str) or not name:
+            raise ValueError("container name is missing")
+        if not isinstance(config, dict) or not isinstance(state, dict):
+            raise ValueError("container config/state is malformed")
+        labels = config.get("Labels") or {}
+        if not isinstance(labels, dict):
+            raise ValueError("container labels are malformed")
+        command_id = labels.get("patchloop.command_id")
+        execution_id = labels.get("patchloop.execution_id")
+        if command_id is not None and not isinstance(command_id, str):
+            raise ValueError("command identity label is malformed")
+        if execution_id is not None and not isinstance(execution_id, str):
+            raise ValueError("execution identity label is malformed")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise SandboxCleanupError("docker inspect returned malformed JSON") from exc
+    return DockerContainerSnapshot(
+        container_id=container_id,
+        name=name.removeprefix("/"),
+        command_id=command_id,
+        execution_id=execution_id,
+        state=state,
+    )
 
 
-def _create_windows_kill_job(process: subprocess.Popen[str]) -> int:
+def _remove_verified_container(identity: ManagedCommandIdentity) -> bool:
+    reference = identity.container_id or identity.container_name
+    if reference is None:
+        raise SandboxCleanupError("managed Docker command has no container identity")
+    snapshot = _inspect_docker_container(reference, docker_host=identity.docker_host)
+    if snapshot is None:
+        return False
+    if identity.container_id is not None and snapshot.container_id != identity.container_id:
+        raise SandboxCleanupError("container ID changed before cleanup")
+    if snapshot.command_id != identity.id or snapshot.execution_id != identity.execution_id:
+        raise SandboxCleanupError("container identity changed before cleanup")
+    removed = _run_docker_control(
+        ["docker", "rm", "--force", snapshot.container_id],
+        timeout_seconds=10,
+        docker_host=identity.docker_host,
+    )
+    if removed.returncode != 0 and not _is_absent_docker_error(
+        removed.stderr, snapshot.container_id
+    ):
+        raise SandboxCleanupError(removed.stderr.strip() or "docker rm failed")
+    if (
+        _inspect_docker_container(snapshot.container_id, docker_host=identity.docker_host)
+        is not None
+    ):
+        raise SandboxCleanupError("managed container remained after recovery cleanup")
+    return True
+
+
+def _docker_command_id(container_name: str) -> str | None:
+    """Compatibility helper retained for callers that only need the command label."""
+
+    snapshot = _inspect_docker_container(container_name)
+    return None if snapshot is None else snapshot.command_id
+
+
+def _create_windows_kill_job(process: subprocess.Popen[Any]) -> int:
     import ctypes
     from ctypes import wintypes
 
@@ -376,26 +522,7 @@ def reconcile_managed_command(identity: ManagedCommandIdentity) -> ManagedComman
                 raise SandboxCleanupError("managed process remained alive after recovery cleanup")
             reason = "recovery_terminated"
     elif identity.backend == "docker":
-        if identity.container_name is None:
-            raise SandboxCleanupError("managed Docker command has no container identity")
-        command_id = _docker_command_id(identity.container_name)
-        if command_id is not None:
-            if command_id != identity.id:
-                raise SandboxCleanupError("container identity changed before recovery cleanup")
-            removed = subprocess.run(
-                ["docker", "rm", "--force", identity.container_name],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-                check=False,
-                shell=False,
-            )
-            if removed.returncode != 0:
-                raise SandboxCleanupError(removed.stderr.strip() or "docker rm failed")
-            if _docker_command_id(identity.container_name) is not None:
-                raise SandboxCleanupError("managed container remained after recovery cleanup")
+        if _remove_verified_container(identity):
             reason = "recovery_terminated"
     else:
         raise SandboxCleanupError(f"unsupported managed command backend: {identity.backend}")
@@ -414,8 +541,11 @@ class _ManagedSandboxBase:
         self._command_started: CommandStarted | None = None
         self._command_finished: CommandFinished | None = None
         self._interruption_probe: InterruptionProbe | None = None
-        self._active: dict[str, tuple[subprocess.Popen[str], ManagedCommandIdentity]] = {}
+        self._active: dict[str, tuple[subprocess.Popen[bytes], ManagedCommandIdentity]] = {}
         self._active_lock = threading.Lock()
+        self._command_locks: dict[str, threading.RLock] = {}
+        self._pending_outcomes: dict[str, ManagedCommandIdentity] = {}
+        self._settled_commands: set[str] = set()
 
     def bind_execution(
         self,
@@ -456,10 +586,13 @@ class _ManagedSandboxBase:
 
     def _register(
         self,
-        process: subprocess.Popen[str],
+        process: subprocess.Popen[bytes],
         *,
         backend: str,
         container_name: str | None = None,
+        container_id: str | None = None,
+        docker_host: str | None = None,
+        purpose: Literal["workload", "preflight"] = "workload",
         identity_id: str | None = None,
     ) -> ManagedCommandIdentity:
         identity = ManagedCommandIdentity(
@@ -469,16 +602,24 @@ class _ManagedSandboxBase:
             process_id=process.pid,
             process_start_marker=_process_start_marker(process),
             container_name=container_name,
+            container_id=container_id,
+            docker_host=docker_host,
+            purpose=purpose,
         )
         with self._active_lock:
             self._active[identity.id] = (process, identity)
+            self._command_locks.setdefault(identity.id, threading.RLock())
         try:
             if self._command_started is not None:
                 self._command_started(identity)
         except BaseException:
             try:
                 self._terminate_process(process, identity)
-            finally:
+            except Exception as cleanup_error:
+                raise SandboxCleanupError(
+                    f"command registration and cleanup failed: {identity.id}"
+                ) from cleanup_error
+            else:
                 with self._active_lock:
                     self._active.pop(identity.id, None)
             raise
@@ -490,74 +631,93 @@ class _ManagedSandboxBase:
         status: ManagedCommandStatus,
         reason: str | None = None,
     ) -> None:
-        finished = identity.model_copy(
-            update={
-                "status": status,
-                "cleanup_reason": reason,
-                "updated_at": datetime.now(UTC),
-            }
-        )
         with self._active_lock:
-            self._active.pop(identity.id, None)
-        if self._command_finished is not None:
-            try:
-                self._command_finished(finished)
-            except Exception as exc:
-                raise SandboxCleanupError(
-                    f"could not persist managed command outcome: {identity.id}"
-                ) from exc
+            command_lock = self._command_locks.setdefault(identity.id, threading.RLock())
+        with command_lock:
+            with self._active_lock:
+                if identity.id in self._settled_commands:
+                    return
+                finished = self._pending_outcomes.get(identity.id)
+                if finished is None:
+                    finished = identity.model_copy(
+                        update={
+                            "status": status,
+                            "cleanup_reason": reason,
+                            "updated_at": datetime.now(UTC),
+                        }
+                    )
+                    self._pending_outcomes[identity.id] = finished
+            if self._command_finished is not None:
+                try:
+                    self._command_finished(finished)
+                except Exception as exc:
+                    raise SandboxCleanupError(
+                        f"could not persist managed command outcome: {identity.id}"
+                    ) from exc
+            with self._active_lock:
+                self._active.pop(identity.id, None)
+                self._pending_outcomes.pop(identity.id, None)
+                self._settled_commands.add(identity.id)
 
     def _terminate_and_finish(
         self,
-        process: subprocess.Popen[str],
+        process: subprocess.Popen[bytes],
         identity: ManagedCommandIdentity,
         reason: str,
     ) -> None:
-        try:
-            self._terminate_process(process, identity)
-        except Exception as exc:
+        with self._active_lock:
+            command_lock = self._command_locks.setdefault(identity.id, threading.RLock())
+        with command_lock:
             try:
-                self._finish(identity, ManagedCommandStatus.CLEANUP_FAILED, str(exc))
-            except Exception as finish_exc:
+                self._terminate_process(process, identity)
+            except Exception as exc:
+                try:
+                    self._finish(identity, ManagedCommandStatus.CLEANUP_FAILED, str(exc))
+                except Exception as finish_exc:
+                    raise SandboxCleanupError(
+                        f"command cleanup and outcome persistence failed: {identity.id}"
+                    ) from finish_exc
                 raise SandboxCleanupError(
-                    f"command cleanup and outcome persistence failed: {identity.id}"
-                ) from finish_exc
-            raise SandboxCleanupError(f"managed command cleanup failed: {identity.id}") from exc
-        self._finish(identity, ManagedCommandStatus.TERMINATED, reason)
+                    f"managed command cleanup failed: {identity.id}"
+                ) from exc
+            self._finish(identity, ManagedCommandStatus.TERMINATED, reason)
 
     def _communicate(
         self,
-        process: subprocess.Popen[str],
+        process: subprocess.Popen[bytes],
         identity: ManagedCommandIdentity,
         timeout_seconds: float,
-    ) -> tuple[str, str]:
-        deadline = monotonic() + timeout_seconds
-        while True:
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                self._terminate_and_finish(process, identity, "timeout")
-                raise SandboxTimeoutError(
-                    f"{identity.backend} command timed out after {timeout_seconds:g} seconds"
-                )
-            try:
-                stdout, stderr = process.communicate(timeout=min(0.1, remaining))
-            except subprocess.TimeoutExpired:
-                reason = None if self._interruption_probe is None else self._interruption_probe()
-                if reason is None:
-                    continue
-                self._terminate_and_finish(process, identity, reason)
-                raise SandboxInterruptedError(reason) from None
-            self._complete_process_scope(process, identity)
-            self._finish(identity, ManagedCommandStatus.EXITED)
-            return stdout, stderr
+        max_output_chars: int,
+    ) -> CapturedOutput:
+        try:
+            captured = collect_process_output(
+                process,
+                max_output_chars=max_output_chars,
+                deadline=monotonic() + timeout_seconds,
+                interruption_probe=self._interruption_probe,
+                terminate=lambda reason: self._terminate_and_finish(process, identity, reason),
+            )
+        except OutputCollectionTimeout:
+            raise SandboxTimeoutError(
+                f"{identity.backend} command timed out after {timeout_seconds:g} seconds"
+            ) from None
+        except OutputCollectionInterrupted as exc:
+            raise SandboxInterruptedError(exc.reason) from None
+        except OutputCollectionError as exc:
+            raise SandboxCleanupError(
+                f"managed command output cleanup failed: {identity.id}"
+            ) from exc
+        self._complete_process_scope(process, identity)
+        self._finish(identity, ManagedCommandStatus.EXITED)
+        return captured
 
     def _terminate_process(
-        self, process: subprocess.Popen[str], identity: ManagedCommandIdentity
+        self, process: subprocess.Popen[bytes], identity: ManagedCommandIdentity
     ) -> None:
         raise NotImplementedError
 
     def _complete_process_scope(
-        self, process: subprocess.Popen[str], identity: ManagedCommandIdentity
+        self, process: subprocess.Popen[bytes], identity: ManagedCommandIdentity
     ) -> None:
         del process, identity
 
@@ -586,9 +746,6 @@ class LocalProcessSandbox(_ManagedSandboxBase):
             env=_minimal_environment(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             shell=False,
             start_new_session=os.name != "nt",
             creationflags=creationflags,
@@ -601,15 +758,21 @@ class LocalProcessSandbox(_ManagedSandboxBase):
                 process.wait(timeout=5)
                 raise
         identity = self._register(process, backend=self.name)
-        stdout, stderr = self._communicate(process, identity, timeout_seconds)
+        captured = self._communicate(
+            process, identity, timeout_seconds, max_output_chars
+        )
+        output = (captured.stdout_tail + captured.stderr_tail)[-max_output_chars:]
         return SandboxResult(
             exit_code=process.returncode,
-            output=(stdout + stderr)[-max_output_chars:],
+            output=output,
             backend=self.name,
+            output_truncated=captured.truncated,
+            stdout_bytes=captured.stdout_bytes,
+            stderr_bytes=captured.stderr_bytes,
         )
 
     def _terminate_process(
-        self, process: subprocess.Popen[str], identity: ManagedCommandIdentity
+        self, process: subprocess.Popen[bytes], identity: ManagedCommandIdentity
     ) -> None:
         if process.poll() is not None:
             return
@@ -637,7 +800,7 @@ class LocalProcessSandbox(_ManagedSandboxBase):
             raise SandboxCleanupError("process tree did not exit after termination") from exc
 
     def _complete_process_scope(
-        self, process: subprocess.Popen[str], identity: ManagedCommandIdentity
+        self, process: subprocess.Popen[bytes], identity: ManagedCommandIdentity
     ) -> None:
         del identity
         if os.name == "nt":
@@ -659,9 +822,15 @@ class DockerSandboxConfig(BaseModel):
 class DockerSandbox(_ManagedSandboxBase):
     name = "docker"
 
-    def __init__(self, config: DockerSandboxConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: DockerSandboxConfig | None = None,
+        *,
+        docker_host: str | None = None,
+    ) -> None:
         super().__init__()
         self.config = config or DockerSandboxConfig()
+        self.docker_host = _validate_local_docker_host(docker_host)
 
     def build_command(self, command: list[str], repository: Path) -> list[str]:
         repository = repository.resolve(strict=True)
@@ -674,6 +843,8 @@ class DockerSandbox(_ManagedSandboxBase):
             "docker",
             "run",
             "--rm",
+            "--log-driver",
+            "none",
             "--network",
             network,
             "--cpus",
@@ -736,12 +907,9 @@ class DockerSandbox(_ManagedSandboxBase):
         try:
             process = subprocess.Popen(
                 docker_command,
-                env=_minimal_environment(),
+                env=_docker_environment(self.docker_host),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
                 shell=False,
             )
         except FileNotFoundError as exc:
@@ -750,53 +918,28 @@ class DockerSandbox(_ManagedSandboxBase):
             process,
             backend=self.name,
             container_name=container_name,
+            docker_host=self.docker_host,
             identity_id=command_id,
         )
-        stdout, stderr = self._communicate(process, identity, timeout_seconds)
-        output = (stdout + stderr)[-max_output_chars:]
+        captured = self._communicate(
+            process, identity, timeout_seconds, max_output_chars
+        )
+        output = (captured.stdout_tail + captured.stderr_tail)[-max_output_chars:]
         if process.returncode in {125, 126, 127}:
             raise SandboxError(f"Docker sandbox failed to start: {output.strip()}")
         return SandboxResult(
             exit_code=process.returncode,
             output=output,
             backend=self.name,
+            output_truncated=captured.truncated,
+            stdout_bytes=captured.stdout_bytes,
+            stderr_bytes=captured.stderr_bytes,
         )
 
     def _terminate_process(
-        self, process: subprocess.Popen[str], identity: ManagedCommandIdentity
+        self, process: subprocess.Popen[bytes], identity: ManagedCommandIdentity
     ) -> None:
-        container_name = identity.container_name
-        if container_name is None:
-            raise SandboxCleanupError("managed Docker command has no container identity")
-        inspected = subprocess.run(
-            [
-                "docker",
-                "inspect",
-                "--format",
-                '{{ index .Config.Labels "patchloop.command_id" }}',
-                container_name,
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            shell=False,
-        )
-        if inspected.returncode == 0:
-            if inspected.stdout.strip() != identity.id:
-                raise SandboxCleanupError("container identity changed before cleanup")
-            removed = subprocess.run(
-                ["docker", "rm", "--force", container_name],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-                shell=False,
-            )
-            if removed.returncode != 0:
-                raise SandboxCleanupError(removed.stderr.strip() or "docker rm failed")
+        _remove_verified_container(identity)
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired as exc:

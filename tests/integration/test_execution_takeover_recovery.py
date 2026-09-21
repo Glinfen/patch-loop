@@ -272,3 +272,38 @@ def test_workspace_recovery_failure_releases_new_execution(tmp_path: Path) -> No
     assert store.list_managed_commands(first.execution.id)[0].status is (
         ManagedCommandStatus.CLEANUP_FAILED
     )
+
+
+def test_late_finish_cannot_regress_a_terminal_managed_command(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    store = SQLiteStore(tmp_path / "state.db")
+    task = store.prepare_task_execution(
+        Task(id="task-1", goal="Preserve terminal outcome", repository=str(repository))
+    )
+    lease = _acquire(
+        _manager(store, _Clock(), "execution-1"), task, repository, "worker-1"
+    )
+    running = ManagedCommandIdentity(
+        id="command-1",
+        execution_id=lease.execution.id,
+        backend="docker",
+        process_id=123,
+        process_start_marker="marker",
+        container_name="patchloop-command-1",
+        container_id="container-id-1234567890",
+        docker_host="unix:///run/docker.sock",
+    )
+    store.register_managed_command(running, lease_guard=lease.lease_guard)
+    terminated = running.model_copy(
+        update={"status": ManagedCommandStatus.TERMINATED, "cleanup_reason": "takeover"}
+    )
+    store.finish_managed_command(terminated)
+
+    late = running.model_copy(update={"status": ManagedCommandStatus.EXITED})
+    persisted = store.finish_managed_command(late)
+
+    assert persisted.status is ManagedCommandStatus.TERMINATED
+    assert store.list_managed_commands(lease.execution.id)[0].status is (
+        ManagedCommandStatus.TERMINATED
+    )

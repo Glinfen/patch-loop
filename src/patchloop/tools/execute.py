@@ -59,6 +59,9 @@ class RunTestsTool(Tool):
                 "exit_code": completed.exit_code,
                 "output": completed.output,
                 "sandbox": completed.backend,
+                "output_truncated": completed.output_truncated,
+                "stdout_bytes": completed.stdout_bytes,
+                "stderr_bytes": completed.stderr_bytes,
             },
             ensure_ascii=False,
         )
@@ -151,6 +154,9 @@ class RunCommandTool(Tool):
                 "exit_code": completed.exit_code,
                 "output": completed.output,
                 "sandbox": completed.backend,
+                "output_truncated": completed.output_truncated,
+                "stdout_bytes": completed.stdout_bytes,
+                "stderr_bytes": completed.stderr_bytes,
             },
             ensure_ascii=False,
         )

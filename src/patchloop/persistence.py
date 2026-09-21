@@ -1922,6 +1922,9 @@ class SQLiteStore(SQLiteWorkspaceMixin):
                 "process_id",
                 "process_start_marker",
                 "container_name",
+                "container_id",
+                "docker_host",
+                "purpose",
             )
             if any(getattr(current, name) != getattr(safe, name) for name in immutable_identity):
                 raise LeaseLost(safe.execution_id)
@@ -1935,6 +1938,11 @@ class SQLiteStore(SQLiteWorkspaceMixin):
                 }:
                     return current
                 raise ValueError(f"managed command is already finished: {safe.id}")
+            if (
+                current.status is ManagedCommandStatus.CLEANUP_FAILED
+                and safe.status is not ManagedCommandStatus.TERMINATED
+            ):
+                return current
             connection.execute(
                 """
                 UPDATE managed_commands SET status = ?, updated_at = ?, payload_json = ?

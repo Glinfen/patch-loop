@@ -5,6 +5,7 @@ from patchloop.domain import ErrorKind, Task, TaskStatus, ToolCall
 from patchloop.events import EventLogger
 from patchloop.providers import FakeProvider, ModelResponse
 from patchloop.runtime import AgentRuntime
+from patchloop.sandbox import LocalProcessSandbox
 from patchloop.tools import (
     ApplyPatchTool,
     PermissionLevel,
@@ -23,7 +24,7 @@ def test_agent_replans_and_recovers_from_failed_patch(tmp_path: Path) -> None:
     shutil.copytree(source, repository)
     trace = EventLogger(tmp_path / "trace.jsonl")
     gateway = ToolGateway(
-        ToolContext(repository),
+        ToolContext(repository, LocalProcessSandbox()),
         [ReadFileTool(), UpdatePlanTool(), ApplyPatchTool(), RunTestsTool()],
         trace,
         ToolPolicy(

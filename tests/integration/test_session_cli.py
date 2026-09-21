@@ -28,6 +28,67 @@ from patchloop.tools import ListFilesTool, ToolContext, ToolGateway
 runner = CliRunner()
 
 
+def test_session_start_persists_sandbox_capacity_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "patchloop.cli._provider_from_env",
+        lambda: FakeProvider([ModelResponse(content="Done")]),
+    )
+    prefix = ["session", "--repo", str(tmp_path)]
+    created = runner.invoke(app, [*prefix, "create"])
+    session_id = json.loads(created.stdout)["id"]
+
+    started = runner.invoke(
+        app,
+        [
+            *prefix,
+            "start",
+            session_id,
+            "Inspect",
+            "--sandbox-workspace-limit-mb",
+            "128",
+            "--sandbox-workspace-inode-limit",
+            "4096",
+        ],
+    )
+
+    assert started.exit_code == 0, started.output
+    task_id = json.loads(started.stdout)["task_id"]
+    persisted = SQLiteStore(tmp_path / ".patchloop" / "patchloop.db").get_task(task_id)
+    assert persisted.execution.sandbox_workspace_limit_mb == 128
+    assert persisted.execution.sandbox_workspace_inode_limit == 4096
+
+
+def test_session_start_rejects_local_backend_with_workspace_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "patchloop.cli._provider_from_env",
+        lambda: FakeProvider([ModelResponse(content="unused")]),
+    )
+    prefix = ["session", "--repo", str(tmp_path)]
+    created = runner.invoke(app, [*prefix, "create"])
+    session_id = json.loads(created.stdout)["id"]
+
+    started = runner.invoke(
+        app,
+        [
+            *prefix,
+            "start",
+            session_id,
+            "Inspect",
+            "--sandbox",
+            "local",
+            "--sandbox-workspace-limit-mb",
+            "128",
+        ],
+    )
+
+    assert started.exit_code == 2
+    assert "workspace limits require the Docker sandbox" in started.output
+
+
 def _run_blocked_session(
     repository_value: str,
     session_id: str,

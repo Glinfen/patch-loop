@@ -6,6 +6,8 @@ import json
 import os
 import signal
 import subprocess
+import sys
+import tempfile
 import threading
 from collections.abc import Callable
 from contextlib import suppress
@@ -13,7 +15,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from time import monotonic, sleep
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -25,6 +27,9 @@ from patchloop.sandbox_output import (
     OutputCollectionTimeout,
     collect_process_output,
 )
+
+if TYPE_CHECKING:
+    from patchloop.domain import TaskExecutionConfig
 
 
 class SandboxError(RuntimeError):
@@ -356,7 +361,18 @@ def _inspect_docker_container(
     reference: str, *, docker_host: str | None = None
 ) -> DockerContainerSnapshot | None:
     inspected = _run_docker_control(
-        ["docker", "inspect", "--type", "container", reference],
+        [
+            "docker",
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            "{{json .Id}}\n{{json .Name}}\n{{json .Config.Labels}}\n"
+            "{{json .State.Status}}\n{{json .State.Running}}\n"
+            "{{json .State.ExitCode}}\n{{json .State.OOMKilled}}\n"
+            "{{json .State.Error}}\n{{json .State.StartedAt}}",
+            reference,
+        ],
         timeout_seconds=5,
         docker_host=docker_host,
     )
@@ -366,22 +382,42 @@ def _inspect_docker_container(
             return None
         raise SandboxCleanupError(error or "docker inspect failed")
     try:
-        payload = json.loads(inspected.stdout)
-        if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
-            raise ValueError("inspect response must contain exactly one container")
-        item = payload[0]
-        container_id = item["Id"]
-        name = item["Name"]
-        config = item["Config"]
-        state = item["State"]
+        output = inspected.stdout.strip()
+        if output.startswith("["):
+            payload = json.loads(output)
+            if (
+                not isinstance(payload, list)
+                or len(payload) != 1
+                or not isinstance(payload[0], dict)
+            ):
+                raise ValueError("inspect response must contain exactly one container")
+            item = payload[0]
+            container_id = item["Id"]
+            name = item["Name"]
+            config = item["Config"]
+            state = item["State"]
+            labels = config.get("Labels") or {} if isinstance(config, dict) else None
+        else:
+            lines = output.splitlines()
+            if len(lines) != 9:
+                raise ValueError("inspect response must contain nine JSON fields")
+            values = [json.loads(line) for line in lines]
+            container_id, name, labels = values[:3]
+            state = {
+                "Status": values[3],
+                "Running": values[4],
+                "ExitCode": values[5],
+                "OOMKilled": values[6],
+                "Error": values[7],
+                "StartedAt": values[8],
+            }
         if not isinstance(container_id, str) or not container_id:
             raise ValueError("container ID is missing")
         if not isinstance(name, str) or not name:
             raise ValueError("container name is missing")
-        if not isinstance(config, dict) or not isinstance(state, dict):
-            raise ValueError("container config/state is malformed")
-        labels = config.get("Labels") or {}
-        if not isinstance(labels, dict):
+        if labels is None:
+            labels = {}
+        if not isinstance(labels, dict) or not isinstance(state, dict):
             raise ValueError("container labels are malformed")
         command_id = labels.get("patchloop.command_id")
         execution_id = labels.get("patchloop.execution_id")
@@ -594,10 +630,11 @@ class _ManagedSandboxBase:
         docker_host: str | None = None,
         purpose: Literal["workload", "preflight"] = "workload",
         identity_id: str | None = None,
+        execution_id: str | None = None,
     ) -> ManagedCommandIdentity:
         identity = ManagedCommandIdentity(
             id=identity_id or str(uuid4()),
-            execution_id=self._execution_id or f"standalone-{uuid4()}",
+            execution_id=execution_id or self._execution_id or f"standalone-{uuid4()}",
             backend=backend,
             process_id=process.pid,
             process_start_marker=_process_start_marker(process),
@@ -688,14 +725,23 @@ class _ManagedSandboxBase:
         identity: ManagedCommandIdentity,
         timeout_seconds: float,
         max_output_chars: int,
+        *,
+        finish_on_exit: bool = True,
+        interruption_probe: InterruptionProbe | None = None,
+        readers_started: threading.Event | None = None,
     ) -> CapturedOutput:
         try:
             captured = collect_process_output(
                 process,
                 max_output_chars=max_output_chars,
                 deadline=monotonic() + timeout_seconds,
-                interruption_probe=self._interruption_probe,
+                interruption_probe=(
+                    self._interruption_probe
+                    if interruption_probe is None
+                    else interruption_probe
+                ),
                 terminate=lambda reason: self._terminate_and_finish(process, identity, reason),
+                readers_started=readers_started,
             )
         except OutputCollectionTimeout:
             raise SandboxTimeoutError(
@@ -708,7 +754,8 @@ class _ManagedSandboxBase:
                 f"managed command output cleanup failed: {identity.id}"
             ) from exc
         self._complete_process_scope(process, identity)
-        self._finish(identity, ManagedCommandStatus.EXITED)
+        if finish_on_exit:
+            self._finish(identity, ManagedCommandStatus.EXITED)
         return captured
 
     def _terminate_process(
@@ -817,6 +864,45 @@ class DockerSandboxConfig(BaseModel):
     memory_mb: int = Field(default=512, ge=64, le=16_384)
     pids_limit: int = Field(default=128, ge=16, le=4_096)
     network_enabled: bool = False
+    user: str | None = Field(default=None, pattern=r"^\d+:\d+$")
+    tmpfs_mb: int = Field(default=64, ge=16, le=1024)
+    workspace_limit_mb: int | None = Field(default=None, ge=64, le=16_384)
+    workspace_inode_limit: int = Field(default=65_536, ge=1024, le=10_000_000)
+
+
+class _SupervisorReady(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: int
+    command_id: str
+    execution_id: str
+    container_id: str
+    container_name: str
+    docker_host: str | None
+    stage: Literal["ready"]
+
+
+class _SupervisorOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: int
+    command_id: str
+    execution_id: str
+    container_id: str | None
+    status: Literal["exited", "terminated", "cleanup_failed"]
+    exit_code: int | None
+    reason: str | None
+    oom_killed: bool
+    cleanup_confirmed: bool
+    diagnostic: str = Field(max_length=8192)
+
+
+class _SupervisorHandle:
+    def __init__(self, process: subprocess.Popen[bytes], control_dir: Path) -> None:
+        self.process = process
+        self.control_dir = control_dir
+        self.lock = threading.Lock()
+        self.stop_sent = False
 
 
 class DockerSandbox(_ManagedSandboxBase):
@@ -827,22 +913,61 @@ class DockerSandbox(_ManagedSandboxBase):
         config: DockerSandboxConfig | None = None,
         *,
         docker_host: str | None = None,
+        _supervisor_command: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.config = config or DockerSandboxConfig()
         self.docker_host = _validate_local_docker_host(docker_host)
+        self._supervisors: dict[str, _SupervisorHandle] = {}
+        self._supervisor_command = _supervisor_command or [
+            sys.executable,
+            "-m",
+            "patchloop.sandbox_supervisor",
+        ]
+        self._resolved_image_id: str | None = None
+        self._preflight_cache: set[tuple[object, ...]] = set()
 
-    def build_command(self, command: list[str], repository: Path) -> list[str]:
+    def bind_execution(
+        self,
+        execution_id: str,
+        *,
+        command_started: CommandStarted,
+        command_finished: CommandFinished,
+        interruption_probe: InterruptionProbe,
+    ) -> None:
+        super().bind_execution(
+            execution_id,
+            command_started=command_started,
+            command_finished=command_finished,
+            interruption_probe=interruption_probe,
+        )
+        self._resolved_image_id = None
+        self._preflight_cache.clear()
+
+    def unbind_execution(self) -> None:
+        super().unbind_execution()
+        self._resolved_image_id = None
+        self._preflight_cache.clear()
+
+    def _effective_user(self) -> str | None:
+        if self.config.user is not None:
+            return self.config.user
+        if os.name != "nt" and hasattr(os, "getuid") and hasattr(os, "getgid"):
+            return f"{os.__dict__['getuid']()}:{os.__dict__['getgid']()}"
+        return None
+
+    @staticmethod
+    def _container_command(command: list[str]) -> list[str]:
+        result = list(command)
+        executable = Path(result[0]).name.casefold()
+        if executable in {"python", "python.exe", "python3", "python3.exe", "py", "py.exe"}:
+            result[0] = "python"
+        return result
+
+    def _sandbox_arguments(self, repository: Path) -> list[str]:
         repository = repository.resolve(strict=True)
         network = "bridge" if self.config.network_enabled else "none"
-        container_command = list(command)
-        executable = Path(container_command[0]).name.casefold()
-        if executable in {"python", "python.exe", "python3", "python3.exe", "py", "py.exe"}:
-            container_command[0] = "python"
-        return [
-            "docker",
-            "run",
-            "--rm",
+        arguments = [
             "--log-driver",
             "none",
             "--network",
@@ -850,6 +975,8 @@ class DockerSandbox(_ManagedSandboxBase):
             "--cpus",
             f"{self.config.cpus:g}",
             "--memory",
+            f"{self.config.memory_mb}m",
+            "--memory-swap",
             f"{self.config.memory_mb}m",
             "--pids-limit",
             str(self.config.pids_limit),
@@ -859,14 +986,56 @@ class DockerSandbox(_ManagedSandboxBase):
             "--security-opt",
             "no-new-privileges",
             "--tmpfs",
-            "/tmp:rw,noexec,nosuid,size=64m",
+            f"/tmp:rw,noexec,nosuid,nodev,size={self.config.tmpfs_mb}m",
             "--mount",
-            f"type=bind,source={repository},target=/workspace",
+            f"type=bind,source={repository},target=/workspace,bind-recursive=disabled",
             "--workdir",
             "/workspace",
-            self.config.image,
-            *container_command,
         ]
+        user = self._effective_user()
+        if user is not None:
+            arguments.extend(["--user", user])
+        return arguments
+
+    def build_command(self, command: list[str], repository: Path) -> list[str]:
+        return [
+            "docker",
+            "run",
+            "--rm",
+            *self._sandbox_arguments(repository),
+            self.config.image,
+            *self._container_command(command),
+        ]
+
+    def build_create_command(
+        self,
+        command: list[str],
+        repository: Path,
+        *,
+        command_id: str,
+        execution_id: str,
+        image: str | None = None,
+        purpose: Literal["workload", "preflight"] = "workload",
+    ) -> tuple[list[str], str]:
+        container_name = f"patchloop-{command_id}"
+        return (
+            [
+                "docker",
+                "create",
+                *self._sandbox_arguments(repository),
+                "--name",
+                container_name,
+                "--label",
+                f"patchloop.command_id={command_id}",
+                "--label",
+                f"patchloop.execution_id={execution_id}",
+                "--label",
+                f"patchloop.purpose={purpose}",
+                image or self.config.image,
+                *self._container_command(command),
+            ],
+            container_name,
+        )
 
     def build_managed_command(
         self,
@@ -897,52 +1066,489 @@ class DockerSandbox(_ManagedSandboxBase):
         timeout_seconds: float,
         max_output_chars: int,
     ) -> SandboxResult:
+        if self.config.workspace_limit_mb is not None:
+            raise SandboxError("workspace_capacity_not_implemented")
+        repository = repository.resolve(strict=True)
+        image = self._resolve_image_id()
+        self._ensure_preflight(repository, image)
+        return self._execute_managed(
+            command,
+            repository,
+            timeout_seconds=timeout_seconds,
+            max_output_chars=max_output_chars,
+            purpose="workload",
+            image=image,
+        )
+
+    def _resolve_image_id(self) -> str:
+        if self._resolved_image_id is not None:
+            return self._resolved_image_id
+        inspected = _run_docker_control(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", self.config.image],
+            timeout_seconds=10,
+            docker_host=self.docker_host,
+        )
+        if inspected.returncode != 0:
+            raise SandboxError(inspected.stderr.strip() or "Docker image is unavailable")
+        image_id = inspected.stdout.strip()
+        if not image_id.startswith("sha256:") or any(char.isspace() for char in image_id):
+            raise SandboxError("Docker image inspect returned an invalid image ID")
+        if self._execution_id is not None:
+            self._resolved_image_id = image_id
+        return image_id
+
+    def _ensure_preflight(self, repository: Path, image: str) -> None:
+        root_stat = repository.stat()
+        user = self._effective_user()
+        key = (
+            self._execution_id,
+            root_stat.st_dev,
+            root_stat.st_ino,
+            image,
+            user,
+            self.config.model_dump_json(),
+        )
+        if self._execution_id is not None and key in self._preflight_cache:
+            return
+        token = uuid4().hex
+        input_path = repository / f".patchloop-preflight-input-{token}"
+        output_path = repository / f".patchloop-preflight-output-{token}"
+        try:
+            with input_path.open("x", encoding="utf-8") as stream:
+                stream.write(token)
+            code = (
+                "import json,os,pathlib;"
+                f"token={token!r};"
+                f"source=pathlib.Path('/workspace/{input_path.name}');"
+                f"target=pathlib.Path('/workspace/{output_path.name}');"
+                "content=source.read_text();"
+                "fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);"
+                "os.write(fd,content.encode());os.close(fd);"
+                "read=lambda name:pathlib.Path('/sys/fs/cgroup',name).read_text().strip();"
+                "print(json.dumps({'token':content,'uid':os.getuid(),'gid':os.getgid(),"
+                "'memory_max':read('memory.max'),'memory_swap_max':read('memory.swap.max'),"
+                "'pids_max':read('pids.max'),'cpu_max':read('cpu.max')}))"
+            )
+            result = self._execute_managed(
+                ["python", "-c", code],
+                repository,
+                timeout_seconds=30,
+                max_output_chars=8192,
+                purpose="preflight",
+                image=image,
+            )
+            if result.exit_code != 0:
+                raise SandboxError(
+                    f"workspace_identity_unverified: preflight exited {result.exit_code}: "
+                    f"{result.output[-1000:]}"
+                )
+            evidence = self._last_json_object(result.output)
+            self._validate_preflight_evidence(evidence, token, output_path, user)
+        except SandboxError as exc:
+            if str(exc).startswith("workspace_identity_unverified"):
+                raise SandboxError(
+                    f"{exc}; {self._preflight_identity_diagnostic(repository, image)}"
+                ) from exc
+            raise
+        except OSError as exc:
+            raise SandboxError(
+                "workspace_identity_unverified: "
+                f"{self._preflight_identity_diagnostic(repository, image)} "
+                f"errno={exc.errno}: {exc}"
+            ) from exc
+        finally:
+            input_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+        if self._execution_id is not None:
+            self._preflight_cache.add(key)
+
+    def _preflight_identity_diagnostic(self, repository: Path, image: str) -> str:
+        root_stat = repository.stat()
+        host_uid = os.__dict__["getuid"]() if hasattr(os, "getuid") else "n/a"
+        host_gid = os.__dict__["getgid"]() if hasattr(os, "getgid") else "n/a"
+        image_user = "unknown"
+        userns = "unknown"
+        try:
+            inspected = _run_docker_control(
+                ["docker", "image", "inspect", "--format", "{{json .Config.User}}", image],
+                timeout_seconds=5,
+                docker_host=self.docker_host,
+            )
+            if inspected.returncode == 0:
+                image_user = inspected.stdout.strip()[:256]
+        except SandboxCleanupError:
+            pass
+        try:
+            info = _run_docker_control(
+                ["docker", "info", "--format", "{{json .SecurityOptions}}"],
+                timeout_seconds=5,
+                docker_host=self.docker_host,
+            )
+            if info.returncode == 0:
+                userns = info.stdout.strip()[:512]
+        except SandboxCleanupError:
+            pass
+        return (
+            f"host_uid={host_uid} host_gid={host_gid} "
+            f"mode={oct(root_stat.st_mode & 0o777)} configured_user={self._effective_user()} "
+            f"image_id={image} image_user={image_user} userns={userns}"
+        )
+
+    @staticmethod
+    def _last_json_object(output: str) -> dict[str, Any]:
+        for line in reversed(output.splitlines()):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                return value
+        raise SandboxError("resource_limits_unverified: preflight emitted no JSON evidence")
+
+    def _validate_preflight_evidence(
+        self,
+        evidence: dict[str, Any],
+        token: str,
+        output_path: Path,
+        user: str | None,
+    ) -> None:
+        if evidence.get("token") != token or not output_path.is_file():
+            raise SandboxError("workspace_identity_unverified: read/write round trip failed")
+        if output_path.read_text(encoding="utf-8") != token:
+            raise SandboxError("workspace_identity_unverified: output content mismatch")
+        if user is not None:
+            expected_uid, expected_gid = (int(item) for item in user.split(":"))
+            if evidence.get("uid") != expected_uid or evidence.get("gid") != expected_gid:
+                raise SandboxError("workspace_identity_unverified: container UID/GID mismatch")
+            if os.name != "nt":
+                output_stat = output_path.stat()
+                if output_stat.st_uid != expected_uid or output_stat.st_gid != expected_gid:
+                    raise SandboxError(
+                        "workspace_identity_unverified: host file ownership mismatch"
+                    )
+        expected_memory = str(self.config.memory_mb * 1024 * 1024)
+        if evidence.get("memory_max") != expected_memory:
+            raise SandboxError("resource_limits_unverified: memory.max mismatch")
+        if evidence.get("memory_swap_max") != "0":
+            raise SandboxError("resource_limits_unverified: memory.swap.max mismatch")
+        if evidence.get("pids_max") != str(self.config.pids_limit):
+            raise SandboxError("resource_limits_unverified: pids.max mismatch")
+        cpu_max = evidence.get("cpu_max")
+        try:
+            quota_text, period_text = str(cpu_max).split()
+            quota = int(quota_text)
+            period = int(period_text)
+        except (TypeError, ValueError) as exc:
+            raise SandboxError("resource_limits_unverified: cpu.max malformed") from exc
+        if period <= 0 or abs((quota / period) - self.config.cpus) > 0.001:
+            raise SandboxError("resource_limits_unverified: cpu.max mismatch")
+
+    def _execute_managed(
+        self,
+        command: list[str],
+        repository: Path,
+        *,
+        timeout_seconds: float,
+        max_output_chars: int,
+        purpose: Literal["workload", "preflight"],
+        image: str | None = None,
+    ) -> SandboxResult:
         command_id = str(uuid4())
-        docker_command, container_name = self.build_managed_command(
+        execution_id = self._execution_id or f"standalone-{uuid4()}"
+        create_command, container_name = self.build_create_command(
             command,
             repository,
             command_id=command_id,
-            execution_id=self._execution_id or "standalone",
+            execution_id=execution_id,
+            image=image,
+            purpose=purpose,
         )
+        control_dir = Path(tempfile.mkdtemp(prefix="patchloop-sandbox-control-"))
+        if os.name != "nt":
+            os.chmod(control_dir, 0o700)
         try:
+            supervisor_environment = _docker_environment(self.docker_host)
+            supervisor_environment["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent)
             process = subprocess.Popen(
-                docker_command,
-                env=_docker_environment(self.docker_host),
+                self._supervisor_command,
+                env=supervisor_environment,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
+                start_new_session=True,
             )
         except FileNotFoundError as exc:
-            raise SandboxError("Docker is required but was not found; execution denied") from exc
-        identity = self._register(
-            process,
-            backend=self.name,
-            container_name=container_name,
-            docker_host=self.docker_host,
-            identity_id=command_id,
-        )
-        captured = self._communicate(
-            process, identity, timeout_seconds, max_output_chars
-        )
-        output = (captured.stdout_tail + captured.stderr_tail)[-max_output_chars:]
-        if process.returncode in {125, 126, 127}:
-            raise SandboxError(f"Docker sandbox failed to start: {output.strip()}")
-        return SandboxResult(
-            exit_code=process.returncode,
-            output=output,
-            backend=self.name,
-            output_truncated=captured.truncated,
-            stdout_bytes=captured.stdout_bytes,
-            stderr_bytes=captured.stderr_bytes,
-        )
+            control_dir.rmdir()
+            raise SandboxError("Python supervisor could not be started") from exc
+        handle = _SupervisorHandle(process, control_dir)
+        self._supervisors[command_id] = handle
+        try:
+            self._send_supervisor_initialization(
+                handle,
+                command_id=command_id,
+                execution_id=execution_id,
+                container_name=container_name,
+                create_command=create_command,
+                purpose=purpose,
+            )
+            ready = self._wait_for_ready(handle, command_id, execution_id, timeout=15)
+            identity = self._register(
+                process,
+                backend=self.name,
+                container_name=container_name,
+                container_id=ready.container_id,
+                docker_host=self.docker_host,
+                purpose=purpose,
+                identity_id=command_id,
+                execution_id=execution_id,
+            )
+            readers_started = threading.Event()
+            workload_started = threading.Event()
+            captured_output: list[CapturedOutput] = []
+            collection_errors: list[BaseException] = []
+
+            def collect() -> None:
+                try:
+                    captured_output.append(
+                        self._communicate(
+                            process,
+                            identity,
+                            timeout_seconds,
+                            max_output_chars,
+                            finish_on_exit=False,
+                            interruption_probe=lambda: (
+                                None
+                                if not workload_started.is_set()
+                                else (
+                                    None
+                                    if self._interruption_probe is None
+                                    else self._interruption_probe()
+                                )
+                            ),
+                            readers_started=readers_started,
+                        )
+                    )
+                except BaseException as exc:
+                    collection_errors.append(exc)
+
+            collector = threading.Thread(
+                target=collect,
+                name=f"sandbox-supervisor-output-{command_id}",
+            )
+            collector.start()
+            if not readers_started.wait(2):
+                self._terminate_and_finish(process, identity, "reader_start_failed")
+                raise SandboxCleanupError("supervisor output readers did not start")
+            if process.stdin is None:
+                raise SandboxCleanupError("supervisor control pipe is unavailable")
+            try:
+                process.stdin.write(b"START\n")
+                process.stdin.flush()
+            except OSError as exc:
+                self._terminate_and_finish(process, identity, "start_signal_failed")
+                collector.join(2)
+                raise SandboxError("could not start the managed Docker workload") from exc
+            workload_started.set()
+            collector.join(timeout_seconds + 25)
+            if collector.is_alive():
+                self._terminate_and_finish(process, identity, "collector_stalled")
+                collector.join(2)
+                raise SandboxCleanupError("supervisor output collector did not exit")
+            if collection_errors:
+                raise collection_errors[0]
+            if len(captured_output) != 1:
+                raise SandboxCleanupError("supervisor output was not captured")
+            captured = captured_output[0]
+            outcome = self._read_outcome(handle, identity)
+            if not outcome.cleanup_confirmed:
+                self._finish(
+                    identity,
+                    ManagedCommandStatus.CLEANUP_FAILED,
+                    outcome.reason or outcome.diagnostic,
+                )
+                raise SandboxCleanupError(
+                    outcome.diagnostic or "container cleanup was not confirmed"
+                )
+            if outcome.status == "cleanup_failed":
+                self._finish(
+                    identity,
+                    ManagedCommandStatus.TERMINATED,
+                    outcome.reason or "startup_failed",
+                )
+                raise SandboxError(outcome.diagnostic or outcome.reason or "Docker startup failed")
+            self._finish(identity, ManagedCommandStatus.EXITED)
+            output = (captured.stdout_tail + captured.stderr_tail)[-max_output_chars:]
+            return SandboxResult(
+                exit_code=outcome.exit_code if outcome.exit_code is not None else 1,
+                output=output,
+                backend=self.name,
+                output_truncated=captured.truncated,
+                stdout_bytes=captured.stdout_bytes,
+                stderr_bytes=captured.stderr_bytes,
+                oom_killed=outcome.oom_killed,
+            )
+        finally:
+            self._supervisors.pop(command_id, None)
+            if process.stdin is not None:
+                with suppress(OSError):
+                    process.stdin.close()
+            if process.poll() is not None:
+                self._remove_control_dir(control_dir)
+
+    def _send_supervisor_initialization(
+        self,
+        handle: _SupervisorHandle,
+        *,
+        command_id: str,
+        execution_id: str,
+        container_name: str,
+        create_command: list[str],
+        purpose: Literal["workload", "preflight"],
+    ) -> None:
+        process = handle.process
+        if process.stdin is None:
+            raise SandboxCleanupError("supervisor control pipe is unavailable")
+        payload = {
+            "protocol_version": 1,
+            "command_id": command_id,
+            "execution_id": execution_id,
+            "container_name": container_name,
+            "docker_host": self.docker_host,
+            "purpose": purpose,
+            "create_command": create_command,
+            "control_dir": str(handle.control_dir),
+        }
+        encoded = (json.dumps(payload, separators=(",", ":")) + "\n").encode()
+        if len(encoded) > 64 * 1024:
+            raise SandboxError("supervisor initialization exceeds size limit")
+        process.stdin.write(encoded)
+        process.stdin.flush()
+
+    def _wait_for_ready(
+        self,
+        handle: _SupervisorHandle,
+        command_id: str,
+        execution_id: str,
+        *,
+        timeout: float,
+    ) -> _SupervisorReady:
+        deadline = monotonic() + timeout
+        path = handle.control_dir / "ready.json"
+        while monotonic() < deadline:
+            if path.exists():
+                ready = _SupervisorReady.model_validate_json(
+                    self._read_control_file(path)
+                )
+                if (
+                    ready.protocol_version != 1
+                    or ready.command_id != command_id
+                    or ready.execution_id != execution_id
+                    or ready.container_name != f"patchloop-{command_id}"
+                    or ready.docker_host != self.docker_host
+                ):
+                    raise SandboxCleanupError("supervisor READY identity mismatch")
+                return ready
+            if handle.process.poll() is not None:
+                outcome_path = handle.control_dir / "outcome.json"
+                detail = "supervisor exited before READY"
+                if outcome_path.exists():
+                    raw_outcome = self._read_control_file(outcome_path)
+                    detail = raw_outcome[-8192:]
+                    try:
+                        outcome = _SupervisorOutcome.model_validate_json(raw_outcome)
+                    except ValueError as exc:
+                        raise SandboxCleanupError(
+                            "supervisor emitted an invalid startup outcome"
+                        ) from exc
+                    if not outcome.cleanup_confirmed:
+                        raise SandboxCleanupError(
+                            outcome.diagnostic or "startup cleanup was not confirmed"
+                        )
+                raise SandboxError(detail)
+            sleep(0.05)
+        if handle.process.stdin is not None:
+            handle.process.stdin.close()
+        try:
+            handle.process.wait(timeout=20)
+        except subprocess.TimeoutExpired as exc:
+            raise SandboxCleanupError("supervisor startup cleanup timed out") from exc
+        raise SandboxError("Docker supervisor did not become ready within 15 seconds")
+
+    @staticmethod
+    def _read_control_file(path: Path) -> str:
+        if path.stat().st_size > 16 * 1024:
+            raise SandboxCleanupError("supervisor control file exceeds size limit")
+        return path.read_text(encoding="utf-8")
+
+    def _read_outcome(
+        self, handle: _SupervisorHandle, identity: ManagedCommandIdentity
+    ) -> _SupervisorOutcome:
+        path = handle.control_dir / "outcome.json"
+        if not path.exists():
+            raise SandboxCleanupError("supervisor exited without a valid outcome")
+        outcome = _SupervisorOutcome.model_validate_json(self._read_control_file(path))
+        if (
+            outcome.protocol_version != 1
+            or outcome.command_id != identity.id
+            or outcome.execution_id != identity.execution_id
+            or outcome.container_id != identity.container_id
+        ):
+            raise SandboxCleanupError("supervisor outcome identity mismatch")
+        return outcome
+
+    @staticmethod
+    def _remove_control_dir(control_dir: Path) -> None:
+        for name in ("ready.json", "outcome.json"):
+            (control_dir / name).unlink(missing_ok=True)
+        with suppress(OSError):
+            control_dir.rmdir()
 
     def _terminate_process(
         self, process: subprocess.Popen[bytes], identity: ManagedCommandIdentity
     ) -> None:
-        _remove_verified_container(identity)
+        handle = self._supervisors.get(identity.id)
+        direct_cleanup = False
+        if handle is not None and process.poll() is None:
+            with handle.lock:
+                if not handle.stop_sent and process.stdin is not None:
+                    try:
+                        process.stdin.write(b"STOP\n")
+                        process.stdin.flush()
+                        handle.stop_sent = True
+                    except OSError:
+                        pass
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired as exc:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            _remove_verified_container(identity)
+            direct_cleanup = True
             process.kill()
             process.wait(timeout=5)
-            raise SandboxCleanupError("Docker client did not exit after container cleanup") from exc
+        if handle is not None and not direct_cleanup:
+            outcome = self._read_outcome(handle, identity)
+            if not outcome.cleanup_confirmed:
+                raise SandboxCleanupError(outcome.diagnostic or "supervisor cleanup failed")
+        elif _inspect_docker_container(
+            identity.container_id or identity.container_name or "",
+            docker_host=identity.docker_host,
+        ) is not None:
+            _remove_verified_container(identity)
+
+
+def create_command_sandbox(
+    execution: TaskExecutionConfig,
+) -> DockerSandbox | LocalProcessSandbox:
+    if execution.sandbox_backend == "local":
+        if execution.sandbox_workspace_limit_mb is not None:
+            raise ValueError("workspace limits require the Docker sandbox")
+        return LocalProcessSandbox()
+    if execution.sandbox_backend == "docker":
+        return DockerSandbox(
+            DockerSandboxConfig(
+                image=execution.sandbox_image,
+                workspace_limit_mb=execution.sandbox_workspace_limit_mb,
+                workspace_inode_limit=execution.sandbox_workspace_inode_limit,
+            )
+        )
+    raise ValueError(f"unsupported sandbox backend: {execution.sandbox_backend}")

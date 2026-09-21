@@ -12,6 +12,7 @@ from patchloop.observability import TaskMetrics
 from patchloop.persistence import SQLiteStore
 from patchloop.providers import ModelMessage, ModelResponse, ToolSpec
 from patchloop.runtime import AgentRuntime
+from patchloop.sandbox import LocalProcessSandbox
 from patchloop.tools import (
     ApplyPatchTool,
     PermissionLevel,
@@ -104,7 +105,7 @@ def _repository(tmp_path: Path) -> Path:
 
 def _gateway(repository: Path, trace: EventLogger) -> ToolGateway:
     return ToolGateway(
-        ToolContext(repository),
+        ToolContext(repository, LocalProcessSandbox()),
         [UpdatePlanTool(), ApplyPatchTool(), RunTestsTool()],
         trace,
         ToolPolicy(

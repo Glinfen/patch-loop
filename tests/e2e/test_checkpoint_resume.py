@@ -8,6 +8,7 @@ from patchloop.events import EventLogger
 from patchloop.persistence import SQLiteStore
 from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ModelUsage, ToolSpec
 from patchloop.runtime import AgentRuntime
+from patchloop.sandbox import LocalProcessSandbox
 from patchloop.tools import (
     ApplyPatchTool,
     PermissionLevel,
@@ -49,7 +50,7 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
         frozenset({PermissionLevel.READ, PermissionLevel.WRITE, PermissionLevel.EXECUTE})
     )
     first_gateway = ToolGateway(
-        ToolContext(repository),
+        ToolContext(repository, LocalProcessSandbox()),
         [UpdatePlanTool(), ApplyPatchTool(), RunTestsTool()],
         trace,
         policy,
@@ -130,7 +131,7 @@ def test_resume_after_interruption_does_not_repeat_confirmed_write(tmp_path: Pat
     assert "return dividend / divisor" in (repository / "calculator.py").read_text(encoding="utf-8")
 
     second_gateway = ToolGateway(
-        ToolContext(repository),
+        ToolContext(repository, LocalProcessSandbox()),
         [UpdatePlanTool(), ApplyPatchTool(), RunTestsTool()],
         trace,
         policy,

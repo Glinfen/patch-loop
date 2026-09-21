@@ -16,8 +16,10 @@ from patchloop.execution.ownership import ExecutionOwnershipManager, LeasePolicy
 from patchloop.persistence import SQLiteStore
 from patchloop.sandbox import (
     DockerSandbox,
+    ManagedCommandIdentity,
     ManagedCommandStatus,
     SandboxTimeoutError,
+    _inspect_docker_container,
 )
 
 
@@ -71,17 +73,83 @@ def test_docker_timeout_terminates_process_tree(tmp_path: Path) -> None:
     time.sleep(2.2)
 
     assert not marker.exists()
-    assert len(finished) == 1
-    assert finished[0].status is ManagedCommandStatus.TERMINATED
-    assert finished[0].cleanup_reason == "timeout"
-    assert finished[0].container_name is not None
+    workloads = [item for item in finished if item.purpose == "workload"]
+    preflights = [item for item in finished if item.purpose == "preflight"]
+    assert len(workloads) == len(preflights) == 1
+    assert workloads[0].status is ManagedCommandStatus.TERMINATED
+    assert workloads[0].cleanup_reason == "timeout"
+    assert workloads[0].container_name is not None
     inspected = subprocess.run(
-        ["docker", "inspect", finished[0].container_name],
+        ["docker", "inspect", workloads[0].container_name],
         capture_output=True,
         text=True,
         check=False,
     )
     assert inspected.returncode != 0
+
+
+def test_docker_registration_failure_never_starts_workload(tmp_path: Path) -> None:
+    marker = tmp_path / "must-not-run.txt"
+    observed: list[ManagedCommandIdentity] = []
+    sandbox = DockerSandbox()
+
+    def reject_workload(identity: ManagedCommandIdentity) -> None:
+        observed.append(identity)
+        if identity.purpose == "workload":
+            raise RuntimeError("registration rejected")
+
+    sandbox.bind_execution(
+        "docker-registration-gate",
+        command_started=reject_workload,
+        command_finished=lambda identity: None,
+        interruption_probe=lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match="registration rejected"):
+        sandbox.execute(
+            [
+                "python",
+                "-c",
+                "from pathlib import Path; "
+                "Path('/workspace/must-not-run.txt').write_text('ran')",
+            ],
+            tmp_path,
+            timeout_seconds=10,
+            max_output_chars=1_000,
+        )
+
+    workload = next(item for item in observed if item.purpose == "workload")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and _inspect_docker_container(
+        workload.container_id or ""
+    ) is not None:
+        time.sleep(0.05)
+    assert not marker.exists()
+    assert _inspect_docker_container(workload.container_id or "") is None
+
+
+def test_docker_user_exit_125_is_preserved(tmp_path: Path) -> None:
+    finished: list[ManagedCommandIdentity] = []
+    sandbox = DockerSandbox()
+    sandbox.bind_execution(
+        "docker-user-exit-125",
+        command_started=lambda identity: None,
+        command_finished=finished.append,
+        interruption_probe=lambda: None,
+    )
+
+    result = sandbox.execute(
+        ["python", "-c", "raise SystemExit(125)"],
+        tmp_path,
+        timeout_seconds=10,
+        max_output_chars=1_000,
+    )
+
+    workloads = [item for item in finished if item.purpose == "workload"]
+    assert result.exit_code == 125
+    assert len(workloads) == 1
+    assert workloads[0].status is ManagedCommandStatus.EXITED
+    assert _inspect_docker_container(workloads[0].container_id or "") is None
 
 
 def test_docker_old_worker_is_stopped_before_lease_takeover(tmp_path: Path) -> None:
@@ -104,12 +172,14 @@ def test_docker_old_worker_is_stopped_before_lease_takeover(tmp_path: Path) -> N
     sandbox = DockerSandbox()
     started = threading.Event()
     worker_errors: list[BaseException] = []
+    def register(identity) -> None:
+        store.register_managed_command(identity, lease_guard=first.lease_guard)
+        if identity.purpose == "workload":
+            started.set()
+
     sandbox.bind_execution(
         first.execution.id,
-        command_started=lambda identity: (
-            store.register_managed_command(identity, lease_guard=first.lease_guard),
-            started.set(),
-        ),
+        command_started=register,
         command_finished=store.finish_managed_command,
         interruption_probe=lambda: None,
     )
@@ -143,7 +213,11 @@ def test_docker_old_worker_is_stopped_before_lease_takeover(tmp_path: Path) -> N
 
     assert not old_worker.is_alive()
     assert worker_errors == []
-    recovered = store.list_managed_commands(first.execution.id)[0]
+    recovered = next(
+        item
+        for item in store.list_managed_commands(first.execution.id)
+        if item.purpose == "workload"
+    )
     assert recovered.status in {ManagedCommandStatus.EXITED, ManagedCommandStatus.TERMINATED}
     assert second.execution.generation == first.execution.generation + 1
     assert second.workspace_lease is not None

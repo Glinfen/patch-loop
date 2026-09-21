@@ -84,6 +84,7 @@ def collect_process_output(
     deadline: float,
     interruption_probe: Callable[[], str | None] | None,
     terminate: Callable[[str], None],
+    readers_started: threading.Event | None = None,
 ) -> CapturedOutput:
     """Drain both pipes with O(max_output_chars) retained memory.
 
@@ -114,17 +115,26 @@ def collect_process_output(
     ]
     for reader in readers:
         reader.start()
+    if readers_started is not None:
+        readers_started.set()
 
     pending_error: OutputCollectionError | None = None
+    termination_error: BaseException | None = None
     try:
         while process.poll() is None:
             if monotonic() >= deadline:
-                terminate("timeout")
+                try:
+                    terminate("timeout")
+                except BaseException as exc:
+                    termination_error = exc
                 pending_error = OutputCollectionTimeout("process output collection timed out")
                 break
             reason = None if interruption_probe is None else interruption_probe()
             if reason is not None:
-                terminate(reason)
+                try:
+                    terminate(reason)
+                except BaseException as exc:
+                    termination_error = exc
                 pending_error = OutputCollectionInterrupted(reason)
                 break
             threading.Event().wait(0.1)
@@ -142,6 +152,8 @@ def collect_process_output(
             raise OutputCollectionError(
                 "could not read managed process output"
             ) from reader_errors[0]
+        if termination_error is not None:
+            raise termination_error
         if pending_error is not None:
             raise pending_error
 

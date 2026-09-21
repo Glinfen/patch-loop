@@ -5,6 +5,7 @@ from patchloop.domain import Task, TaskStatus, ToolCall
 from patchloop.events import EventLogger
 from patchloop.providers import FakeProvider, ModelResponse
 from patchloop.runtime import AgentRuntime
+from patchloop.sandbox import LocalProcessSandbox
 from patchloop.storage import ArtifactStore
 from patchloop.tools import (
     ApplyPatchTool,
@@ -25,7 +26,7 @@ def test_agent_repairs_calculator_fixture_and_runs_tests(tmp_path: Path) -> None
     shutil.copytree(source, repository)
     trace = EventLogger(tmp_path / "trace.jsonl")
     gateway = ToolGateway(
-        ToolContext(repository),
+        ToolContext(repository, LocalProcessSandbox()),
         [
             ReadFileTool(),
             UpdatePlanTool(),

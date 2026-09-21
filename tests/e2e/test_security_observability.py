@@ -16,7 +16,7 @@ from patchloop.observability import TaskMetrics, TaskReplay
 from patchloop.persistence import SQLiteStore
 from patchloop.providers import FakeProvider, ModelMessage, ModelResponse, ToolSpec
 from patchloop.runtime import AgentRuntime
-from patchloop.sandbox import DockerSandbox
+from patchloop.sandbox import DockerSandbox, LocalProcessSandbox
 from patchloop.tools import (
     PermissionLevel,
     ReadFileTool,
@@ -133,7 +133,7 @@ def test_repository_prompt_injection_and_memory_credentials_are_filtered(
         budget=TaskBudget(max_steps=2),
     )
     gateway = ToolGateway(
-        ToolContext(repository),
+        ToolContext(repository, LocalProcessSandbox()),
         [ReadFileTool()],
         trace,
         ToolPolicy(frozenset({PermissionLevel.READ})),

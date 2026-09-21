@@ -9,6 +9,7 @@ from patchloop.observability import TaskMetrics
 from patchloop.persistence import SQLiteStore
 from patchloop.providers import FakeProvider, ModelResponse
 from patchloop.runtime import AgentRuntime
+from patchloop.sandbox import LocalProcessSandbox
 from patchloop.tools import (
     ApplyPatchTool,
     PermissionLevel,
@@ -82,7 +83,7 @@ def test_runtime_replaces_stale_fact_and_promotes_test_verified_value(
         ]
     )
     gateway = ToolGateway(
-        ToolContext(repository),
+        ToolContext(repository, LocalProcessSandbox()),
         [UpdatePlanTool(), ReadFileTool(), ApplyPatchTool(), RunTestsTool()],
         trace,
         ToolPolicy(

@@ -97,7 +97,11 @@ from patchloop.providers import (
 from patchloop.providers.base import ProviderGateway as ProviderGatewayPort
 from patchloop.providers.transport import HttpxTransport
 from patchloop.runtime import AgentRuntime
-from patchloop.sandbox import DockerSandbox, DockerSandboxConfig, LocalProcessSandbox
+from patchloop.sandbox import (
+    DockerSandbox,
+    LocalProcessSandbox,
+    create_command_sandbox,
+)
 from patchloop.security import RiskLevel, SecretRedactor
 from patchloop.session import SessionService
 from patchloop.storage import ArtifactStore, TaskNotFoundError
@@ -412,10 +416,7 @@ def _session_runtime_service(
             if binding is not None and binding.profile_id != "legacy"
             else _provider_from_env()
         )
-    sandbox = _create_sandbox(
-        task.execution.sandbox_backend,
-        task.execution.sandbox_image,
-    )
+    sandbox = create_command_sandbox(task.execution)
     trace = EventLogger(_state_dir(services.repository) / "traces" / f"{task.id}.jsonl")
     gateway = ToolGateway(
         ToolContext(Path(task.repository), sandbox),
@@ -1081,6 +1082,15 @@ def start_session_task(
     sandbox: Annotated[
         str, typer.Option(help="Command sandbox backend: docker or local.")
     ] = "docker",
+    sandbox_image: Annotated[
+        str, typer.Option(help="Docker image used by the command sandbox.")
+    ] = "patchloop-sandbox:py313",
+    sandbox_workspace_limit_mb: Annotated[
+        int | None, typer.Option("--sandbox-workspace-limit-mb", min=64, max=16_384)
+    ] = None,
+    sandbox_workspace_inode_limit: Annotated[
+        int, typer.Option("--sandbox-workspace-inode-limit", min=1024)
+    ] = 65_536,
     provider_profile: Annotated[str | None, typer.Option("--provider")] = None,
     model: Annotated[str | None, typer.Option("--model")] = None,
     provider_config: Annotated[Path | None, typer.Option("--provider-config")] = None,
@@ -1096,6 +1106,7 @@ def start_session_task(
         permissions.append(PermissionLevel.EXECUTE.value)
     event_writer = None if services.json_output else _HumanProviderWriter()
     try:
+        _validate_sandbox_options(sandbox, sandbox_workspace_limit_mb)
         selected_session = services.session.get(session_id)
         selected_mode = workspace_mode or WorkspaceMode(selected_session.workspace_mode)
         if workspace_mode is not None or selected_mode == WorkspaceMode.WORKTREE:
@@ -1129,6 +1140,9 @@ def start_session_task(
                 allowed_permissions=permissions,
                 non_interactive=True,
                 sandbox_backend=sandbox,
+                sandbox_image=sandbox_image,
+                sandbox_workspace_limit_mb=sandbox_workspace_limit_mb,
+                sandbox_workspace_inode_limit=sandbox_workspace_inode_limit,
                 provider=binding,
             ),
         )
@@ -1767,12 +1781,25 @@ def _all_tools() -> list[Tool]:
     ]
 
 
-def _create_sandbox(backend: str, image: str) -> DockerSandbox | LocalProcessSandbox:
-    if backend == "docker":
-        return DockerSandbox(DockerSandboxConfig(image=image))
-    if backend == "local":
-        return LocalProcessSandbox()
-    raise ValueError(f"unsupported sandbox backend: {backend}")
+def _create_sandbox(
+    backend: str,
+    image: str,
+    workspace_limit_mb: int | None = None,
+    workspace_inode_limit: int = 65_536,
+) -> DockerSandbox | LocalProcessSandbox:
+    return create_command_sandbox(
+        TaskExecutionConfig(
+            sandbox_backend=backend,
+            sandbox_image=image,
+            sandbox_workspace_limit_mb=workspace_limit_mb,
+            sandbox_workspace_inode_limit=workspace_inode_limit,
+        )
+    )
+
+
+def _validate_sandbox_options(backend: str, workspace_limit_mb: int | None) -> None:
+    if backend == "local" and workspace_limit_mb is not None:
+        raise CliUsageError("workspace limits require the Docker sandbox")
 
 
 @task_app.command("create")
@@ -2667,6 +2694,12 @@ def run_task(
         str,
         typer.Option(help="Docker image used by the command sandbox."),
     ] = "patchloop-sandbox:py313",
+    sandbox_workspace_limit_mb: Annotated[
+        int | None, typer.Option("--sandbox-workspace-limit-mb", min=64, max=16_384)
+    ] = None,
+    sandbox_workspace_inode_limit: Annotated[
+        int, typer.Option("--sandbox-workspace-inode-limit", min=1024)
+    ] = 65_536,
     prompt_cache_layout: Annotated[
         str,
         typer.Option(help="Prompt layout: legacy (rollback), stable, or append_only (PPS)."),
@@ -2706,6 +2739,7 @@ def run_task(
         _command_error(exc)
     services = _workspace_services(repository)
     try:
+        _validate_sandbox_options(sandbox, sandbox_workspace_limit_mb)
         if sum((json_output, events_jsonl, human)) > 1:
             raise CliUsageError("--json, --events-jsonl, and --human are mutually exclusive")
         load_policy_configuration(services.repository)
@@ -2734,6 +2768,8 @@ def run_task(
         non_interactive=non_interactive,
         sandbox_backend=sandbox,
         sandbox_image=sandbox_image,
+        sandbox_workspace_limit_mb=sandbox_workspace_limit_mb,
+        sandbox_workspace_inode_limit=sandbox_workspace_inode_limit,
         prompt_cache_layout=cache_layout,
         append_only_optimization=optimization,
         provider=binding,

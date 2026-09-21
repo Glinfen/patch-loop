@@ -10,7 +10,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from patchloop.domain import ErrorKind
-from patchloop.sandbox import LocalProcessSandbox, SandboxError, SandboxTimeoutError
+from patchloop.sandbox import SandboxError, SandboxTimeoutError
 from patchloop.tools.base import (
     PermissionLevel,
     Tool,
@@ -40,7 +40,9 @@ class RunTestsTool(Tool):
     def run(self, arguments: BaseModel, context: ToolContext) -> str:
         request = RunTestsInput.model_validate(arguments)
         command = self._normalize_command(request.command, context)
-        sandbox = context.sandbox or LocalProcessSandbox()
+        sandbox = context.sandbox
+        if sandbox is None:
+            raise ValueError("sandbox_not_configured")
         try:
             completed = sandbox.execute(
                 command,
@@ -135,7 +137,9 @@ class RunCommandTool(Tool):
     def run(self, arguments: BaseModel, context: ToolContext) -> str:
         request = RunCommandInput.model_validate(arguments)
         command = self._normalize_command(request.command, context.repository)
-        sandbox = context.sandbox or LocalProcessSandbox()
+        sandbox = context.sandbox
+        if sandbox is None:
+            raise ValueError("sandbox_not_configured")
         try:
             completed = sandbox.execute(
                 command,

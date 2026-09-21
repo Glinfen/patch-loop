@@ -208,6 +208,10 @@ class TaskExecutionConfig(BaseModel):
         default="patchloop-sandbox:py313",
         pattern=r"^[A-Za-z0-9._/:@-]+$",
     )
+    sandbox_workspace_limit_mb: int | None = Field(default=None, ge=64, le=16_384)
+    sandbox_workspace_inode_limit: int = Field(
+        default=65_536, ge=1024, le=10_000_000
+    )
     prompt_cache_layout: PromptCacheLayout = DEFAULT_PROMPT_CACHE_LAYOUT
     append_only_optimization: AppendOnlyOptimizationVersion = "baseline_v1"
     project_instructions: str = ""
@@ -216,6 +220,8 @@ class TaskExecutionConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_append_only_optimization(self) -> Self:
+        if self.sandbox_backend == "local" and self.sandbox_workspace_limit_mb is not None:
+            raise ValueError("workspace limits require the Docker sandbox")
         if (
             self.append_only_optimization == "balanced_v1"
             and self.prompt_cache_layout is not PromptCacheLayout.APPEND_ONLY

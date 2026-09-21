@@ -26,11 +26,13 @@ from uuid import uuid4
 
 from patchloop.sandbox import (
     DockerSandbox,
+    DockerSandboxConfig,
     ManagedCommandIdentity,
     SandboxError,
     SandboxInterruptedError,
     SandboxTimeoutError,
     _inspect_docker_container,
+    _local_process_start_marker,
     _remove_verified_container,
     reconcile_managed_command,
 )
@@ -240,15 +242,14 @@ class Matrix:
 
     def configuration(self) -> dict[str, Any]:
         command_id = uuid4().hex
-        command, name = self.sandbox.build_managed_command(
+        resolved_image = self.sandbox._resolve_image_id()
+        create, name = self.sandbox.build_create_command(
             ["python", "-c", "print('configured')"],
             self.workspace,
             command_id=command_id,
             execution_id=self.execution_id,
+            image=resolved_image,
         )
-        create = list(command)
-        create[1] = "create"
-        create.remove("--rm")
         created = _run(create)
         if created.returncode != 0:
             return {"passed": False, "create_error": created.stderr.strip()}
@@ -282,11 +283,17 @@ class Matrix:
                 ),
                 "cpu_limit": host.get("NanoCpus") == 1_000_000_000,
                 "memory_limit": host.get("Memory") == 512 * 1024 * 1024,
+                "memory_swap_disabled": host.get("MemorySwap") == 512 * 1024 * 1024,
                 "pid_limit": host.get("PidsLimit") == 128,
+                "log_driver_none": (host.get("LogConfig") or {}).get("Type") == "none",
+                "image_id_pinned": inspected.get("Image") == resolved_image
+                and config.get("Image") == resolved_image,
+                "workspace_user": config.get("User") == self.sandbox._effective_user(),
                 "tmpfs_limit": "/tmp" in tmpfs and "size=64m" in tmpfs["/tmp"],
                 "tmpfs_hardened": "/tmp" in tmpfs
                 and "noexec" in tmpfs["/tmp"]
-                and "nosuid" in tmpfs["/tmp"],
+                and "nosuid" in tmpfs["/tmp"]
+                and "nodev" in tmpfs["/tmp"],
                 "identity_labels": config.get("Labels", {}).get("patchloop.command_id")
                 == command_id
                 and config.get("Labels", {}).get("patchloop.execution_id")
@@ -481,10 +488,15 @@ needle = {self.sentinel!r}
 environment = '\\0'.join(f'{{key}}={{value}}' for key, value in os.environ.items())
 proc_environment = Path('/proc/1/environ').read_bytes().decode(errors='replace')
 paths = ['/root/.aws/credentials', '/root/.ssh/id_rsa', '/run/secrets', '/var/run/docker.sock']
+def accessible(path):
+    try:
+        return Path(path).exists()
+    except PermissionError:
+        return False
 print(json.dumps({{
     'explicit_variable': os.environ.get({variable!r}),
     'sentinel_in_environment': needle in environment or needle in proc_environment,
-    'credential_paths_present': [path for path in paths if Path(path).exists()],
+    'credential_paths_present': [path for path in paths if accessible(path)],
 }}))
 """
             result = self.execute_python(code)
@@ -544,11 +556,22 @@ print(json.dumps({
             "print(source)"
         )
         content = target.read_text(encoding="utf-8") if target.exists() else None
+        target_stat = target.stat() if target.exists() else None
+        expected_uid = os.getuid() if hasattr(os, "getuid") else None
+        expected_gid = os.getgid() if hasattr(os, "getgid") else None
+        identity_matches = target_stat is not None and (
+            expected_uid is None
+            or (target_stat.st_uid == expected_uid and target_stat.st_gid == expected_gid)
+        )
         target.unlink(missing_ok=True)
         return {
-            "passed": result.exit_code == 0 and content == "SAFE",
+            "passed": result.exit_code == 0 and content == "SAFE" and identity_matches,
             "exit_code": result.exit_code,
             "host_file_content": content,
+            "expected_uid": expected_uid,
+            "expected_gid": expected_gid,
+            "file_uid": None if target_stat is None else target_stat.st_uid,
+            "file_gid": None if target_stat is None else target_stat.st_gid,
             "output_tail": result.output[-500:],
         }
 
@@ -567,11 +590,17 @@ print(json.dumps({
             interruption_probe=lambda: None,
         )
         result = self.execute_python("print('normal')", sandbox=sandbox)
-        name = started[0].container_name or ""
+        workloads = [item for item in started if item.purpose == "workload"]
+        finished_workloads = [item for item in finished if item.purpose == "workload"]
+        name = workloads[0].container_name or ""
         return {
-            "passed": result.exit_code == 0 and len(finished) == 1 and not _container_exists(name),
+            "passed": (
+                result.exit_code == 0
+                and len(workloads) == len(finished_workloads) == 1
+                and not _container_exists(name)
+            ),
             "container": name,
-            "finished_status": finished[0].status.value,
+            "finished_status": finished_workloads[0].status.value,
             "container_absent": not _container_exists(name),
         }
 
@@ -594,13 +623,21 @@ print(json.dumps({
             self.execute_python("import time; time.sleep(30)", timeout=0.5, sandbox=sandbox)
         except SandboxTimeoutError:
             timed_out = True
-        name = started[0].container_name or ""
+        workloads = [item for item in started if item.purpose == "workload"]
+        finished_workloads = [item for item in finished if item.purpose == "workload"]
+        name = workloads[0].container_name or ""
         return {
-            "passed": timed_out and len(finished) == 1 and not _container_exists(name),
+            "passed": (
+                timed_out
+                and len(workloads) == len(finished_workloads) == 1
+                and not _container_exists(name)
+            ),
             "timeout_raised": timed_out,
             "container": name,
             "container_absent": not _container_exists(name),
-            "cleanup_reason": finished[0].cleanup_reason if finished else None,
+            "cleanup_reason": (
+                finished_workloads[0].cleanup_reason if finished_workloads else None
+            ),
         }
 
     def interruption_cleanup(self, reason: str) -> dict[str, Any]:
@@ -684,15 +721,28 @@ print(json.dumps({'children_created': children, 'fork_error': error}), flush=Tru
         }
 
     def memory_limit(self) -> dict[str, Any]:
-        result = self.execute_python(
-            "x = bytearray(700 * 1024 * 1024); "
-            "[(x.__setitem__(index, 1)) for index in range(0, len(x), 4096)]; "
-            "print(sum(x))",
+        sandbox = DockerSandbox(DockerSandboxConfig(memory_mb=128))
+        control = self.execute_python(
+            "x=bytearray(32*1024*1024); "
+            "[(x.__setitem__(index,1)) for index in range(0,len(x),4096)]; print(sum(x))",
             timeout=15,
+            sandbox=sandbox,
+        )
+        result = self.execute_python(
+            "x=bytearray(256*1024*1024); "
+            "[(x.__setitem__(index,1)) for index in range(0,len(x),4096)]; print(sum(x))",
+            timeout=20,
+            sandbox=sandbox,
         )
         return {
-            "passed": result.exit_code != 0,
+            "passed": control.exit_code == 0
+            and not control.oom_killed
+            and result.exit_code != 0
+            and result.oom_killed,
+            "control_exit_code": control.exit_code,
+            "control_oom_killed": control.oom_killed,
             "exit_code": result.exit_code,
+            "oom_killed": result.oom_killed,
             "output_tail": result.output[-300:],
         }
 
@@ -899,21 +949,48 @@ sandbox.execute(
             return {"passed": False, "detail": "managed container never became observable"}
         process.kill()
         process.wait(timeout=5)
-        time.sleep(0.5)
+        cleanup_started = time.monotonic()
+        cleanup_deadline = cleanup_started + 20
+        while time.monotonic() < cleanup_deadline:
+            container_present = _container_exists(identity.container_name)
+            supervisor_present = (
+                _local_process_start_marker(identity.process_id)
+                == identity.process_start_marker
+            )
+            if not container_present and not supervisor_present:
+                break
+            time.sleep(0.1)
         residual_after_crash = _container_exists(identity.container_name)
+        supervisor_after_crash = (
+            _local_process_start_marker(identity.process_id)
+            == identity.process_start_marker
+        )
+        cleanup_elapsed_seconds = time.monotonic() - cleanup_started
         recovery_error = ""
         try:
             reconcile_managed_command(identity)
         except Exception as exc:
             recovery_error = f"{type(exc).__name__}: {exc}"
         residual_after_recovery = _container_exists(identity.container_name)
+        supervisor_after_recovery = (
+            _local_process_start_marker(identity.process_id)
+            == identity.process_start_marker
+        )
         if residual_after_recovery:
             _run(["docker", "rm", "--force", identity.container_name])
         return {
-            "passed": not residual_after_crash and not residual_after_recovery,
+            "passed": (
+                not residual_after_crash
+                and not supervisor_after_crash
+                and not residual_after_recovery
+                and not supervisor_after_recovery
+            ),
             "container": identity.container_name,
             "residual_after_parent_crash": residual_after_crash,
+            "supervisor_after_parent_crash": supervisor_after_crash,
+            "cleanup_elapsed_seconds": round(cleanup_elapsed_seconds, 3),
             "residual_after_recovery": residual_after_recovery,
+            "supervisor_after_recovery": supervisor_after_recovery,
             "recovery_error": recovery_error,
         }
 
@@ -1169,12 +1246,20 @@ sandbox.execute(
             self.add(
                 "stdout-stderr-capture-memory-bound", "resource", self.output_limit
             )
-            self.add(
-                "workspace-storage-limit",
-                "resource",
-                self.workspace_storage_limit,
-                requires=workspace_required,
-            )
+            if self.sandbox.config.workspace_limit_mb is None:
+                self.note(
+                    "workspace-storage-limit",
+                    "resource",
+                    "unverified",
+                    "workspace capacity enforcement is delivered by TASK-07",
+                )
+            else:
+                self.add(
+                    "workspace-storage-limit",
+                    "resource",
+                    self.workspace_storage_limit,
+                    requires=workspace_required,
+                )
             self.add("container-startup-failure", "failure-recovery", self.startup_failure)
             self.add("container-identity-mismatch", "failure-recovery", self.identity_mismatch)
             self.add(

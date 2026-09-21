@@ -135,10 +135,10 @@ from patchloop.providers.gateway import LegacyProviderAdapter
 from patchloop.providers.transport import TransportControlError
 from patchloop.providers.usage import UsageNormalizer
 from patchloop.sandbox import (
-    LocalProcessSandbox,
     ManagedCommandIdentity,
     ManagedCommandSandbox,
     SandboxCleanupError,
+    create_command_sandbox,
 )
 from patchloop.security import PolicyDecision
 from patchloop.session.models import Turn, TurnRole
@@ -3852,7 +3852,10 @@ class AgentRuntime:
 
     def _with_execution_ownership(self, task: Task, action: Callable[[Task], Task]) -> Task:
         if self.state_store is None:
-            return action(self._bind_or_validate_provider(task))
+            prepared = self._bind_or_validate_provider(task)
+            if self.gateway.context.sandbox is None:
+                self.gateway.context.sandbox = create_command_sandbox(prepared.execution)
+            return action(prepared)
         prepared = self.state_store.prepare_task_execution(task)
         manager = self.ownership_manager or ExecutionOwnershipManager(self.state_store)
         permissions = self.gateway.policy.allowed_permissions
@@ -3873,7 +3876,7 @@ class AgentRuntime:
         self._heartbeat = LeaseHeartbeat(manager, ownership)
         self.gateway.ownership_assertion = self._assert_tool_ownership
         if self.gateway.context.sandbox is None:
-            self.gateway.context.sandbox = LocalProcessSandbox()
+            self.gateway.context.sandbox = create_command_sandbox(prepared.execution)
         managed_sandbox = (
             self.gateway.context.sandbox
             if isinstance(self.gateway.context.sandbox, ManagedCommandSandbox)
@@ -3912,7 +3915,7 @@ class AgentRuntime:
                 except SandboxCleanupError as exc:
                     cleanup_error = exc
                     self._record_cleanup_failure(str(exc))
-                finally:
+                if cleanup_error is None:
                     managed_sandbox.unbind_execution()
             if cleanup_error is None and self._ownership is not None:
                 with suppress(LeaseLost):

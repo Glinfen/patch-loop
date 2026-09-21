@@ -6,6 +6,7 @@ import pytest
 from patchloop.domain import ErrorKind, ToolCall
 from patchloop.intelligence import RepositoryIndexer
 from patchloop.runtime import SYSTEM_PROMPT
+from patchloop.sandbox import LocalProcessSandbox
 from patchloop.tools import (
     ApplyPatchTool,
     CreateFileTool,
@@ -437,7 +438,7 @@ def test_mutating_tool_requires_explicit_plan(tmp_path: Path) -> None:
 def test_run_command_allows_safe_diagnostic_variants(tmp_path: Path) -> None:
     repository = make_repository(tmp_path)
     gateway = ToolGateway(
-        ToolContext(repository),
+        ToolContext(repository, LocalProcessSandbox()),
         [RunCommandTool()],
         policy=ToolPolicy(
             frozenset({PermissionLevel.EXECUTE}),
@@ -471,3 +472,30 @@ def test_run_command_allows_safe_diagnostic_variants(tmp_path: Path) -> None:
     assert denied.error_kind is ErrorKind.PERMISSION_DENIED
     with pytest.raises(ValueError, match="escapes repository"):
         RunCommandTool._normalize_command(["python", "-m", "compileall", "../outside.py"])
+
+
+def test_execute_tool_fails_closed_when_sandbox_is_missing(tmp_path: Path) -> None:
+    repository = make_repository(tmp_path)
+    marker = repository / "would-have-executed.pyc"
+    gateway = ToolGateway(
+        ToolContext(repository),
+        [RunCommandTool()],
+        policy=ToolPolicy(
+            frozenset({PermissionLevel.EXECUTE}),
+            require_plan_for_mutations=False,
+        ),
+    )
+
+    result = gateway.execute(
+        "task-1",
+        ToolCall(
+            name="run_command",
+            arguments={
+                "command": ["python", "-m", "compileall", "src/calculator.py"]
+            },
+        ),
+    )
+
+    assert not result.success
+    assert result.output == "sandbox_not_configured"
+    assert not marker.exists()

@@ -48,3 +48,17 @@ def test_balanced_append_only_optimization_requires_append_only_layout() -> None
         append_only_optimization="balanced_v1",
     )
     assert execution.append_only_optimization == "balanced_v1"
+
+
+def test_task_execution_workspace_limits_round_trip_and_default_compatibility() -> None:
+    legacy = TaskExecutionConfig.model_validate(
+        {"sandbox_backend": "docker", "sandbox_image": "image:tag"}
+    )
+    configured = TaskExecutionConfig(
+        sandbox_workspace_limit_mb=256,
+        sandbox_workspace_inode_limit=8192,
+    )
+
+    assert legacy.sandbox_workspace_limit_mb is None
+    assert legacy.sandbox_workspace_inode_limit == 65_536
+    assert TaskExecutionConfig.model_validate_json(configured.model_dump_json()) == configured

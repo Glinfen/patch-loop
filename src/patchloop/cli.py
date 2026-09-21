@@ -55,7 +55,7 @@ from patchloop.evaluation import (
     summarize_cache_run,
 )
 from patchloop.events import EventLogger, lease_owner_summary
-from patchloop.execution.approvals import ApprovalService
+from patchloop.execution.approvals import ApprovalPending, ApprovalService
 from patchloop.execution.models import Approval, Effect
 from patchloop.execution.policy import ApprovalScopeKind
 from patchloop.execution.policy_config import load_policy_configuration
@@ -120,6 +120,9 @@ from patchloop.tools import (
     WriteFileTool,
 )
 from patchloop.tools.base import Tool
+from patchloop.workspace.cli import prepare_session_workspace, workspace_app
+from patchloop.workspace.models import WorkspaceMode
+from patchloop.workspace.service import WorkspaceService
 
 app = typer.Typer(help="PatchLoop local-first coding agent runtime.", no_args_is_help=True)
 task_app = typer.Typer(help="Create and inspect local tasks.", no_args_is_help=True)
@@ -130,6 +133,7 @@ policy_app = typer.Typer(help="Inspect policy rules and execution evidence.", no
 provider_app = typer.Typer(help="Inspect and validate provider profiles.", no_args_is_help=True)
 app.add_typer(task_app, name="task")
 app.add_typer(session_app, name="session")
+app.add_typer(workspace_app, name="workspace")
 app.add_typer(approval_app, name="approval")
 approval_app.add_typer(grant_app, name="grant")
 app.add_typer(policy_app, name="policy")
@@ -164,6 +168,10 @@ class WorkspaceServices:
 
     repository: Path
     json_output: bool = True
+
+    @cached_property
+    def workspace(self) -> WorkspaceService:
+        return WorkspaceService(self.store)
 
     @cached_property
     def store(self) -> SQLiteStore:
@@ -410,7 +418,7 @@ def _session_runtime_service(
     )
     trace = EventLogger(_state_dir(services.repository) / "traces" / f"{task.id}.jsonl")
     gateway = ToolGateway(
-        ToolContext(services.repository, sandbox),
+        ToolContext(Path(task.repository), sandbox),
         _all_tools(),
         trace,
         policy,
@@ -582,7 +590,7 @@ def _task_diff_projection(services: WorkspaceServices, task: Task) -> str:
         checkpoint = services.session.checkpoint(task.id)
     except (KeyError, TaskNotFoundError):
         return "No changes."
-    context = ToolContext(services.repository)
+    context = ToolContext(Path(task.repository))
     context.changes.restore(checkpoint.change_snapshot)
     return context.changes.diff() or "No changes."
 
@@ -962,12 +970,18 @@ def check_provider(
 
 
 @session_app.command("create")
-def create_session(context: typer.Context) -> None:
+def create_session(
+    context: typer.Context,
+    workspace_mode: Annotated[str, typer.Option("--workspace-mode")] = "direct",
+    base_revision: Annotated[str | None, typer.Option("--base-revision")] = None,
+) -> None:
     """Create a persistent Session for this workspace without starting work."""
 
     services = _services_from_context(context)
     try:
-        session = services.session.create(str(services.repository))
+        session = services.session.create(
+            str(services.repository), workspace_mode=workspace_mode, base_revision=base_revision
+        )
     except (ContractError, ValueError) as exc:
         _command_error(exc)
     _echo_json(
@@ -1050,6 +1064,8 @@ def start_session_task(
     context: typer.Context,
     session_id: Annotated[str, typer.Argument()],
     goal: Annotated[str, typer.Argument(help="Natural-language development goal.")],
+    workspace_mode: Annotated[WorkspaceMode | None, typer.Option("--workspace-mode")] = None,
+    base_revision: Annotated[str | None, typer.Option("--base-revision")] = None,
     prompt_cache_layout: Annotated[
         str, typer.Option(help="Prompt layout: legacy, stable or append_only.")
     ] = DEFAULT_PROMPT_CACHE_LAYOUT.value,
@@ -1080,6 +1096,15 @@ def start_session_task(
         permissions.append(PermissionLevel.EXECUTE.value)
     event_writer = None if services.json_output else _HumanProviderWriter()
     try:
+        selected_session = services.session.get(session_id)
+        selected_mode = workspace_mode or WorkspaceMode(selected_session.workspace_mode)
+        if workspace_mode is not None or selected_mode == WorkspaceMode.WORKTREE:
+            prepare_session_workspace(
+                services.store,
+                session_id,
+                selected_mode,
+                base_revision or selected_session.workspace_base_revision,
+            )
         cache_layout = PromptCacheLayout(prompt_cache_layout)
         optimization = _parse_append_only_optimization(
             append_only_optimization,
@@ -1107,6 +1132,15 @@ def start_session_task(
                 provider=binding,
             ),
         )
+    except ApprovalPending as exc:
+        _echo_json(
+            {
+                "schema_version": CLI_SCHEMA_VERSION,
+                "status": "approval_required",
+                "approval_id": exc.approval.id,
+            }
+        )
+        raise typer.Exit(code=int(CliExitCode.WAITING_FOR_APPROVAL)) from None
     except (
         ContractError,
         KeyError,

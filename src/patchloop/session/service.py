@@ -13,8 +13,11 @@ from patchloop.domain import (
     TaskRuntimeCondition,
     TaskStatus,
 )
+from patchloop.events import SessionEvent
 from patchloop.execution.models import ControlKind, ControlRequest, ControlStatus, Execution
 from patchloop.session.models import Session, Turn, TurnRole
+from patchloop.workspace.models import WorkspaceStatus
+from patchloop.workspace.store import WorkspaceStore
 
 if TYPE_CHECKING:
     from patchloop.persistence_contracts import Store
@@ -41,10 +44,14 @@ class SessionService:
         *,
         session_id: str | None = None,
         config_version: str = "1",
+        workspace_mode: str = "direct",
+        base_revision: str | None = None,
     ) -> Session:
         values: dict[str, object] = {
             "workspace_ref": workspace_ref,
             "config_version": config_version,
+            "workspace_mode": workspace_mode,
+            "workspace_base_revision": base_revision,
         }
         if session_id is not None:
             values["id"] = session_id
@@ -80,7 +87,10 @@ class SessionService:
         cancel = getattr(self.store, "cancel_task", None)
         if not callable(cancel):
             raise RuntimeError("Session store does not support task cancellation")
-        return cast(Task, cancel(task_id))
+        task = cast(Task, cancel(task_id))
+        if task.session_id is not None:
+            self._request_workspace_cleanup(task.session_id)
+        return task
 
     def control(self, request_id: str) -> ControlRequest:
         """Return a persisted control request for cleanup/status reporting."""
@@ -148,12 +158,21 @@ class SessionService:
         execution: TaskExecutionConfig | None = None,
     ) -> Task:
         session = self.store.get_session(session_id)
+        repository = session.workspace_ref
+        if isinstance(self.store, WorkspaceStore):
+            handles = [
+                item for item in self.store.list_workspaces(session_id) if item.status != "closed"
+            ]
+            if handles:
+                if handles[0].status != "open" or handles[0].cleanup_status == "creating":
+                    raise ValueError("workspace recovery required")
+                repository = str(handles[0].effective_root)
         if isinstance(goal, Task):
             if task_id is not None or budget is not None or execution is not None:
                 raise ValueError("Task overrides cannot be combined with a Task instance")
             if goal.session_id not in {None, session.id}:
                 raise ValueError("task belongs to a different session")
-            if goal.repository != session.workspace_ref:
+            if goal.repository != repository:
                 raise ValueError("task repository must match the Session workspace")
             runtime_binding = getattr(self.runtime, "provider_binding", None)
             if goal.execution.provider is None and runtime_binding is not None:
@@ -169,7 +188,7 @@ class SessionService:
             )
         values: dict[str, object] = {
             "goal": goal,
-            "repository": session.workspace_ref,
+            "repository": repository,
         }
         if task_id is not None:
             values["id"] = task_id
@@ -206,12 +225,14 @@ class SessionService:
         execution_id: str | None = None,
         request_id: str | None = None,
     ) -> ControlRequest:
-        return self._request_control(
+        request = self._request_control(
             session_id,
             ControlKind.CANCEL,
             execution_id=execution_id,
             request_id=request_id,
         )
+        self._request_workspace_cleanup(session_id)
+        return request
 
     def resume(self, session_id: str) -> Task:
         session = self.store.get_session(session_id)
@@ -238,7 +259,41 @@ class SessionService:
 
     def close(self, session_id: str) -> Session:
         session = self.store.get_session(session_id)
-        return self.store.close_session(session.id, expected_version=session.version)
+        if isinstance(self.store, WorkspaceStore) and any(
+            handle.managed_worktree and handle.status != WorkspaceStatus.CLOSED
+            for handle in self.store.list_workspaces(session_id)
+        ):
+            self._request_workspace_cleanup(session_id)
+            raise ValueError("approve workspace close before closing its Session")
+        closed = self.store.close_session(session.id, expected_version=session.version)
+        if isinstance(self.store, WorkspaceStore):
+            for handle in self.store.list_workspaces(session_id):
+                if handle.status == WorkspaceStatus.OPEN:
+                    handle.status = WorkspaceStatus.CLOSED
+                    self.store.update_workspace(handle)
+        return closed
+
+    def _request_workspace_cleanup(self, session_id: str) -> None:
+        if not isinstance(self.store, WorkspaceStore):
+            return
+        for handle in self.store.list_workspaces(session_id):
+            if not handle.managed_worktree or handle.status == WorkspaceStatus.CLOSED:
+                continue
+            if handle.cleanup_status == "approval_required":
+                continue
+            handle.cleanup_status = "approval_required"
+            handle.recovery_advice = f"review and approve workspace close {handle.id}"
+            self.store.update_workspace(handle)
+            self.store.append_event(
+                SessionEvent(
+                    session_id=session_id,
+                    type="workspace.cleanup_requested",
+                    data={
+                        "workspace_id": handle.id,
+                        "next_command": f"workspace close {handle.id}",
+                    },
+                )
+            )
 
     def _request_control(
         self,

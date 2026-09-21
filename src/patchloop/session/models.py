@@ -41,6 +41,8 @@ class Session(BaseModel):
     schema_version: Literal["1.0"] = SESSION_SCHEMA_VERSION
     id: str = Field(default_factory=lambda: str(uuid4()), min_length=1, max_length=128)
     workspace_ref: str = Field(min_length=1)
+    workspace_mode: Literal["direct", "worktree"] = "direct"
+    workspace_base_revision: str | None = None
     status: SessionStatus = SessionStatus.OPEN
     active_task_id: str | None = None
     config_version: str = Field(default="1", min_length=1, max_length=128)

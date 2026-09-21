@@ -63,6 +63,7 @@ from patchloop.providers.base import ModelResponse, ModelUsage, ProviderRequestP
 from patchloop.sandbox import ManagedCommandIdentity, ManagedCommandStatus
 from patchloop.security import SecretRedactor
 from patchloop.session.models import Session, SessionCheckpoint, Turn
+from patchloop.workspace.store import WorkspaceStore as WorkspaceStore
 
 _T = TypeVar("_T")
 

@@ -34,6 +34,20 @@ def _atomic_write(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _write_with_ownership(context: ToolContext, path: Path, content: str) -> None:
+    from patchloop.workspace.ownership import file_state, safe_path
+
+    ledger = context.ledger
+    if ledger is None:
+        _atomic_write(path, content)
+        return
+    ledger.assert_owned()
+    safe_path(context.repository, path.relative_to(context.repository).as_posix())
+    before = file_state(path)
+    _atomic_write(path, content)
+    ledger.record_effect(context.effect_id or uuid4().hex, path, before, file_state(path))
+
+
 @dataclass(frozen=True)
 class FileMutationPreview:
     path: Path
@@ -147,7 +161,7 @@ class CreateFileTool(Tool):
         request = CreateFileInput.model_validate(arguments)
         preview = preview_file_mutation(self.name, request, context)
         context.changes.capture_original(preview.path, preview.original_content)
-        _atomic_write(preview.path, preview.target_content)
+        _write_with_ownership(context, preview.path, preview.target_content)
         return f"created {request.path} ({len(request.content)} characters)"
 
 
@@ -169,7 +183,7 @@ class WriteFileTool(Tool):
         request = WriteFileInput.model_validate(arguments)
         preview = preview_file_mutation(self.name, request, context)
         context.changes.capture_original(preview.path, preview.original_content)
-        _atomic_write(preview.path, preview.target_content)
+        _write_with_ownership(context, preview.path, preview.target_content)
         return f"wrote {request.path} ({len(request.content)} characters)"
 
 
@@ -193,7 +207,7 @@ class ReplaceTextTool(Tool):
             raise ValueError(f"file does not exist: {request.path}")
         occurrences = preview.original_content.count(request.old_text)
         context.changes.capture_original(preview.path, preview.original_content)
-        _atomic_write(preview.path, preview.target_content)
+        _write_with_ownership(context, preview.path, preview.target_content)
         return f"updated {request.path} ({occurrences} replacement(s))"
 
 
@@ -222,7 +236,7 @@ class ApplyPatchTool(Tool):
         preview = preview_file_mutation(self.name, request, context)
         replacement_count = sum(edit.expected_occurrences for edit in request.edits)
         context.changes.capture_original(preview.path, preview.original_content)
-        _atomic_write(preview.path, preview.target_content)
+        _write_with_ownership(context, preview.path, preview.target_content)
         return (
             f"patched {request.path} ({len(request.edits)} edit(s), "
             f"{replacement_count} replacement(s))"

@@ -522,9 +522,12 @@ class ToolGateway:
         ):
             self._consumed_approval_calls.add(key)
             self._executed_claims.add(key)
+        previous_effect_id = self.context.effect_id
+        self.context.effect_id = previous_effect_id or call.id
         try:
             return self.execute(task_id, call)
         finally:
+            self.context.effect_id = previous_effect_id
             self._consumed_approval_calls.discard(key)
 
     def reject_prepared(

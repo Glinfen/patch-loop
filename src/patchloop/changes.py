@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import difflib
+from collections.abc import Sequence
 from pathlib import Path
+
+from patchloop.workspace.models import ChangeRecord
 
 
 class FileChangeTracker:
@@ -14,6 +18,18 @@ class FileChangeTracker:
     def capture(self, path: Path) -> None:
         if path not in self._original:
             self._original[path] = path.read_text(encoding="utf-8") if path.exists() else None
+
+    def import_workspace_changes(self, changes: Sequence[ChangeRecord]) -> None:
+        """Import text baselines; binary/unsafe paths remain in the workspace ledger."""
+        for change in changes:
+            if change.baseline.kind not in {"text", "missing"}:
+                continue
+            content = (
+                None
+                if change.baseline.kind == "missing"
+                else base64.b64decode(change.baseline.content_base64 or "").decode("utf-8")
+            )
+            self.capture_original(self.repository / change.path, content)
 
     def capture_original(self, path: Path, content: str | None) -> None:
         """Restore a trusted persisted baseline without reading the current file."""

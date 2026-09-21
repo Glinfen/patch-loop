@@ -107,8 +107,9 @@ from patchloop.sqlite_support import (
     runtime_schema_version,
 )
 from patchloop.storage import TaskNotFoundError
+from patchloop.workspace.store import WORKSPACE_MIGRATION, SQLiteWorkspaceMixin
 
-RUNTIME_SCHEMA_VERSION = 6
+RUNTIME_SCHEMA_VERSION = 7
 _RUNTIME_TABLES = {
     "tasks",
     "agent_steps",
@@ -537,14 +538,25 @@ def initialize_runtime_schema(connection: sqlite3.Connection) -> None:
                 WHERE component = 'runtime'""",
                 (6, datetime.now(UTC).isoformat()),
             )
+        if version < 7:
+            for statement in WORKSPACE_MIGRATION:
+                connection.execute(statement)
+            connection.execute(
+                "UPDATE patchloop_schema_migrations SET version = ?, updated_at = ? "
+                "WHERE component = 'runtime'",
+                (7, datetime.now(UTC).isoformat()),
+            )
         tables = {
             str(table[0])
             for table in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-        if not _RUNTIME_TABLES.issubset(tables):
-            missing = ", ".join(sorted(_RUNTIME_TABLES - tables))
+        required_tables = _RUNTIME_TABLES | {
+            "workspaces", "workspace_changes", "workspace_verifications", "workspace_commit_plans"
+        }
+        if not required_tables.issubset(tables):
+            missing = ", ".join(sorted(required_tables - tables))
             raise RuntimeSchemaError(f"runtime schema is incomplete; missing: {missing}")
         task_columns = {
             str(column[1]) for column in connection.execute("PRAGMA table_info(tasks)").fetchall()
@@ -922,7 +934,7 @@ def _adapt_checkpoint_json[ModelT: BaseModel](
         ) from exc
 
 
-class SQLiteStore:
+class SQLiteStore(SQLiteWorkspaceMixin):
     def __init__(self, path: Path, redactor: SecretRedactor | None = None) -> None:
         self.path = path
         self.redactor = redactor or SecretRedactor()

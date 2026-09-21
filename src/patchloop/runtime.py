@@ -1596,15 +1596,19 @@ class AgentRuntime:
                 {"call_id": call.id, "path": path},
             )
             return result
-        result = (
-            self.gateway.execute_claimed(
-                task.id,
-                executable_call,
-                approval_consumed=approval_consumed,
+        self.gateway.context.effect_id = None if claimed_effect is None else claimed_effect.id
+        try:
+            result = (
+                self.gateway.execute_claimed(
+                    task.id,
+                    executable_call,
+                    approval_consumed=approval_consumed,
+                )
+                if claimed_effect is not None
+                else self.gateway.execute(task.id, call)
             )
-            if claimed_effect is not None
-            else self.gateway.execute(task.id, call)
-        )
+        finally:
+            self.gateway.context.effect_id = None
         self._assert_ownership()
         if self.state_store is not None:
             if claimed_effect is not None:
@@ -1863,9 +1867,11 @@ class AgentRuntime:
                 )
                 and (
                     effect.policy_evaluation is None
-                    or (current.policy_evaluation is not None
-                    and effect.policy_evaluation.rules_fingerprint
-                    == current.policy_evaluation.rules_fingerprint)
+                    or (
+                        current.policy_evaluation is not None
+                        and effect.policy_evaluation.rules_fingerprint
+                        == current.policy_evaluation.rules_fingerprint
+                    )
                 )
             )
             if unchanged and approval.grant_id is not None:
@@ -3883,6 +3889,8 @@ class AgentRuntime:
         self._heartbeat.start()
         cleanup_error: SandboxCleanupError | None = None
         try:
+            if workspace_writer:
+                self._bind_workspace(prepared, ownership, manager)
             try:
                 prepared = self._bind_or_validate_provider(prepared)
             except ProviderError as exc:
@@ -3913,6 +3921,40 @@ class AgentRuntime:
             self._ownership = None
             if cleanup_error is not None:
                 raise cleanup_error
+
+    def _bind_workspace(
+        self,
+        task: Task,
+        ownership: ExecutionOwnership,
+        manager: ExecutionOwnershipManager,
+    ) -> None:
+        from pathlib import Path
+
+        from patchloop.persistence import SQLiteStore
+        from patchloop.workspace.models import WorkspaceMode
+        from patchloop.workspace.service import WorkspaceService
+
+        if not isinstance(self.state_store, SQLiteStore):
+            return
+        root = Path(task.repository)
+        if not (root / ".git").exists():
+            return  # Existing non-Git tool contexts retain their compatibility path.
+        session = self.state_store.get_session(task.session_id or "")
+        service = WorkspaceService(self.state_store, manager=manager, ownership=ownership)
+        handles = [
+            item for item in self.state_store.list_workspaces(session.id) if item.status != "closed"
+        ]
+        if handles:
+            handle = handles[0]
+        else:
+            if session.workspace_mode == "worktree":
+                raise ValueError("open and approve the isolated workspace before starting the task")
+            handle = service.open(session.id, root, mode=WorkspaceMode.DIRECT, legacy_direct=True)
+        self.gateway.context.workspace = handle
+        self.gateway.context.ledger = service.ledger(handle.id)
+        self.gateway.context.changes.import_workspace_changes(
+            self.state_store.list_changes(handle.id)
+        )
 
     def _bind_or_validate_provider(self, task: Task) -> Task:
         current = task.execution.provider

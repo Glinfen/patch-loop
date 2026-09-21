@@ -215,12 +215,19 @@ def test_lazy_expiry_is_persisted_once(
     )
 
 
-def test_v5_database_upgrades_to_v6_without_changing_legacy_approval_defaults(
+def test_v5_database_upgrades_to_v7_without_changing_legacy_approval_defaults(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "legacy.db"
     SQLiteStore(path)
     with connect_write(path) as connection:
+        for table in (
+            "workspace_commit_plans",
+            "workspace_verifications",
+            "workspace_changes",
+            "workspaces",
+        ):
+            connection.execute(f"DROP TABLE {table}")
         connection.execute("DROP TABLE policy_rules")
         connection.execute("DROP TABLE approval_grants")
         connection.execute(
@@ -228,7 +235,7 @@ def test_v5_database_upgrades_to_v6_without_changing_legacy_approval_defaults(
         )
     restored = SQLiteStore(path)
     with connect(restored.path) as connection:
-        assert runtime_schema_version(connection) == 6
+        assert runtime_schema_version(connection) == 7
     legacy = Approval(
         effect_id="effect", action_summary="write", policy_version="p1", config_version="1"
     )

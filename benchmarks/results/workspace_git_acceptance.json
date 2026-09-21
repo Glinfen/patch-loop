@@ -1,0 +1,377 @@
+{
+  "schema_version": "workspace-git.v1",
+  "generated_at": "2026-09-20T16:27:05.480455+00:00",
+  "git_version": "git version 2.51.0.windows.1",
+  "os": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.13",
+  "repository_revision": "62381adb219cc568417c3e33dc1eceee5c36a04b",
+  "repository_has_uncommitted_changes": true,
+  "test_repositories": "each case creates its own temporary Git baseline; no production repository mutations",
+  "cases": [
+    {
+      "case": "tests.unit.test_workspace_git::test_discovery_and_dirty_status",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.677"
+    },
+    {
+      "case": "tests.unit.test_workspace_git::test_rename_delete_and_literal_names",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.340"
+    },
+    {
+      "case": "tests.unit.test_workspace_git::test_worktree_gitfile_and_source_isolation",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "1.070"
+    },
+    {
+      "case": "tests.unit.test_workspace_git::test_malformed_porcelain_fails_closed[garbage\\x00]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.000"
+    },
+    {
+      "case": "tests.unit.test_workspace_git::test_malformed_porcelain_fails_closed[? foo]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.000"
+    },
+    {
+      "case": "tests.unit.test_workspace_git::test_malformed_porcelain_fails_closed[1 M N...\\x00]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.000"
+    },
+    {
+      "case": "tests.unit.test_workspace_git::test_malformed_porcelain_fails_closed[2 R. N... 1 1 1 a b R100 x\\x00]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.000"
+    },
+    {
+      "case": "tests.unit.test_workspace_git::test_porcelain_special_paths_and_submodules",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.000"
+    },
+    {
+      "case": "tests.unit.test_workspace_git::test_failures_and_option_injection",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.270"
+    },
+    {
+      "case": "tests.unit.test_workspace_git::test_nested_repository_is_explicit",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.709"
+    },
+    {
+      "case": "tests.unit.test_workspace_git::test_ambient_git_overrides_are_removed",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.263"
+    },
+    {
+      "case": "tests.unit.test_workspace_ownership::test_control_plane_selectors_are_rejected[../outside]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.002"
+    },
+    {
+      "case": "tests.unit.test_workspace_ownership::test_control_plane_selectors_are_rejected[.git/config]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.002"
+    },
+    {
+      "case": "tests.unit.test_workspace_ownership::test_control_plane_selectors_are_rejected[.patchloop/state]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.002"
+    },
+    {
+      "case": "tests.unit.test_workspace_ownership::test_control_plane_selectors_are_rejected[.env]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.001"
+    },
+    {
+      "case": "tests.unit.test_workspace_ownership::test_control_plane_selectors_are_rejected[.git./config]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.001"
+    },
+    {
+      "case": "tests.unit.test_workspace_ownership::test_control_plane_selectors_are_rejected[NUL.txt]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.002"
+    },
+    {
+      "case": "tests.unit.test_workspace_ownership::test_control_plane_selectors_are_rejected[folder /file]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.002"
+    },
+    {
+      "case": "tests.unit.test_workspace_ownership::test_nested_repository_and_symlink_are_rejected",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "symlink creation not permitted",
+      "result": "skipped",
+      "seconds": "0.002"
+    },
+    {
+      "case": "tests.unit.test_workspace_ownership::test_binary_digest_and_bytes",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.003"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_dirty_baseline_restart_mixed_and_revert",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "3.244"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_verified_commit_preserves_user_index",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "8.620"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_external_head_change_requires_recovery",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "1.205"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_create_delete_and_binary_revert",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "1.473"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_user_baseline_never_accepted_or_reverted",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "1.567"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_approval_bound_to_current_diff",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "2.427"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_lease_lost_fences_ledger",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "1.066"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_schema6_migration_preserves_session_and_workspace_roundtrip",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.074"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_policy_denial_prevents_git_or_file_mutation",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "1.823"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_verification_stales_after_external_change",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "4.817"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_interrupted_operation_requires_recovery",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.985"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_dirty_source_refuses_worktree_before_approval",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.572"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_binary_tracked_file_restored_from_git_blob",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "1.620"
+    },
+    {
+      "case": "tests.integration.test_workspace_service::test_dirty_worktree_cleanup_failure_preserves_directory",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "4.913"
+    },
+    {
+      "case": "tests.integration.test_workspace_cli::test_cli_open_review_close",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "3.200"
+    },
+    {
+      "case": "tests.integration.test_workspace_cli::test_cli_unknown_workspace_is_structured",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.057"
+    },
+    {
+      "case": "tests.e2e.test_workspace_workflow::test_worktree_source_isolation_and_cleanup",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "15.901"
+    },
+    {
+      "case": "tests.e2e.test_workspace_workflow::test_runtime_lazily_binds_workspace_and_records_effect",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "1.760"
+    },
+    {
+      "case": "tests.e2e.test_workspace_ownership::test_two_processes_have_only_one_writer_for_the_same_workspace",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "1.162"
+    },
+    {
+      "case": "tests.e2e.test_workspace_ownership::test_processes_can_write_different_workspaces_concurrently",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "1.102"
+    },
+    {
+      "case": "tests.e2e.test_workspace_ownership::test_mutation_tool_cannot_run_with_only_a_task_lease[write]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.234"
+    },
+    {
+      "case": "tests.e2e.test_workspace_ownership::test_mutation_tool_cannot_run_with_only_a_task_lease[execute]",
+      "expected": "all assertions pass against a temporary local repository",
+      "observed": "all assertions passed",
+      "result": "passed",
+      "seconds": "0.236"
+    },
+    {
+      "case": "docker_sandbox",
+      "expected": "separate Sandbox acceptance",
+      "observed": "not exercised by local Workspace/Git acceptance",
+      "result": "unverified"
+    }
+  ],
+  "summary": {
+    "passed": 41,
+    "failed": 0,
+    "skipped": 1,
+    "unverified": 1
+  },
+  "regression": {
+    "source": ".patchloop\\workspace-regression-final.xml",
+    "summary": {
+      "passed": 1009,
+      "failed": 0,
+      "skipped": 3
+    },
+    "nonpassing": [
+      {
+        "case": "tests.e2e.test_provider_session::test_real_provider_session_trial",
+        "expected": "all assertions pass against a temporary local repository",
+        "observed": "PGW real-provider acceptance is not explicitly configured",
+        "result": "skipped",
+        "seconds": "0.000"
+      },
+      {
+        "case": "tests.unit.test_tools::test_file_enumeration_does_not_follow_external_symlink",
+        "expected": "all assertions pass against a temporary local repository",
+        "observed": "symbolic links are unavailable on this Windows host",
+        "result": "skipped",
+        "seconds": "0.007"
+      },
+      {
+        "case": "tests.unit.test_workspace_ownership::test_nested_repository_and_symlink_are_rejected",
+        "expected": "all assertions pass against a temporary local repository",
+        "observed": "symlink creation not permitted",
+        "result": "skipped",
+        "seconds": "0.003"
+      }
+    ]
+  },
+  "quality_gates": [
+    {
+      "command": "ruff check src tests benchmarks/run_workspace_acceptance.py",
+      "result": "passed"
+    },
+    {
+      "command": "mypy src/patchloop",
+      "result": "passed",
+      "checked_source_files": 102
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "followup_checks": [
+    {
+      "command": "pytest tests/integration/test_workspace_service.py::test_dirty_worktree_cleanup_failure_preserves_directory tests/integration/test_session_cli.py tests/unit/test_session_store.py",
+      "passed": 60,
+      "failed": 0
+    },
+    {
+      "command": "pytest tests/integration/test_workspace_service.py::test_verification_stales_after_external_change",
+      "passed": 1,
+      "failed": 0,
+      "observed": "a newer failed verification prevents reuse of an older successful verification"
+    }
+  ]
+}

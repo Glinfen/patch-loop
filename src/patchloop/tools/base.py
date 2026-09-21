@@ -29,6 +29,8 @@ from patchloop.security import RiskLevel
 
 if TYPE_CHECKING:
     from patchloop.sandbox import CommandSandbox
+    from patchloop.workspace.models import WorkspaceHandle
+    from patchloop.workspace.ownership import ChangeOwnershipLedger
 
 
 _invocation: ContextVar[tuple[int, int] | None] = ContextVar("policy_checked_tool", default=None)
@@ -53,7 +55,14 @@ class ToolInputModel(BaseModel):
 
 
 class ToolContext:
-    def __init__(self, repository: Path, sandbox: CommandSandbox | None = None) -> None:
+    def __init__(
+        self,
+        repository: Path,
+        sandbox: CommandSandbox | None = None,
+        *,
+        workspace: WorkspaceHandle | None = None,
+        ledger: ChangeOwnershipLedger | None = None,
+    ) -> None:
         self.repository = repository.resolve(strict=True)
         if not self.repository.is_dir():
             raise ValueError(f"repository is not a directory: {self.repository}")
@@ -65,6 +74,11 @@ class ToolContext:
         self.sandbox = sandbox
         self.session_id = ""
         self.config_version = "1"
+        self.workspace = workspace
+        self.ledger = ledger
+        self.effect_id: str | None = None
+        if workspace is not None and workspace.effective_root.resolve() != self.repository:
+            raise ValueError("workspace does not match tool repository")
 
     def _run_policy_checked(self, tool: Tool, arguments: BaseModel) -> str:
         """Gateway-only dispatch; this is an API guard, not Python process isolation."""

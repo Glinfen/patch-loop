@@ -157,9 +157,7 @@ def test_official_cache_write_usage_is_priced_separately(protocol) -> None:
 
     assert usage.cache_write_tokens == 25
     assert usage.cost_status == "estimated"
-    assert usage.cost_usd == pytest.approx(
-        (60 * 0.5 + 15 * 2 + 25 * 2.5 + 10 * 8) / 1_000_000
-    )
+    assert usage.cost_usd == pytest.approx((60 * 0.5 + 15 * 2 + 25 * 2.5 + 10 * 8) / 1_000_000)
 
 
 def test_cache_write_pricing_requires_complete_usage_breakdown() -> None:

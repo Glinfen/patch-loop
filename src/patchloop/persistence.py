@@ -553,7 +553,10 @@ def initialize_runtime_schema(connection: sqlite3.Connection) -> None:
             ).fetchall()
         }
         required_tables = _RUNTIME_TABLES | {
-            "workspaces", "workspace_changes", "workspace_verifications", "workspace_commit_plans"
+            "workspaces",
+            "workspace_changes",
+            "workspace_verifications",
+            "workspace_commit_plans",
         }
         if not required_tables.issubset(tables):
             missing = ", ".join(sorted(required_tables - tables))

@@ -102,7 +102,7 @@ def test_local_backend_rejects_workspace_capacity_claim() -> None:
 def test_configured_workspace_limit_is_not_silently_ignored(tmp_path: Path) -> None:
     sandbox = DockerSandbox(DockerSandboxConfig(workspace_limit_mb=128))
 
-    with pytest.raises(SandboxError, match="workspace_capacity_not_implemented"):
+    with pytest.raises(SandboxError, match="workspace_capacity_unverified"):
         sandbox.execute(
             ["python", "-m", "pytest"],
             tmp_path,

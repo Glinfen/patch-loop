@@ -1,0 +1,863 @@
+{
+  "schema_version": 2,
+  "kind": "real-docker-sandbox-acceptance",
+  "status": "passed",
+  "generated_at": "2026-09-22T06:37:35.114830+00:00",
+  "run_id": "2e83fba3f88a463fb629af2c79d950b7",
+  "source_commit": "c9a37a160678ab8ae91782b7b589d73745b66512",
+  "source_dirty": false,
+  "source_diff_sha256": "33c2da2f369cc6a117055a71d327f41de48fe448131a6a62c936189bf2d3e4c3",
+  "harness_sha256": "a4ef85ded79e5b1cdf4a29b2a7d49ea361fcf90742d93e5f7d0d30015dc2cb48",
+  "dockerfile_sha256": "628242a5561805afc406457fe5531a8971a7fd2fd1f2527d6f3664e7a3390f34",
+  "effective_config": {
+    "image": "patchloop-sandbox:py313",
+    "cpus": 1.0,
+    "memory_mb": 512,
+    "pids_limit": 128,
+    "network_enabled": false,
+    "user": null,
+    "tmpfs_mb": 64,
+    "workspace_limit_mb": 64,
+    "workspace_inode_limit": 4096
+  },
+  "preconditions": {
+    "dedicated_workspace": true,
+    "workspace_empty_at_start": true,
+    "workspace_capacity_evidence": {
+      "canonical_root": "/workspace",
+      "mount_id": 5696,
+      "device": "7:17",
+      "fstype": "ext4",
+      "total_bytes": 61820928,
+      "total_inodes": 4096,
+      "limit_bytes": 67108864,
+      "inode_limit": 4096,
+      "root_device": 1809,
+      "root_inode": 2,
+      "verified_at": "2026-09-22T06:35:18.605115Z"
+    }
+  },
+  "assurance": {
+    "workspace_storage_bounded": true,
+    "daemon_fault_injection": true
+  },
+  "residual_before_cleanup": [],
+  "residual_after_cleanup": [],
+  "host": {
+    "platform": "Linux-6.8.0-139-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "docker_client": "29.1.3",
+    "docker_server": "29.1.3",
+    "docker_security_options": [
+      "name=apparmor",
+      "name=seccomp,profile=builtin",
+      "name=cgroupns"
+    ],
+    "sandbox_image_id": "sha256:564f1ce670ec07cc5e635a942f733f731ac9bc3a61d64e702794ad4a3303caf3",
+    "workspace_path": "/workspace"
+  },
+  "threat_model": {
+    "guarantees": [
+      "no host filesystem access outside the mounted workspace",
+      "no external or host network access by default",
+      "no host credentials or environment leakage",
+      "bounded capabilities, processes, memory, CPU, temporary storage, and returned output",
+      "verified container identity before recovery cleanup",
+      "no residual managed containers after all exercised lifecycle paths",
+      "workspace bytes and inodes are bounded by a verified dedicated ext4 mount"
+    ],
+    "exclusions": [
+      "kernel or container-runtime zero-day escape resistance",
+      "denial of service against the Docker daemon itself"
+    ],
+    "local_fallback_is_isolated": false
+  },
+  "summary": {
+    "passed": 24,
+    "not_applicable": 1
+  },
+  "cases": [
+    {
+      "id": "docker-effective-configuration",
+      "category": "configuration",
+      "status": "passed",
+      "attempts": 1,
+      "requires": [],
+      "duration_ms": 652.907,
+      "evidence": [
+        {
+          "attempt": 1,
+          "checks": {
+            "network_none": true,
+            "pid_namespace_not_host": true,
+            "not_privileged": true,
+            "readonly_rootfs": true,
+            "cap_drop_all": true,
+            "no_new_privileges": true,
+            "cpu_limit": true,
+            "memory_limit": true,
+            "memory_swap_disabled": true,
+            "pid_limit": true,
+            "log_driver_none": true,
+            "image_id_pinned": true,
+            "workspace_user": true,
+            "tmpfs_limit": true,
+            "tmpfs_hardened": true,
+            "identity_labels": true,
+            "only_workspace_mount": true,
+            "docker_socket_absent": true
+          },
+          "image_reference": "sha256:564f1ce670ec07cc5e635a942f733f731ac9bc3a61d64e702794ad4a3303caf3",
+          "container_name": "patchloop-3cb569ff2fa24ede8d63f150347fdd6b"
+        }
+      ]
+    },
+    {
+      "id": "workspace-read-write",
+      "category": "filesystem",
+      "status": "passed",
+      "attempts": 1,
+      "requires": [],
+      "duration_ms": 3075.94,
+      "evidence": [
+        {
+          "attempt": 1,
+          "exit_code": 0,
+          "host_file_content": "SAFE",
+          "expected_uid": 1000,
+          "expected_gid": 1000,
+          "file_uid": 1000,
+          "file_gid": 1000,
+          "output_tail": "SAFE\n"
+        }
+      ]
+    },
+    {
+      "id": "file-traversal-and-symlink",
+      "category": "filesystem",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [
+        "workspace-read-write"
+      ],
+      "duration_ms": 4594.568,
+      "evidence": [
+        {
+          "attempt": 1,
+          "safe_read": true,
+          "read_leaks": [
+            false,
+            false,
+            false
+          ],
+          "write_escapes": [
+            false,
+            false,
+            false
+          ],
+          "outside_secret_intact": true
+        },
+        {
+          "attempt": 2,
+          "safe_read": true,
+          "read_leaks": [
+            false,
+            false,
+            false
+          ],
+          "write_escapes": [
+            false,
+            false,
+            false
+          ],
+          "outside_secret_intact": true
+        },
+        {
+          "attempt": 3,
+          "safe_read": true,
+          "read_leaks": [
+            false,
+            false,
+            false
+          ],
+          "write_escapes": [
+            false,
+            false,
+            false
+          ],
+          "outside_secret_intact": true
+        }
+      ]
+    },
+    {
+      "id": "symlink-toctou",
+      "category": "filesystem",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [
+        "workspace-read-write"
+      ],
+      "duration_ms": 9108.339,
+      "evidence": [
+        {
+          "attempt": 1,
+          "secret_reads": 0,
+          "safe_reads": 45606,
+          "outside_secret_intact": true
+        },
+        {
+          "attempt": 2,
+          "secret_reads": 0,
+          "safe_reads": 47260,
+          "outside_secret_intact": true
+        },
+        {
+          "attempt": 3,
+          "secret_reads": 0,
+          "safe_reads": 48090,
+          "outside_secret_intact": true
+        }
+      ]
+    },
+    {
+      "id": "network-dns-tcp-http-localhost",
+      "category": "network",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [],
+      "duration_ms": 11282.069,
+      "evidence": [
+        {
+          "attempt": 1,
+          "host_listener_positive_control": true,
+          "dns": false,
+          "tcp": false,
+          "localhost": false,
+          "http": false,
+          "host_gateway": false,
+          "default_route": false
+        },
+        {
+          "attempt": 2,
+          "host_listener_positive_control": true,
+          "dns": false,
+          "tcp": false,
+          "localhost": false,
+          "http": false,
+          "host_gateway": false,
+          "default_route": false
+        },
+        {
+          "attempt": 3,
+          "host_listener_positive_control": true,
+          "dns": false,
+          "tcp": false,
+          "localhost": false,
+          "http": false,
+          "host_gateway": false,
+          "default_route": false
+        }
+      ]
+    },
+    {
+      "id": "environment-and-credential-isolation",
+      "category": "environment",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [],
+      "duration_ms": 4593.057,
+      "evidence": [
+        {
+          "attempt": 1,
+          "explicit_variable": null,
+          "sentinel_in_environment": false,
+          "credential_paths_present": []
+        },
+        {
+          "attempt": 2,
+          "explicit_variable": null,
+          "sentinel_in_environment": false,
+          "credential_paths_present": []
+        },
+        {
+          "attempt": 3,
+          "explicit_variable": null,
+          "sentinel_in_environment": false,
+          "credential_paths_present": []
+        }
+      ]
+    },
+    {
+      "id": "runtime-capabilities-and-socket",
+      "category": "configuration",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [],
+      "duration_ms": 4541.916,
+      "evidence": [
+        {
+          "attempt": 1,
+          "cap_eff": "0000000000000000",
+          "no_new_privs": "1",
+          "root_write": false,
+          "docker_socket": false
+        },
+        {
+          "attempt": 2,
+          "cap_eff": "0000000000000000",
+          "no_new_privs": "1",
+          "root_write": false,
+          "docker_socket": false
+        },
+        {
+          "attempt": 3,
+          "cap_eff": "0000000000000000",
+          "no_new_privs": "1",
+          "root_write": false,
+          "docker_socket": false
+        }
+      ]
+    },
+    {
+      "id": "normal-exit-cleanup",
+      "category": "lifecycle",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [],
+      "duration_ms": 9991.303,
+      "evidence": [
+        {
+          "attempt": 1,
+          "container": "patchloop-2c6324b8-82c5-432a-82f8-140ebaebc8fc",
+          "finished_status": "exited",
+          "container_absent": true
+        },
+        {
+          "attempt": 2,
+          "container": "patchloop-db2eea5a-aa63-4630-ae0c-1ea1f18a83a7",
+          "finished_status": "exited",
+          "container_absent": true
+        },
+        {
+          "attempt": 3,
+          "container": "patchloop-f88bda60-ea2f-47aa-8450-0d69bdc971bf",
+          "finished_status": "exited",
+          "container_absent": true
+        }
+      ]
+    },
+    {
+      "id": "timeout-process-tree-cleanup",
+      "category": "lifecycle",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [
+        "workspace-read-write"
+      ],
+      "duration_ms": 10535.751,
+      "evidence": [
+        {
+          "attempt": 1,
+          "timeout_raised": true,
+          "container": "patchloop-8096b43d-f0a9-4c4a-a56e-80d5cffbba75",
+          "container_absent": true,
+          "cleanup_reason": "timeout"
+        },
+        {
+          "attempt": 2,
+          "timeout_raised": true,
+          "container": "patchloop-3b0100b7-4d69-4cc4-acf1-7ba06293d3cb",
+          "container_absent": true,
+          "cleanup_reason": "timeout"
+        },
+        {
+          "attempt": 3,
+          "timeout_raised": true,
+          "container": "patchloop-efdfff45-66aa-4d84-a76f-1fddd9dee846",
+          "container_absent": true,
+          "cleanup_reason": "timeout"
+        }
+      ]
+    },
+    {
+      "id": "cancel-interruption-cleanup",
+      "category": "lifecycle",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [
+        "workspace-read-write"
+      ],
+      "duration_ms": 4799.256,
+      "evidence": [
+        {
+          "attempt": 1,
+          "interrupted": true,
+          "container_absent": true,
+          "cleanup_reason": "cancel"
+        },
+        {
+          "attempt": 2,
+          "interrupted": true,
+          "container_absent": true,
+          "cleanup_reason": "cancel"
+        },
+        {
+          "attempt": 3,
+          "interrupted": true,
+          "container_absent": true,
+          "cleanup_reason": "cancel"
+        }
+      ]
+    },
+    {
+      "id": "pause-and-resume",
+      "category": "lifecycle",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [],
+      "duration_ms": 9441.058,
+      "evidence": [
+        {
+          "attempt": 1,
+          "pause": {
+            "interrupted": true,
+            "container_absent": true,
+            "cleanup_reason": "pause"
+          },
+          "resume_exit_code": 0
+        },
+        {
+          "attempt": 2,
+          "pause": {
+            "interrupted": true,
+            "container_absent": true,
+            "cleanup_reason": "pause"
+          },
+          "resume_exit_code": 0
+        },
+        {
+          "attempt": 3,
+          "pause": {
+            "interrupted": true,
+            "container_absent": true,
+            "cleanup_reason": "pause"
+          },
+          "resume_exit_code": 0
+        }
+      ]
+    },
+    {
+      "id": "background-process-cleanup",
+      "category": "process",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [
+        "workspace-read-write"
+      ],
+      "duration_ms": 10695.098,
+      "evidence": [
+        {
+          "attempt": 1,
+          "marker_absent": true
+        },
+        {
+          "attempt": 2,
+          "marker_absent": true
+        },
+        {
+          "attempt": 3,
+          "marker_absent": true
+        }
+      ]
+    },
+    {
+      "id": "pid-fork-limit",
+      "category": "resource",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [],
+      "duration_ms": 5446.768,
+      "evidence": [
+        {
+          "attempt": 1,
+          "children_created": 127,
+          "fork_error": "[Errno 11] Resource temporarily unavailable"
+        },
+        {
+          "attempt": 2,
+          "children_created": 127,
+          "fork_error": "[Errno 11] Resource temporarily unavailable"
+        },
+        {
+          "attempt": 3,
+          "children_created": 127,
+          "fork_error": "[Errno 11] Resource temporarily unavailable"
+        }
+      ]
+    },
+    {
+      "id": "memory-limit",
+      "category": "resource",
+      "status": "passed",
+      "attempts": 1,
+      "requires": [],
+      "duration_ms": 6452.991,
+      "evidence": [
+        {
+          "attempt": 1,
+          "control_exit_code": 0,
+          "control_oom_killed": false,
+          "exit_code": 137,
+          "oom_killed": true,
+          "output_tail": ""
+        }
+      ]
+    },
+    {
+      "id": "temporary-storage-limit",
+      "category": "resource",
+      "status": "passed",
+      "attempts": 1,
+      "requires": [],
+      "duration_ms": 1564.272,
+      "evidence": [
+        {
+          "attempt": 1,
+          "written": 67108864,
+          "error": "[Errno 28] No space left on device"
+        }
+      ]
+    },
+    {
+      "id": "returned-output-limit",
+      "category": "resource",
+      "status": "passed",
+      "attempts": 1,
+      "requires": [],
+      "duration_ms": 1513.523,
+      "evidence": [
+        {
+          "attempt": 1,
+          "returned_chars": 4096,
+          "stdout_bytes": 4194304,
+          "stderr_bytes": 4194304,
+          "output_truncated": true
+        }
+      ]
+    },
+    {
+      "id": "stdout-stderr-capture-memory-bound",
+      "category": "resource",
+      "status": "passed",
+      "attempts": 1,
+      "requires": [],
+      "duration_ms": 3963.415,
+      "evidence": [
+        {
+          "attempt": 1,
+          "traffic_bytes": 268435456,
+          "retained_chars": 4096,
+          "rss": {
+            "baseline_bytes": 38805504,
+            "peak_bytes": 111284224,
+            "delta_bytes": 72478720,
+            "samples": 172
+          },
+          "rss_delta_bound_bytes": 100663296,
+          "sampler_pid": 74986,
+          "worker_pid": 74984
+        }
+      ]
+    },
+    {
+      "id": "workspace-storage-limit",
+      "category": "resource",
+      "status": "passed",
+      "attempts": 1,
+      "requires": [
+        "workspace-read-write"
+      ],
+      "duration_ms": 2517.018,
+      "evidence": [
+        {
+          "attempt": 1,
+          "exit_code": 0,
+          "reported_bytes_written": 56623104,
+          "byte_errno": 28,
+          "sparse_logical_bytes": 100663296,
+          "sparse_allocated_bytes": 0,
+          "inodes_created": 4079,
+          "inode_errno": 28,
+          "fixture_intact": true,
+          "post_enospc_write": "recovered"
+        }
+      ]
+    },
+    {
+      "id": "container-startup-failure",
+      "category": "failure-recovery",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [],
+      "duration_ms": 9378.893,
+      "evidence": [
+        {
+          "attempt": 1,
+          "structured_exception": true,
+          "detail": "failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: \"/definitely-missing-patchloop-entrypoint\": stat /definitely-missing-patchloop-entrypoint: no such file or directory",
+          "residual_containers": []
+        },
+        {
+          "attempt": 2,
+          "structured_exception": true,
+          "detail": "failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: \"/definitely-missing-patchloop-entrypoint\": stat /definitely-missing-patchloop-entrypoint: no such file or directory",
+          "residual_containers": []
+        },
+        {
+          "attempt": 3,
+          "structured_exception": true,
+          "detail": "failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: \"/definitely-missing-patchloop-entrypoint\": stat /definitely-missing-patchloop-entrypoint: no such file or directory",
+          "residual_containers": []
+        }
+      ]
+    },
+    {
+      "id": "container-identity-mismatch",
+      "category": "failure-recovery",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [],
+      "duration_ms": 2141.839,
+      "evidence": [
+        {
+          "attempt": 1,
+          "cleanup_refused": true,
+          "container_preserved_until_explicit_cleanup": true,
+          "detail": "container identity changed before cleanup"
+        },
+        {
+          "attempt": 2,
+          "cleanup_refused": true,
+          "container_preserved_until_explicit_cleanup": true,
+          "detail": "container identity changed before cleanup"
+        },
+        {
+          "attempt": 3,
+          "cleanup_refused": true,
+          "container_preserved_until_explicit_cleanup": true,
+          "detail": "container identity changed before cleanup"
+        }
+      ]
+    },
+    {
+      "id": "parent-crash-cleanup",
+      "category": "failure-recovery",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [
+        "workspace-read-write"
+      ],
+      "duration_ms": 11507.966,
+      "evidence": [
+        {
+          "attempt": 1,
+          "recovery_passed": true,
+          "container": "patchloop-1bd1b9db-c20e-42ea-89bc-d50228396ada",
+          "workload_started": true,
+          "container_present_at_500ms": false,
+          "supervisor_present_at_500ms": true,
+          "residual_after_parent_crash": false,
+          "supervisor_after_parent_crash": false,
+          "cleanup_elapsed_seconds": 0.807,
+          "residual_after_recovery": false,
+          "supervisor_after_recovery": false,
+          "recovery_error": ""
+        },
+        {
+          "attempt": 2,
+          "recovery_passed": true,
+          "container": "patchloop-287af9a7-8c32-42e1-a41a-febe888ed0f6",
+          "workload_started": true,
+          "container_present_at_500ms": false,
+          "supervisor_present_at_500ms": true,
+          "residual_after_parent_crash": false,
+          "supervisor_after_parent_crash": false,
+          "cleanup_elapsed_seconds": 0.807,
+          "residual_after_recovery": false,
+          "supervisor_after_recovery": false,
+          "recovery_error": ""
+        },
+        {
+          "attempt": 3,
+          "recovery_passed": true,
+          "container": "patchloop-45a34eee-e8ad-4a88-9c12-60041f2bffb4",
+          "workload_started": true,
+          "container_present_at_500ms": false,
+          "supervisor_present_at_500ms": true,
+          "residual_after_parent_crash": false,
+          "supervisor_after_parent_crash": false,
+          "cleanup_elapsed_seconds": 0.807,
+          "residual_after_recovery": false,
+          "supervisor_after_recovery": false,
+          "recovery_error": ""
+        }
+      ]
+    },
+    {
+      "id": "parent-crash-recovery",
+      "category": "failure-recovery",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [
+        "workspace-read-write"
+      ],
+      "duration_ms": 11560.459,
+      "evidence": [
+        {
+          "attempt": 1,
+          "automatic_passed": true,
+          "container": "patchloop-b4a92978-a513-4116-ac36-8394d0e2afda",
+          "workload_started": true,
+          "container_present_at_500ms": false,
+          "supervisor_present_at_500ms": true,
+          "residual_after_parent_crash": false,
+          "supervisor_after_parent_crash": false,
+          "cleanup_elapsed_seconds": 0.807,
+          "residual_after_recovery": false,
+          "supervisor_after_recovery": false,
+          "recovery_error": ""
+        },
+        {
+          "attempt": 2,
+          "automatic_passed": true,
+          "container": "patchloop-032ed197-8340-439f-ba4a-2db4e8b2e0f7",
+          "workload_started": true,
+          "container_present_at_500ms": false,
+          "supervisor_present_at_500ms": true,
+          "residual_after_parent_crash": false,
+          "supervisor_after_parent_crash": false,
+          "cleanup_elapsed_seconds": 0.807,
+          "residual_after_recovery": false,
+          "supervisor_after_recovery": false,
+          "recovery_error": ""
+        },
+        {
+          "attempt": 3,
+          "automatic_passed": true,
+          "container": "patchloop-f33adc3b-90af-4b0a-8fe9-28008c24978c",
+          "workload_started": true,
+          "container_present_at_500ms": false,
+          "supervisor_present_at_500ms": true,
+          "residual_after_parent_crash": false,
+          "supervisor_after_parent_crash": false,
+          "cleanup_elapsed_seconds": 0.807,
+          "residual_after_recovery": false,
+          "supervisor_after_recovery": false,
+          "recovery_error": ""
+        }
+      ]
+    },
+    {
+      "id": "docker-daemon-unavailable",
+      "category": "failure-recovery",
+      "status": "passed",
+      "attempts": 3,
+      "requires": [
+        "workspace-read-write"
+      ],
+      "duration_ms": 76925.558,
+      "evidence": [
+        {
+          "attempt": 1,
+          "fault_type": "client_transport_unavailable",
+          "startup_error": "SandboxError: failed to connect to the docker API at unix:///tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock; check if the path is correct and if the daemon is running: dial unix /tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock: connect: no such file or directory",
+          "workload_started": true,
+          "worker_errors": [
+            "SandboxCleanupError: SandboxCleanupError: failed to connect to the docker API at unix:///tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock; check if the path is correct and if the daemon is running: dial unix /tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock: connect: no such file or directory; cleanup: SandboxCleanupError: supervisor cleanup deadline expired"
+          ],
+          "cleanup_confirmed_while_cut": false,
+          "reconcile_while_cut": "RecoveryRequired: recovery disposition is required for task daemon-fault-owner-932611b0f4e7402d9dea8fc972f11636",
+          "new_writer_blocked_while_cut": true,
+          "writer_granted_after_restore": true,
+          "independent_daemon_connection_ok": true,
+          "absent_after_restore": true,
+          "rm_disconnect_error": "SandboxCleanupError: failed to connect to the docker API at unix:///tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock; check if the path is correct and if the daemon is running: dial unix /tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock: connect: no such file or directory",
+          "rm_present_while_cut": true,
+          "rm_absent_after_restore": true,
+          "other_task_container_preserved": true,
+          "other_task_removed_after_probe": true,
+          "other_task_absent_after_probe": true
+        },
+        {
+          "attempt": 2,
+          "fault_type": "client_transport_unavailable",
+          "startup_error": "SandboxError: failed to connect to the docker API at unix:///tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock; check if the path is correct and if the daemon is running: dial unix /tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock: connect: no such file or directory",
+          "workload_started": true,
+          "worker_errors": [
+            "SandboxCleanupError: SandboxCleanupError: failed to connect to the docker API at unix:///tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock; check if the path is correct and if the daemon is running: dial unix /tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock: connect: no such file or directory; cleanup: SandboxCleanupError: supervisor cleanup deadline expired"
+          ],
+          "cleanup_confirmed_while_cut": false,
+          "reconcile_while_cut": "RecoveryRequired: recovery disposition is required for task daemon-fault-owner-2795a7ef43ec42aea507851137f58680",
+          "new_writer_blocked_while_cut": true,
+          "writer_granted_after_restore": true,
+          "independent_daemon_connection_ok": true,
+          "absent_after_restore": true,
+          "rm_disconnect_error": "SandboxCleanupError: failed to connect to the docker API at unix:///tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock; check if the path is correct and if the daemon is running: dial unix /tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock: connect: no such file or directory",
+          "rm_present_while_cut": true,
+          "rm_absent_after_restore": true,
+          "other_task_container_preserved": true,
+          "other_task_removed_after_probe": true,
+          "other_task_absent_after_probe": true
+        },
+        {
+          "attempt": 3,
+          "fault_type": "client_transport_unavailable",
+          "startup_error": "SandboxError: failed to connect to the docker API at unix:///tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock; check if the path is correct and if the daemon is running: dial unix /tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock: connect: no such file or directory",
+          "workload_started": true,
+          "worker_errors": [
+            "SandboxCleanupError: SandboxCleanupError: failed to connect to the docker API at unix:///tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock; check if the path is correct and if the daemon is running: dial unix /tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock: connect: no such file or directory; cleanup: SandboxCleanupError: supervisor cleanup deadline expired"
+          ],
+          "cleanup_confirmed_while_cut": false,
+          "reconcile_while_cut": "RecoveryRequired: recovery disposition is required for task daemon-fault-owner-3ce3e6de6bb8491da01c1adf86f206eb",
+          "new_writer_blocked_while_cut": true,
+          "writer_granted_after_restore": true,
+          "independent_daemon_connection_ok": true,
+          "absent_after_restore": true,
+          "rm_disconnect_error": "SandboxCleanupError: failed to connect to the docker API at unix:///tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock; check if the path is correct and if the daemon is running: dial unix /tmp/patchloop-dfp-2e83fba3f88a463f/docker-proxy.sock: connect: no such file or directory",
+          "rm_present_while_cut": true,
+          "rm_absent_after_restore": true,
+          "other_task_container_preserved": true,
+          "other_task_removed_after_probe": true,
+          "other_task_absent_after_probe": true
+        }
+      ]
+    },
+    {
+      "id": "windows-junction",
+      "category": "filesystem",
+      "status": "not_applicable",
+      "attempts": 0,
+      "duration_ms": 0.0,
+      "evidence": [
+        {
+          "detail": "Linux Docker target; Windows junction belongs to the Windows local matrix"
+        }
+      ]
+    },
+    {
+      "id": "final-residual-container-check",
+      "category": "cleanup",
+      "status": "passed",
+      "attempts": 1,
+      "duration_ms": 0.0,
+      "evidence": [
+        {
+          "residual_before_cleanup": [],
+          "residual_after_cleanup": [],
+          "cleanup_errors": [],
+          "query_errors": []
+        }
+      ]
+    }
+  ]
+}

@@ -60,10 +60,14 @@ def test_request_wire_and_section_fingerprints_are_the_current_contract() -> Non
         task_project_snapshot={"files": ["a.py"], "goal": "goal"},
         memory_projection={"state": "new"},
     )
-    assert fingerprint.model_dump_json(exclude={
-        "message_fingerprints", "message_estimated_tokens",
-        "ordered_tools_fingerprint", "binding_fingerprint",
-    }) == (
+    assert fingerprint.model_dump_json(
+        exclude={
+            "message_fingerprints",
+            "message_estimated_tokens",
+            "ordered_tools_fingerprint",
+            "binding_fingerprint",
+        }
+    ) == (
         '{"system_instructions":{"fingerprint":"0dc8cd0a92280156c12ba5073f5049586727ba0bef2ff72099577bd332db18f5",'
         '"byte_length":8,"estimated_tokens":3},"task_project_snapshot":{"fingerprint":"6ac9d1230147cdfafbbd0f2603e612b48aeda83b037bbb6351a49698cf63f41c",'
         '"byte_length":32,"estimated_tokens":11},"tool_schema":{"fingerprint":"088d0ee1d150c5ba508883c0ebf7572d50509a9a61774891663c3d7f90ffae88",'
@@ -107,8 +111,7 @@ def test_deterministic_cache_matrix_matches_the_pcr00_baseline() -> None:
         if isinstance(template, list) and isinstance(value, list):
             assert len(value) == len(template)
             return [
-                legacy_projection(item, shape)
-                for item, shape in zip(value, template, strict=True)
+                legacy_projection(item, shape) for item, shape in zip(value, template, strict=True)
             ]
         return value
 
@@ -298,11 +301,20 @@ def test_runtime_step_trace_and_report_fields_are_stable(tmp_path: Path) -> None
     assert layout.data["step"] == 0
     assert layout.data["primary_reason"] == CacheLayoutReason.COLD_START.value
     assert set(layout.data) == {
-        "request_id", "source_request_id", "message_count", "previous_message_count",
-        "common_prefix_message_count", "previous_request_is_prefix",
-        "first_changed_message_index", "common_prefix_estimated_tokens",
-        "tools_unchanged", "binding_unchanged", "comparison_kind", "prefix_break_reason",
-        "metric_basis", "legacy_lcp_basis",
+        "request_id",
+        "source_request_id",
+        "message_count",
+        "previous_message_count",
+        "common_prefix_message_count",
+        "previous_request_is_prefix",
+        "first_changed_message_index",
+        "common_prefix_estimated_tokens",
+        "tools_unchanged",
+        "binding_unchanged",
+        "comparison_kind",
+        "prefix_break_reason",
+        "metric_basis",
+        "legacy_lcp_basis",
         "step",
         "provider",
         "request_fingerprint",

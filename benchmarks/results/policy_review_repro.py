@@ -15,9 +15,7 @@ from patchloop.execution.policy import (
 from patchloop.tools.base import ToolContext
 
 
-@pytest.mark.parametrize(
-    "command", [["python", "-cprint(1)"], ["node", "--eval=console.log(1)"]]
-)
+@pytest.mark.parametrize("command", [["python", "-cprint(1)"], ["node", "--eval=console.log(1)"]])
 def test_inline_interpreter_variants_remain_hard_denied(tmp_path, command):
     case = PolicyBypassCase(
         id="inline-interpreter-variant",

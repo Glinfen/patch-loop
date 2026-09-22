@@ -36,7 +36,7 @@
       "id": "docker-user-modified-file",
       "backend": "docker",
       "capabilities": ["user_modified_file"],
-      "test_nodeid": "tests/e2e/test_effect_recovery.py::test_resume_requires_recovery_when_file_state_cannot_be_proven"
+      "test_nodeid": "tests/acceptance/srf07_docker_backend.py::test_docker_recovery_preserves_user_modified_file"
     }
   ]
 }

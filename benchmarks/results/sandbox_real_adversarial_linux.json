@@ -1,0 +1,534 @@
+{
+  "schema_version": 1,
+  "kind": "real-docker-sandbox-acceptance",
+  "status": "failed",
+  "generated_at": "2026-09-21T08:43:44.335430+00:00",
+  "source_commit": "b167ae69adbbd83a76df6d2d8d17e77cb7e86576",
+  "harness_sha256": "b0964b681893a205748a89ac35747a1e3745d437c95717fd97d5d209348ee92d",
+  "host": {
+    "platform": "Linux-6.8.0-139-generic-x86_64-with-glibc2.41",
+    "python": "3.13.15",
+    "docker_client": "29.1.3",
+    "docker_server": "29.1.3",
+    "docker_security_options": [
+      "name=apparmor",
+      "name=seccomp,profile=builtin",
+      "name=cgroupns"
+    ],
+    "sandbox_image_id": "sha256:564f1ce670ec07cc5e635a942f733f731ac9bc3a61d64e702794ad4a3303caf3",
+    "workspace_path": "/home/glinfen/patchloop-sandbox-acceptance.8FRDIi/.sandbox-real-probes/workspace"
+  },
+  "threat_model": {
+    "guarantees": [
+      "no host filesystem access outside the mounted workspace",
+      "no external or host network access by default",
+      "no host credentials or environment leakage",
+      "bounded capabilities, processes, memory, CPU, temporary storage, and returned output",
+      "verified container identity before recovery cleanup",
+      "no residual managed containers after all exercised lifecycle paths"
+    ],
+    "exclusions": [
+      "kernel or container-runtime zero-day escape resistance",
+      "denial of service against the Docker daemon itself"
+    ],
+    "local_fallback_is_isolated": false
+  },
+  "summary": {
+    "passed": 17,
+    "failed": 5,
+    "unverified": 1,
+    "not_applicable": 1
+  },
+  "cases": [
+    {
+      "id": "docker-effective-configuration",
+      "category": "configuration",
+      "status": "passed",
+      "attempts": 1,
+      "duration_ms": 194.274,
+      "evidence": [
+        {
+          "attempt": 1,
+          "checks": {
+            "network_none": true,
+            "pid_namespace_not_host": true,
+            "not_privileged": true,
+            "readonly_rootfs": true,
+            "cap_drop_all": true,
+            "no_new_privileges": true,
+            "cpu_limit": true,
+            "memory_limit": true,
+            "pid_limit": true,
+            "tmpfs_limit": true,
+            "tmpfs_hardened": true,
+            "identity_labels": true,
+            "only_workspace_mount": true,
+            "docker_socket_absent": true
+          },
+          "image_reference": "patchloop-sandbox:py313",
+          "container_name": "patchloop-a44313a8abb34ac0a45aab104f4cde2f"
+        }
+      ]
+    },
+    {
+      "id": "file-traversal-and-symlink",
+      "category": "filesystem",
+      "status": "passed",
+      "attempts": 3,
+      "duration_ms": 1295.259,
+      "evidence": [
+        {
+          "attempt": 1,
+          "read_leaks": [
+            false,
+            false,
+            false
+          ],
+          "write_escapes": [
+            false,
+            false,
+            false
+          ],
+          "outside_secret_intact": true
+        },
+        {
+          "attempt": 2,
+          "read_leaks": [
+            false,
+            false,
+            false
+          ],
+          "write_escapes": [
+            false,
+            false,
+            false
+          ],
+          "outside_secret_intact": true
+        },
+        {
+          "attempt": 3,
+          "read_leaks": [
+            false,
+            false,
+            false
+          ],
+          "write_escapes": [
+            false,
+            false,
+            false
+          ],
+          "outside_secret_intact": true
+        }
+      ]
+    },
+    {
+      "id": "symlink-toctou",
+      "category": "filesystem",
+      "status": "passed",
+      "attempts": 3,
+      "duration_ms": 5878.041,
+      "evidence": [
+        {
+          "attempt": 1,
+          "secret_reads": 0,
+          "outside_secret_intact": true
+        },
+        {
+          "attempt": 2,
+          "secret_reads": 0,
+          "outside_secret_intact": true
+        },
+        {
+          "attempt": 3,
+          "secret_reads": 0,
+          "outside_secret_intact": true
+        }
+      ]
+    },
+    {
+      "id": "network-dns-tcp-http-localhost",
+      "category": "network",
+      "status": "passed",
+      "attempts": 3,
+      "duration_ms": 1389.012,
+      "evidence": [
+        {
+          "attempt": 1,
+          "dns": false,
+          "tcp": false,
+          "localhost": false,
+          "http": false,
+          "host_gateway": false,
+          "default_route": false
+        },
+        {
+          "attempt": 2,
+          "dns": false,
+          "tcp": false,
+          "localhost": false,
+          "http": false,
+          "host_gateway": false,
+          "default_route": false
+        },
+        {
+          "attempt": 3,
+          "dns": false,
+          "tcp": false,
+          "localhost": false,
+          "http": false,
+          "host_gateway": false,
+          "default_route": false
+        }
+      ]
+    },
+    {
+      "id": "environment-and-credential-isolation",
+      "category": "environment",
+      "status": "passed",
+      "attempts": 3,
+      "duration_ms": 1275.968,
+      "evidence": [
+        {
+          "attempt": 1,
+          "explicit_variable": null,
+          "sentinel_in_environment": false,
+          "credential_paths_present": []
+        },
+        {
+          "attempt": 2,
+          "explicit_variable": null,
+          "sentinel_in_environment": false,
+          "credential_paths_present": []
+        },
+        {
+          "attempt": 3,
+          "explicit_variable": null,
+          "sentinel_in_environment": false,
+          "credential_paths_present": []
+        }
+      ]
+    },
+    {
+      "id": "runtime-capabilities-and-socket",
+      "category": "configuration",
+      "status": "passed",
+      "attempts": 3,
+      "duration_ms": 1271.794,
+      "evidence": [
+        {
+          "attempt": 1,
+          "cap_eff": "0000000000000000",
+          "no_new_privs": "1",
+          "root_write": false,
+          "docker_socket": false
+        },
+        {
+          "attempt": 2,
+          "cap_eff": "0000000000000000",
+          "no_new_privs": "1",
+          "root_write": false,
+          "docker_socket": false
+        },
+        {
+          "attempt": 3,
+          "cap_eff": "0000000000000000",
+          "no_new_privs": "1",
+          "root_write": false,
+          "docker_socket": false
+        }
+      ]
+    },
+    {
+      "id": "workspace-read-write",
+      "category": "filesystem",
+      "status": "failed",
+      "attempts": 1,
+      "duration_ms": 428.188,
+      "evidence": [
+        {
+          "attempt": 1,
+          "exit_code": 1,
+          "host_file_content": null,
+          "output_tail": "n3.13/pathlib/_abc.py\", line 651, in write_text\n    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:\n         ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.13/pathlib/_local.py\", line 537, in open\n    return io.open(self, mode, buffering, encoding, errors, newline)\n           ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nPermissionError: [Errno 13] Permission denied: '/workspace/write-probe.txt'\n"
+        }
+      ]
+    },
+    {
+      "id": "normal-exit-cleanup",
+      "category": "lifecycle",
+      "status": "passed",
+      "attempts": 1,
+      "duration_ms": 508.54,
+      "evidence": [
+        {
+          "attempt": 1,
+          "container": "patchloop-dc9dd268-2a1d-40a7-ba05-d0a02002c931",
+          "finished_status": "exited",
+          "container_absent": true
+        }
+      ]
+    },
+    {
+      "id": "timeout-process-tree-cleanup",
+      "category": "lifecycle",
+      "status": "passed",
+      "attempts": 3,
+      "duration_ms": 2365.886,
+      "evidence": [
+        {
+          "attempt": 1,
+          "timeout_raised": true,
+          "container": "patchloop-54f857af-0055-4252-b601-859fbefa3857",
+          "container_absent": true,
+          "cleanup_reason": "timeout"
+        },
+        {
+          "attempt": 2,
+          "timeout_raised": true,
+          "container": "patchloop-66478788-c4a5-4613-add3-f979753b88ab",
+          "container_absent": true,
+          "cleanup_reason": "timeout"
+        },
+        {
+          "attempt": 3,
+          "timeout_raised": true,
+          "container": "patchloop-2928d657-3e7d-4612-b3a2-d409ecd3ed81",
+          "container_absent": true,
+          "cleanup_reason": "timeout"
+        }
+      ]
+    },
+    {
+      "id": "cancel-interruption-cleanup",
+      "category": "lifecycle",
+      "status": "passed",
+      "attempts": 1,
+      "duration_ms": 543.641,
+      "evidence": [
+        {
+          "attempt": 1,
+          "interrupted": true,
+          "container_absent": true,
+          "cleanup_reason": "cancel"
+        }
+      ]
+    },
+    {
+      "id": "pause-and-resume",
+      "category": "lifecycle",
+      "status": "passed",
+      "attempts": 1,
+      "duration_ms": 940.401,
+      "evidence": [
+        {
+          "attempt": 1,
+          "pause": {
+            "interrupted": true,
+            "container_absent": true,
+            "cleanup_reason": "pause"
+          },
+          "resume_exit_code": 0
+        }
+      ]
+    },
+    {
+      "id": "background-process-cleanup",
+      "category": "process",
+      "status": "passed",
+      "attempts": 3,
+      "duration_ms": 7361.268,
+      "evidence": [
+        {
+          "attempt": 1,
+          "marker_absent": true
+        },
+        {
+          "attempt": 2,
+          "marker_absent": true
+        },
+        {
+          "attempt": 3,
+          "marker_absent": true
+        }
+      ]
+    },
+    {
+      "id": "pid-fork-limit",
+      "category": "resource",
+      "status": "passed",
+      "attempts": 3,
+      "duration_ms": 2135.984,
+      "evidence": [
+        {
+          "attempt": 1,
+          "children_created": 127,
+          "fork_error": "[Errno 11] Resource temporarily unavailable"
+        },
+        {
+          "attempt": 2,
+          "children_created": 127,
+          "fork_error": "[Errno 11] Resource temporarily unavailable"
+        },
+        {
+          "attempt": 3,
+          "children_created": 127,
+          "fork_error": "[Errno 11] Resource temporarily unavailable"
+        }
+      ]
+    },
+    {
+      "id": "memory-limit",
+      "category": "resource",
+      "status": "failed",
+      "attempts": 1,
+      "duration_ms": 12186.492,
+      "evidence": [
+        {
+          "attempt": 1,
+          "exit_code": 0,
+          "output_tail": "179200\n"
+        }
+      ]
+    },
+    {
+      "id": "temporary-storage-limit",
+      "category": "resource",
+      "status": "passed",
+      "attempts": 1,
+      "duration_ms": 449.631,
+      "evidence": [
+        {
+          "attempt": 1,
+          "written": 67108864,
+          "error": "[Errno 28] No space left on device"
+        }
+      ]
+    },
+    {
+      "id": "returned-output-limit",
+      "category": "resource",
+      "status": "passed",
+      "attempts": 1,
+      "duration_ms": 522.763,
+      "evidence": [
+        {
+          "attempt": 1,
+          "returned_chars": 4096,
+          "generated_chars": 8000002,
+          "note": "return value is capped; subprocess pipes still buffer before truncation"
+        }
+      ]
+    },
+    {
+      "id": "stdout-stderr-capture-memory-bound",
+      "category": "resource",
+      "status": "failed",
+      "attempts": 0,
+      "duration_ms": 0.0,
+      "evidence": [
+        {
+          "detail": "max_output_chars is applied after subprocess.communicate buffers all output; capture memory is not bounded during execution"
+        }
+      ]
+    },
+    {
+      "id": "workspace-storage-limit",
+      "category": "resource",
+      "status": "failed",
+      "attempts": 1,
+      "duration_ms": 407.678,
+      "evidence": [
+        {
+          "attempt": 1,
+          "exit_code": 0,
+          "bytes_written": 0,
+          "reported_bytes_written": 0,
+          "error": "[Errno 13] Permission denied: '/workspace/workspace-fill.bin'",
+          "expected": "a configured workspace/output storage ceiling"
+        }
+      ]
+    },
+    {
+      "id": "container-startup-failure",
+      "category": "failure-recovery",
+      "status": "passed",
+      "attempts": 1,
+      "duration_ms": 352.542,
+      "evidence": [
+        {
+          "attempt": 1,
+          "structured_exception": true,
+          "detail": "Docker sandbox failed to start: docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: \"/definitely-missing-patchloop-entrypoint\": stat /definitely-missing-patchloop-entrypoint: no such file or directory\n\nRun 'docker run --help' for more information",
+          "residual_containers": []
+        }
+      ]
+    },
+    {
+      "id": "container-identity-mismatch",
+      "category": "failure-recovery",
+      "status": "passed",
+      "attempts": 1,
+      "duration_ms": 216.668,
+      "evidence": [
+        {
+          "attempt": 1,
+          "cleanup_refused": true,
+          "container_preserved_until_explicit_cleanup": true,
+          "detail": "container identity changed before recovery cleanup"
+        }
+      ]
+    },
+    {
+      "id": "parent-crash-cleanup",
+      "category": "failure-recovery",
+      "status": "failed",
+      "attempts": 1,
+      "duration_ms": 1412.767,
+      "evidence": [
+        {
+          "attempt": 1,
+          "container": "patchloop-e8ec6de3-c10c-46b1-9dc1-9e7bda28c866",
+          "residual_after_parent_crash": true,
+          "residual_after_recovery": false,
+          "recovery_error": "SandboxCleanupError: error: no such object: patchloop-e8ec6de3-c10c-46b1-9dc1-9e7bda28c866"
+        }
+      ]
+    },
+    {
+      "id": "docker-daemon-unavailable",
+      "category": "failure-recovery",
+      "status": "unverified",
+      "attempts": 0,
+      "duration_ms": 0.0,
+      "evidence": [
+        {
+          "detail": "shared server daemon was not intentionally stopped during acceptance"
+        }
+      ]
+    },
+    {
+      "id": "windows-junction",
+      "category": "filesystem",
+      "status": "not_applicable",
+      "attempts": 0,
+      "duration_ms": 0.0,
+      "evidence": [
+        {
+          "detail": "Linux Docker target; Windows junction belongs to the Windows local matrix"
+        }
+      ]
+    },
+    {
+      "id": "final-residual-container-check",
+      "category": "cleanup",
+      "status": "passed",
+      "attempts": 1,
+      "duration_ms": 0.0,
+      "evidence": [
+        {
+          "residual_containers": []
+        }
+      ]
+    }
+  ]
+}

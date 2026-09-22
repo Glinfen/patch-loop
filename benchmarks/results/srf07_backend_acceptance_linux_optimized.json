@@ -1,0 +1,114 @@
+{
+  "schema_version": 2,
+  "matrix_schema_version": 1,
+  "status": "unverified",
+  "required_backends": [
+    "docker"
+  ],
+  "target_status": "passed",
+  "platform": "Linux-6.8.0-139-generic-x86_64-with-glibc2.39",
+  "python_version": "3.12.3",
+  "probes": [
+    {
+      "backend": "windows",
+      "available": false,
+      "detail": "requires Windows; current os.name is posix",
+      "image_reference": null,
+      "image_id": null
+    },
+    {
+      "backend": "docker",
+      "available": true,
+      "detail": "Docker daemon and image available: patchloop-sandbox:py313",
+      "image_reference": "patchloop-sandbox:py313",
+      "image_id": "sha256:564f1ce670ec07cc5e635a942f733f731ac9bc3a61d64e702794ad4a3303caf3"
+    }
+  ],
+  "results": [
+    {
+      "case_id": "windows-process-tree-parent-crash",
+      "backend": "windows",
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "requires Windows; current os.name is posix",
+      "junit": null
+    },
+    {
+      "case_id": "windows-old-worker-lease-takeover",
+      "backend": "windows",
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "requires Windows; current os.name is posix",
+      "junit": null
+    },
+    {
+      "case_id": "windows-user-modified-file",
+      "backend": "windows",
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "requires Windows; current os.name is posix",
+      "junit": null
+    },
+    {
+      "case_id": "docker-process-tree-timeout",
+      "backend": "docker",
+      "status": "passed",
+      "duration_ms": 9596.127590000833,
+      "exit_code": 0,
+      "stdout": ".                                                                        [100%]\n1 passed in 9.26s\n",
+      "stderr": "",
+      "detail": "real backend acceptance passed with non-skipped JUnit evidence",
+      "junit": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "path": "/home/glinfen/patchloop-task10-01a0c72d-r1/benchmarks/results/srf07_backend_acceptance_linux_optimized_junit/docker-process-tree-timeout.xml"
+      }
+    },
+    {
+      "case_id": "docker-old-worker-lease-takeover",
+      "backend": "docker",
+      "status": "passed",
+      "duration_ms": 3840.550519000317,
+      "exit_code": 0,
+      "stdout": ".                                                                        [100%]\n1 passed in 3.51s\n",
+      "stderr": "",
+      "detail": "real backend acceptance passed with non-skipped JUnit evidence",
+      "junit": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "path": "/home/glinfen/patchloop-task10-01a0c72d-r1/benchmarks/results/srf07_backend_acceptance_linux_optimized_junit/docker-old-worker-lease-takeover.xml"
+      }
+    },
+    {
+      "case_id": "docker-user-modified-file",
+      "backend": "docker",
+      "status": "passed",
+      "duration_ms": 4493.6103009986255,
+      "exit_code": 0,
+      "stdout": ".                                                                        [100%]\n1 passed in 4.17s\n",
+      "stderr": "",
+      "detail": "real backend acceptance passed with non-skipped JUnit evidence",
+      "junit": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "path": "/home/glinfen/patchloop-task10-01a0c72d-r1/benchmarks/results/srf07_backend_acceptance_linux_optimized_junit/docker-user-modified-file.xml"
+      }
+    }
+  ],
+  "generated_at": "2026-09-22T06:33:08.603164+00:00"
+}

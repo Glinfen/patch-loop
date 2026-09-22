@@ -132,26 +132,16 @@ def _working(task_id: str) -> WorkingMemorySnapshot:
 
 def test_aop01_fixture_reproduces_opaque_truncated_working_blob() -> None:
     fixture_root = Path(__file__).parents[1] / "fixtures" / "prompt_cache" / "optimization"
-    fixture_text = (fixture_root / "baseline_working_snapshot.json").read_text(
-        encoding="utf-8"
-    )
+    fixture_text = (fixture_root / "baseline_working_snapshot.json").read_text(encoding="utf-8")
     assert ".env" not in fixture_text
     assert "C:\\Users" not in fixture_text
     assert "sk-" not in fixture_text
-    snapshot = WorkingMemorySnapshot.model_validate_json(
-        fixture_text
-    )
-    expected = json.loads(
-        (fixture_root / "baseline_v1_reports.json").read_text(encoding="utf-8")
-    )
+    snapshot = WorkingMemorySnapshot.model_validate_json(fixture_text)
+    expected = json.loads((fixture_root / "baseline_v1_reports.json").read_text(encoding="utf-8"))
     actions = expected["actions"]
-    assert sum(
-        item.kind is WorkingMemoryItemKind.ACCESSED_FILE for item in snapshot.items
-    ) == 12
+    assert sum(item.kind is WorkingMemoryItemKind.ACCESSED_FILE for item in snapshot.items) == 12
     assert any(item.kind is WorkingMemoryItemKind.PLAN for item in snapshot.items)
-    assert sum(
-        item.kind is WorkingMemoryItemKind.RECENT_RESULT for item in snapshot.items
-    ) == 2
+    assert sum(item.kind is WorkingMemoryItemKind.RECENT_RESULT for item in snapshot.items) == 2
 
     observed = []
     for repeat in range(1, 4):

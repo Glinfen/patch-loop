@@ -479,10 +479,13 @@ def test_compression_request_and_epoch_checkpoint_recover_exactly_once(
     else:
         assert prefix.compression_request_id is None
         assert saved.cache_epoch_state.generation >= 1
-        assert sum(
-            message.content.startswith(SUMMARY_PREFIX)
-            for message in saved.cache_epoch_state.prefix_messages
-        ) == 1
+        assert (
+            sum(
+                message.content.startswith(SUMMARY_PREFIX)
+                for message in saved.cache_epoch_state.prefix_messages
+            )
+            == 1
+        )
 
     resumed_provider = _CompressingProvider(index=provider.index, count=6)
     resumed_runtime = AgentRuntime(
@@ -502,14 +505,16 @@ def test_compression_request_and_epoch_checkpoint_recover_exactly_once(
         assert "PATCHLOOP_EPOCH_COMPRESSION_V1" not in first_resumed[-1].content
     checkpoint = store.get_checkpoint(task.id)
     assert checkpoint.append_only_state.optimization_version == optimization_version
-    assert sum(
-        message.content.startswith(SUMMARY_PREFIX)
-        for message in checkpoint.cache_epoch_state.prefix_messages
-    ) == 1
+    assert (
+        sum(
+            message.content.startswith(SUMMARY_PREFIX)
+            for message in checkpoint.cache_epoch_state.prefix_messages
+        )
+        == 1
+    )
     all_requests = [*provider.requests, *resumed_provider.requests]
     compression_count = sum(
-        "PATCHLOOP_EPOCH_COMPRESSION_V1" in messages[-1].content
-        for messages, _ in all_requests
+        "PATCHLOOP_EPOCH_COMPRESSION_V1" in messages[-1].content for messages, _ in all_requests
     )
     assert checkpoint.input_tokens == 6 * 100 + 50 + compression_count * 200
     assert len(checkpoint.accounted_provider_request_ids) == 7 + compression_count

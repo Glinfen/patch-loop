@@ -710,8 +710,10 @@ class CrossLayerMemoryRetriever:
                 )[0]
                 audit_kept.remove(removed)
             minimal = _render_context(query, allocation, [])
-            return selections, [], (
-                minimal if _estimate_text(minimal) <= allocation.retrieval_tokens else ""
+            return (
+                selections,
+                [],
+                (minimal if _estimate_text(minimal) <= allocation.retrieval_tokens else ""),
             )
         kept = list(selections)
         omitted: list[str] = []
@@ -720,11 +722,7 @@ class CrossLayerMemoryRetriever:
             if _estimate_text(rendered) <= allocation.retrieval_tokens:
                 return kept, omitted, rendered
             removable = sorted(
-                (
-                    item
-                    for item in kept
-                    if not item.pinned and item.provider_items is None
-                ),
+                (item for item in kept if not item.pinned and item.provider_items is None),
                 key=lambda item: (item.score, -item.estimated_tokens, item.id),
             )
             if removable:
@@ -736,8 +734,10 @@ class CrossLayerMemoryRetriever:
                 )[0]
             else:
                 minimal = _render_context(query, allocation, [])
-                return kept, omitted, (
-                    minimal if _estimate_text(minimal) <= allocation.retrieval_tokens else ""
+                return (
+                    kept,
+                    omitted,
+                    (minimal if _estimate_text(minimal) <= allocation.retrieval_tokens else ""),
                 )
             kept.remove(removed)
             omitted.append(removed.id)

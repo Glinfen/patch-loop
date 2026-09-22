@@ -1,0 +1,170 @@
+{
+  "schema_version": "aop.v1",
+  "revision": "53053247957ce49aad57450bf3f6f4fc0e0ab552",
+  "source_fingerprint": "70d1da553d49c8613fb7967495d156eaffb51c71394c15bd546ccc17eda4be66",
+  "fixture_fingerprint": "86268693aa344c907f65762f80c0342be5e189f9e7dfb9b101bfd328951ec4d5",
+  "optimization_version": "balanced_v1",
+  "baseline_version": "baseline_v1",
+  "checks": [
+    {
+      "name": "append_only_overhead_suite",
+      "status": "pass",
+      "actual": {
+        "schema_version": "aop-overhead.v1",
+        "suite_id": "append-only-overhead"
+      },
+      "target": "dedicated append-only-overhead report; stress/PPS fixtures are not interchangeable",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "fixture_binding",
+      "status": "pass",
+      "actual": {
+        "report": "86268693aa344c907f65762f80c0342be5e189f9e7dfb9b101bfd328951ec4d5",
+        "evidence": "86268693aa344c907f65762f80c0342be5e189f9e7dfb9b101bfd328951ec4d5"
+      },
+      "target": "report fixture fingerprint equals the readiness evidence fingerprint",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "source_binding",
+      "status": "pass",
+      "actual": {
+        "report_revision": "53053247957ce49aad57450bf3f6f4fc0e0ab552",
+        "current_revision": "53053247957ce49aad57450bf3f6f4fc0e0ab552",
+        "report_source": "70d1da553d49c8613fb7967495d156eaffb51c71394c15bd546ccc17eda4be66",
+        "current_source": "70d1da553d49c8613fb7967495d156eaffb51c71394c15bd546ccc17eda4be66"
+      },
+      "target": "report revision and source fingerprint match the current checkout",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "three_fixed_repeats",
+      "status": "pass",
+      "actual": {
+        "baseline": 6,
+        "candidate": 6,
+        "declared_repeats": 3
+      },
+      "target": "baseline_v1 and balanced_v1 each run both scenarios exactly three times",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "offline_evidence_identity",
+      "status": "pass",
+      "actual": [
+        [
+          "deterministic",
+          "fake"
+        ]
+      ],
+      "target": "fixed-action data remains deterministic/fake and never claims provider-reported usage",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "fixed_actions",
+      "status": "pass",
+      "actual": 2,
+      "target": "each baseline/candidate pair uses the same fixed action fingerprint",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "structured_working_memory",
+      "status": "pass",
+      "actual": {
+        "formats": [
+          "structured_v1",
+          "structured_v1",
+          "structured_v1",
+          "structured_v1",
+          "structured_v1",
+          "structured_v1"
+        ],
+        "opaque_blobs": 0
+      },
+      "target": "balanced_v1 uses structured_v1 with zero opaque working blobs",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "single_item_update_stream",
+      "status": "pass",
+      "actual": {
+        "updates": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "unrelated": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "target": "100 updates publish no unrelated working entries, including read_file insertion",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "prefix_and_recovery",
+      "status": "pass",
+      "actual": {
+        "prefix_invariants": true,
+        "recovery": true,
+        "single_item_updates": true
+      },
+      "target": "ordinary/compression prefix invariants and checkpoint recovery pass",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "new_memory_token_reduction",
+      "status": "pass",
+      "actual": {
+        "baseline": 6726,
+        "candidate": 3336,
+        "reduction": 0.504014272970562
+      },
+      "target": "combined estimated new-memory tokens decrease by at least 50%",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "compression_call_reduction",
+      "status": "pass",
+      "actual": {
+        "baseline": 33,
+        "candidate": 18,
+        "reduction": 0.45454545454545453
+      },
+      "target": "no scenario increases compressions and combined calls decrease by at least 25%",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "estimated_input_nonincrease",
+      "status": "pass",
+      "actual": {
+        "baseline": 223527,
+        "candidate": 209823
+      },
+      "target": "combined total estimated input does not increase",
+      "detail": "threshold satisfied"
+    },
+    {
+      "name": "bounded_validation_only",
+      "status": "pass",
+      "actual": "l0-offline",
+      "target": "readiness authorizes bounded validation only, not PPS benefit or rollout",
+      "detail": "threshold satisfied"
+    }
+  ],
+  "evidence_files": [
+    {
+      "path": "aop_overhead_runtime.json",
+      "sha256": "b395ca81b22e5854841ab7b591f3b0172b4f4c549ab181e1253cddad3a01bd2e"
+    }
+  ],
+  "ready_for_bounded_validation": true
+}

@@ -222,10 +222,7 @@ created_at, revoked_at, revoked_by, version
 `Tool` 增加可选方法：
 
 ```python
-def policy_descriptor(
-    self, arguments: BaseModel, context: ToolContext
-) -> ActionDescriptor:
-    ...
+def policy_descriptor(self, arguments: BaseModel, context: ToolContext) -> ActionDescriptor: ...
 ```
 
 现有文件工具映射到 `edit/path`，测试和 Git 检查映射到 `execute/command`。未来网络、安装和 Skill 工具必须直接返回 `network_target`、`package` 或 `skill` selector，不得绕过 `ToolGateway` 调用后端。

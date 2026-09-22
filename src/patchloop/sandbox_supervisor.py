@@ -155,9 +155,7 @@ class Supervisor:
         container_id = created.stdout.strip().splitlines()[-1] if created.stdout.strip() else ""
         if not container_id:
             raise SandboxCleanupError("docker create did not return a container ID")
-        snapshot = _inspect_docker_container(
-            container_id, docker_host=self.request.docker_host
-        )
+        snapshot = _inspect_docker_container(container_id, docker_host=self.request.docker_host)
         if snapshot is None:
             raise SandboxCleanupError("created container was not inspectable")
         if (
@@ -250,12 +248,17 @@ class Supervisor:
                 )
                 self._cleanup_with_retry(identity)
             elif requested_stop is None:
+                # A lease-takeover reconciler may remove this exact, labelled
+                # container while the old supervisor is still attached to it.
+                # A successful absent result is authoritative cleanup evidence;
+                # transport failures and identity mismatches have already raised
+                # from _inspect_docker_container instead of returning None.
                 return _Outcome(
-                    "cleanup_failed",
+                    "terminated",
                     None,
-                    "container_missing_before_exit_inspect",
+                    "container_removed_externally",
                     False,
-                    False,
+                    True,
                 )
             if requested_stop is not None:
                 return _Outcome("terminated", exit_code, requested_stop, oom_killed, True)

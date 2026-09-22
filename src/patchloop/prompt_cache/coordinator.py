@@ -62,9 +62,7 @@ class AppendOnlyOptimizationPolicy(BaseModel):
     fixed_projection_budget: bool = False
 
     @classmethod
-    def for_version(
-        cls, version: AppendOnlyOptimizationVersion
-    ) -> AppendOnlyOptimizationPolicy:
+    def for_version(cls, version: AppendOnlyOptimizationVersion) -> AppendOnlyOptimizationPolicy:
         if version == "baseline_v1":
             return cls(
                 version=version,
@@ -304,9 +302,7 @@ def decide_append_only_compression(
     if not requires_compression:
         return decision("continue", "below_soft_limit")
 
-    has_rebase_headroom = (
-        mandatory_rebase_tokens + budget.summary_limit < budget.ordinary_limit
-    )
+    has_rebase_headroom = mandatory_rebase_tokens + budget.summary_limit < budget.ordinary_limit
     if not has_rebase_headroom:
         return decision(
             "pause" if hard_limit_exceeded or oversized_delta else "continue",
@@ -463,8 +459,7 @@ class AppendOnlyPromptState(BaseModel):
             if (
                 self.compression_source_request_id != self.last_submitted_request_id
                 or self.compression_source_message_count != self.last_submitted_message_count
-                or self.compression_source_epoch_generation
-                != self.last_submitted_epoch_generation
+                or self.compression_source_epoch_generation != self.last_submitted_epoch_generation
             ):
                 raise ValueError("pending compression source must match the last submitted request")
         return self
@@ -660,9 +655,7 @@ class PromptCacheCoordinator:
             append_only_state.model_copy(deep=True) if append_only_state is not None else None
         )
         self._optimization_policy = (
-            AppendOnlyOptimizationPolicy.for_version(
-                self._append_only_state.optimization_version
-            )
+            AppendOnlyOptimizationPolicy.for_version(self._append_only_state.optimization_version)
             if self._append_only_state is not None
             else None
         )
@@ -693,13 +686,10 @@ class PromptCacheCoordinator:
         optimization_version: AppendOnlyOptimizationVersion | None = None,
     ) -> PromptCacheCoordinator:
         prefix_count = len(messages) if prefix_message_count is None else prefix_message_count
-        selected_optimization = (
-            optimization_version
-            or (
-                append_only_state.optimization_version
-                if append_only_state is not None
-                else "baseline_v1"
-            )
+        selected_optimization = optimization_version or (
+            append_only_state.optimization_version
+            if append_only_state is not None
+            else "baseline_v1"
         )
         if layout is PromptCacheLayout.APPEND_ONLY and append_only_state is None:
             append_only_state = AppendOnlyPromptState(

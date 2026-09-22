@@ -984,8 +984,7 @@ class RealProviderCacheCollector:
                 event.data.get("purpose")
                 or (
                     "epoch_compression"
-                    if request_id in traces
-                    and traces[request_id].comparison_kind == "compression"
+                    if request_id in traces and traces[request_id].comparison_kind == "compression"
                     else "agent_step"
                     if request_id in traces
                     else "unknown"
@@ -993,9 +992,7 @@ class RealProviderCacheCollector:
             )
             for request_id, event in requests.items()
         }
-        purpose_summaries = _purpose_summaries(
-            requests, attempts, usages, purpose_by_request
-        )
+        purpose_summaries = _purpose_summaries(requests, attempts, usages, purpose_by_request)
         known_totals = _known_totals(usages, attempts)
         compression_request_ids = {
             request_id
@@ -1071,9 +1068,7 @@ def _purpose_summaries(
     summaries: dict[str, CachePurposeSummary] = {}
     for purpose in sorted(purposes):
         request_ids = {
-            request_id
-            for request_id in requests
-            if purpose_by_request[request_id] == purpose
+            request_id for request_id in requests if purpose_by_request[request_id] == purpose
         }
         purpose_attempts = [
             attempt for attempt in attempts.values() if attempt["request_id"] in request_ids
@@ -1108,9 +1103,7 @@ def _purpose_summaries(
             ),
             output_tokens=sum(usage.output_tokens for usage in purpose_usages),
             latency_ms=_attempt_latency_ms(purpose_attempts),
-            cost_usd=(
-                sum(usage.cost_usd for usage in purpose_usages) if complete_cost else None
-            ),
+            cost_usd=(sum(usage.cost_usd for usage in purpose_usages) if complete_cost else None),
         )
     return summaries
 

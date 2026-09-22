@@ -490,9 +490,7 @@ def test_execute_tool_fails_closed_when_sandbox_is_missing(tmp_path: Path) -> No
         "task-1",
         ToolCall(
             name="run_command",
-            arguments={
-                "command": ["python", "-m", "compileall", "src/calculator.py"]
-            },
+            arguments={"command": ["python", "-m", "compileall", "src/calculator.py"]},
         ),
     )
 

@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "matrix_schema_version": 1,
+  "status": "failed",
+  "platform": "Linux-6.8.0-139-generic-x86_64-with-glibc2.41",
+  "python_version": "3.13.15",
+  "probes": [
+    {
+      "backend": "windows",
+      "available": false,
+      "detail": "requires Windows; current os.name is posix"
+    },
+    {
+      "backend": "docker",
+      "available": true,
+      "detail": "Docker daemon and image available: patchloop-sandbox:py313"
+    }
+  ],
+  "results": [
+    {
+      "case_id": "windows-process-tree-parent-crash",
+      "backend": "windows",
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "requires Windows; current os.name is posix"
+    },
+    {
+      "case_id": "windows-old-worker-lease-takeover",
+      "backend": "windows",
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "requires Windows; current os.name is posix"
+    },
+    {
+      "case_id": "windows-user-modified-file",
+      "backend": "windows",
+      "status": "unverified",
+      "duration_ms": 0.0,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "detail": "requires Windows; current os.name is posix"
+    },
+    {
+      "case_id": "docker-process-tree-timeout",
+      "backend": "docker",
+      "status": "passed",
+      "duration_ms": 4015.40443399972,
+      "exit_code": 0,
+      "stdout": ".                                                                        [100%]\n1 passed in 3.43s\n",
+      "stderr": "",
+      "detail": "real backend acceptance passed"
+    },
+    {
+      "case_id": "docker-old-worker-lease-takeover",
+      "backend": "docker",
+      "status": "failed",
+      "duration_ms": 21568.830316000003,
+      "exit_code": 1,
+      "stdout": "F                                                                        [100%]\n=================================== FAILURES ===================================\n___________ test_docker_old_worker_is_stopped_before_lease_takeover ____________\n\nself = <patchloop.execution.ownership.ExecutionOwnershipManager object at 0x74c9586c4e10>\ncommands = [ManagedCommandIdentity(id='80ad2141-22ea-4bdd-8c03-a921ebb610a8', execution_id='execution-1', backend='docker', proce...1, 8, 27, 6, 700356, tzinfo=TzInfo(0)), updated_at=datetime.datetime(2026, 9, 21, 8, 27, 6, 700361, tzinfo=TzInfo(0)))]\n\n    def _reconcile_commands(self, commands: list[ManagedCommandIdentity]) -> None:\n        for identity in commands:\n            try:\n>               reconciled = reconcile_managed_command(identity)\n                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nsrc/patchloop/execution/ownership.py:274: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nsrc/patchloop/sandbox.py:381: in reconcile_managed_command\n    command_id = _docker_command_id(identity.container_name)\n                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ncontainer_name = 'patchloop-80ad2141-22ea-4bdd-8c03-a921ebb610a8'\n\n    def _docker_command_id(container_name: str) -> str | None:\n        inspected = subprocess.run(\n            [\n                \"docker\",\n                \"inspect\",\n                \"--format\",\n                '{{ index .Config.Labels \"patchloop.command_id\" }}',\n                container_name,\n            ],\n            capture_output=True,\n            text=True,\n            encoding=\"utf-8\",\n            errors=\"replace\",\n            timeout=5,\n            check=False,\n            shell=False,\n        )\n        if inspected.returncode == 0:\n            return inspected.stdout.strip()\n        error = inspected.stderr.strip()\n        if \"No such object\" in error or \"No such container\" in error:\n            return None\n>       raise SandboxCleanupError(error or \"docker inspect failed\")\nE       patchloop.sandbox.SandboxCleanupError: error: no such object: patchloop-80ad2141-22ea-4bdd-8c03-a921ebb610a8\n\nsrc/patchloop/sandbox.py:289: SandboxCleanupError\n\nThe above exception was the direct cause of the following exception:\n\ntmp_path = PosixPath('/home/glinfen/patchloop-sandbox-acceptance.8FRDIi/.acceptance-tmp/test_docker_old_worker_is_stop0')\n\n    def test_docker_old_worker_is_stopped_before_lease_takeover(tmp_path: Path) -> None:\n        repository = tmp_path / \"repository\"\n        repository.mkdir()\n        store = SQLiteStore(tmp_path / \"state.db\")\n        task = store.prepare_task_execution(\n            Task(id=\"task-1\", goal=\"Recover Docker worker\", repository=str(repository))\n        )\n        clock = _Clock()\n        first_manager = _manager(store, clock, \"execution-1\")\n        first = first_manager.acquire(\n            session_id=task.session_id or \"\",\n            task_id=task.id,\n            owner_id=\"worker-1\",\n            repository=repository,\n            expected_version=task.version,\n            workspace_writer=True,\n        )\n        sandbox = DockerSandbox()\n        started = threading.Event()\n        worker_errors: list[BaseException] = []\n        sandbox.bind_execution(\n            first.execution.id,\n            command_started=lambda identity: (\n                store.register_managed_command(identity, lease_guard=first.lease_guard),\n                started.set(),\n            ),\n            command_finished=store.finish_managed_command,\n            interruption_probe=lambda: None,\n        )\n    \n        def run_old_command() -> None:\n            try:\n                sandbox.execute(\n                    [sys.executable, \"-c\", \"import time; time.sleep(20)\"],\n                    repository,\n                    timeout_seconds=30,\n                    max_output_chars=1_000,\n                )\n            except BaseException as exc:\n                worker_errors.append(exc)\n    \n        old_worker = threading.Thread(target=run_old_command)\n        old_worker.start()\n        assert started.wait(10)\n        clock.now += timedelta(seconds=2)\n    \n        current = store.get_task(task.id)\n>       second = _manager(store, clock, \"execution-2\").acquire(\n            session_id=current.session_id or \"\",\n            task_id=current.id,\n            owner_id=\"worker-2\",\n            repository=repository,\n            expected_version=current.version,\n            workspace_writer=True,\n        )\n\ntests/acceptance/srf07_docker_backend.py:134: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nsrc/patchloop/execution/ownership.py:197: in acquire\n    self._reconcile_commands(self.store.recovery_commands_for_task(task_id, now=now))\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <patchloop.execution.ownership.ExecutionOwnershipManager object at 0x74c9586c4e10>\ncommands = [ManagedCommandIdentity(id='80ad2141-22ea-4bdd-8c03-a921ebb610a8', execution_id='execution-1', backend='docker', proce...1, 8, 27, 6, 700356, tzinfo=TzInfo(0)), updated_at=datetime.datetime(2026, 9, 21, 8, 27, 6, 700361, tzinfo=TzInfo(0)))]\n\n    def _reconcile_commands(self, commands: list[ManagedCommandIdentity]) -> None:\n        for identity in commands:\n            try:\n                reconciled = reconcile_managed_command(identity)\n                self.store.finish_managed_command(reconciled)\n            except Exception as exc:\n                failed = identity.model_copy(\n                    update={\n                        \"status\": ManagedCommandStatus.CLEANUP_FAILED,\n                        \"cleanup_reason\": str(exc)[:256],\n                        \"updated_at\": self._now(),\n                    }\n                )\n                recorded = self.store.finish_managed_command(failed)\n                if recorded.status in {\n                    ManagedCommandStatus.EXITED,\n                    ManagedCommandStatus.TERMINATED,\n                }:\n                    continue\n                task_id = self.store.mark_command_recovery_required(\n                    failed, cleanup_info=str(exc)[:256]\n                )\n>               raise RecoveryRequired(task_id, identity.id) from exc\nE               patchloop.persistence_contracts.RecoveryRequired: recovery disposition is required for task task-1\n\nsrc/patchloop/execution/ownership.py:293: RecoveryRequired\n=========================== short test summary info ============================\nFAILED tests/acceptance/srf07_docker_backend.py::test_docker_old_worker_is_stopped_before_lease_takeover\n1 failed in 0.70s\n",
+      "stderr": "",
+      "detail": "pytest exited with code 1"
+    },
+    {
+      "case_id": "docker-user-modified-file",
+      "backend": "docker",
+      "status": "passed",
+      "duration_ms": 2071.0090150000724,
+      "exit_code": 0,
+      "stdout": ".                                                                        [100%]\n1 passed in 1.45s\n",
+      "stderr": "",
+      "detail": "real backend acceptance passed"
+    }
+  ],
+  "generated_at": "2026-09-21T08:27:29.354464+00:00"
+}

@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from patchloop.domain import (
@@ -103,11 +102,19 @@ def test_network_attack_is_blocked_redacted_and_replayable(tmp_path: Path) -> No
             ["python", "-m", "pytest"], repository
         )[4],
     }
-    expected_path = Path(__file__).parents[2] / "benchmarks" / "results" / "week07_security.json"
-
     assert result.status is TaskStatus.FAILED
     assert metrics.status == "failed" and metrics.failed_tool_calls == 1
-    assert json.loads(expected_path.read_text(encoding="utf-8")) == benchmark
+    assert benchmark == {
+        "scenario": "network-attempt-security-observability",
+        "blocked_network": True,
+        "risk": "critical",
+        "tool_error": "permission_denied",
+        "failed_step": 0,
+        "trace_sequence_contiguous": True,
+        "replay_located_failure": True,
+        "credentials_redacted": True,
+        "docker_network_default": "none",
+    }
 
 
 def test_repository_prompt_injection_and_memory_credentials_are_filtered(

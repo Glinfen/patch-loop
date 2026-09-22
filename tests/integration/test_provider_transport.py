@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ssl
 
+import certifi
 import httpx
 import pytest
 from pydantic import SecretStr
@@ -202,7 +203,7 @@ def test_transport_settings_are_explicit_and_http_urls_are_restricted() -> None:
         "https://example.invalid/v1",
         config=ProviderTransportConfig(
             proxy_url="http://127.0.0.1:8080",
-            ca_bundle=ssl.get_default_verify_paths().cafile,
+            ca_bundle=certifi.where(),
         ),
         client_factory=client_factory,
         transport_factory=transport_factory,

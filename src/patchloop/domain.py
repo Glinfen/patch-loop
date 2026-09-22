@@ -209,9 +209,7 @@ class TaskExecutionConfig(BaseModel):
         pattern=r"^[A-Za-z0-9._/:@-]+$",
     )
     sandbox_workspace_limit_mb: int | None = Field(default=None, ge=64, le=16_384)
-    sandbox_workspace_inode_limit: int = Field(
-        default=65_536, ge=1024, le=10_000_000
-    )
+    sandbox_workspace_inode_limit: int = Field(default=65_536, ge=1024, le=10_000_000)
     prompt_cache_layout: PromptCacheLayout = DEFAULT_PROMPT_CACHE_LAYOUT
     append_only_optimization: AppendOnlyOptimizationVersion = "baseline_v1"
     project_instructions: str = ""

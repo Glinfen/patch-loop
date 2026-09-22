@@ -5,14 +5,16 @@ from pathlib import Path
 
 import pytest
 
+import patchloop.sandbox_supervisor as supervisor_module
 from patchloop.sandbox import (
     DockerSandbox,
     ManagedCommandIdentity,
     ManagedCommandStatus,
     SandboxTimeoutError,
 )
+from patchloop.sandbox_supervisor import Supervisor, SupervisorRequest
 
-_FAKE_SUPERVISOR = r'''
+_FAKE_SUPERVISOR = r"""
 import json
 import pathlib
 import sys
@@ -65,7 +67,7 @@ outcome = {
     "diagnostic": "",
 }
 (control / "outcome.json").write_text(json.dumps(outcome), encoding="utf-8")
-'''
+"""
 
 
 def _sandbox(tmp_path: Path) -> DockerSandbox:
@@ -168,3 +170,61 @@ def test_supervisor_timeout_finishes_once(tmp_path: Path) -> None:
 
     assert len(finished) == 1
     assert finished[0].status is ManagedCommandStatus.TERMINATED
+
+
+def test_supervisor_accepts_exact_container_absence_after_external_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FinishedDockerStart:
+        returncode = 1
+
+        @staticmethod
+        def poll() -> int:
+            return 1
+
+        @staticmethod
+        def wait(timeout: float | None = None) -> int:
+            del timeout
+            return 1
+
+        @staticmethod
+        def kill() -> None:
+            raise AssertionError("finished docker start must not be killed")
+
+    def start_control_reader(events, stopped) -> None:
+        del stopped
+        events.put("START")
+
+    monkeypatch.setattr(supervisor_module, "_control_reader", start_control_reader)
+    monkeypatch.setattr(
+        supervisor_module.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FinishedDockerStart(),
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "_inspect_docker_container",
+        lambda *args, **kwargs: None,
+    )
+    request = SupervisorRequest(
+        command_id="command-1",
+        execution_id="execution-1",
+        container_name="patchloop-command-1",
+        create_command=["docker", "create"],
+        control_dir=str(tmp_path),
+    )
+    identity = ManagedCommandIdentity(
+        id=request.command_id,
+        execution_id=request.execution_id,
+        backend="docker",
+        process_id=123,
+        process_start_marker="supervisor",
+        container_name=request.container_name,
+        container_id="a" * 64,
+    )
+
+    outcome = Supervisor(request)._wait_and_start(identity)
+
+    assert outcome.status == "terminated"
+    assert outcome.reason == "container_removed_externally"
+    assert outcome.cleanup_confirmed is True

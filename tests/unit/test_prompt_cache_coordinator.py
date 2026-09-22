@@ -176,8 +176,7 @@ def _compression_decision(
         step=step,
         last_compression_attempt_step=state.last_compression_attempt_step,
         has_submitted_source=(
-            state.last_submitted_message_count > 0
-            and state.last_submitted_request_id is not None
+            state.last_submitted_message_count > 0 and state.last_submitted_request_id is not None
         ),
         recovering_compression=state.compression_request_id is not None,
         oversized_delta=boundary is CacheEpochBoundary.EXPLICIT_COMPRESSION,
@@ -474,8 +473,7 @@ def test_append_only_compression_rejection_keeps_epoch_and_publication(
     assert restored.append_only_state is not None
     assert restored.append_only_state.optimization_version == optimization_version
     assert (
-        restored.append_only_state.deferred_compression_fingerprint
-        == prepared.source_fingerprint
+        restored.append_only_state.deferred_compression_fingerprint == prepared.source_fingerprint
     )
     with pytest.raises(PromptCompressionRejected, match="same_source_deferred"):
         retry_decision = _compression_decision(

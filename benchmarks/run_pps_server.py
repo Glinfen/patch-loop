@@ -554,9 +554,10 @@ def _resume(
     stderr_path: Path,
     timeout: float,
 ) -> int:
-    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
-        "w", encoding="utf-8"
-    ) as stderr:
+    with (
+        stdout_path.open("w", encoding="utf-8") as stdout,
+        stderr_path.open("w", encoding="utf-8") as stderr,
+    ):
         result = subprocess.run(
             [
                 sys.executable,
@@ -611,9 +612,7 @@ def _approval_is_permitted(approval: Any, effect: Any, repo: Path) -> bool:
 
 def _pending_approvals(store: SQLiteStore, task_id: str) -> list[Any]:
     return [
-        approval
-        for approval in store.list_approvals(task_id)
-        if approval.status.value == "pending"
+        approval for approval in store.list_approvals(task_id) if approval.status.value == "pending"
     ]
 
 
@@ -641,9 +640,7 @@ def _approve_and_resume(
         ):
             return approved_ids, resume_code, "approval_scope_rejected"
         for approval in pending:
-            with (trial / f"approval-{approval.id}.json").open(
-                "w", encoding="utf-8"
-            ) as stdout:
+            with (trial / f"approval-{approval.id}.json").open("w", encoding="utf-8") as stdout:
                 subprocess.run(
                     [
                         sys.executable,
@@ -731,9 +728,10 @@ def _execute_trial(
     pause_requested = False
     cancel_injected = False
     timed_out = False
-    with (trial / "run.stdout").open("w", encoding="utf-8") as stdout, (
-        trial / "run.stderr"
-    ).open("w", encoding="utf-8") as stderr:
+    with (
+        (trial / "run.stdout").open("w", encoding="utf-8") as stdout,
+        (trial / "run.stderr").open("w", encoding="utf-8") as stderr,
+    ):
         process = subprocess.Popen(command, cwd=repo, env=env, stdout=stdout, stderr=stderr)
         deadline = time.monotonic() + config.process_timeout_seconds
         while process.poll() is None:
@@ -780,9 +778,7 @@ def _execute_trial(
         # a durable approval boundary.  A trace-only quiet check while the
         # worker is still running leaves a race in which the next provider
         # attempt can start between observation and control consumption.
-        pause_requested = _request_quiet_pause(
-            repo, trace, f"pps-quiet-pause-{spec.name}"
-        )
+        pause_requested = _request_quiet_pause(repo, trace, f"pps-quiet-pause-{spec.name}")
     paused_state_verified = False
     resume_code: int | None = None
     if pause_requested:
@@ -820,9 +816,7 @@ def _execute_trial(
                 capture_output=True,
                 timeout=120,
             )
-            (trial / f"{name}.txt").write_text(
-                outcome.stdout + outcome.stderr, encoding="utf-8"
-            )
+            (trial / f"{name}.txt").write_text(outcome.stdout + outcome.stderr, encoding="utf-8")
             validation[name] = outcome.returncode
     changed = subprocess.check_output(
         ["git", "diff", "--name-only"], cwd=repo, text=True

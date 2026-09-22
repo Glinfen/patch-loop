@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import suppress
 from pathlib import Path
@@ -102,9 +103,9 @@ def test_verified_commit_preserves_user_index(service: WorkspaceService) -> None
     edit(service, workspace_id, "agent.txt", b"accepted agent\n")
     service.accept(workspace_id, ["agent.txt"])
     with pytest.raises(ApprovalPending) as pending:
-        service.verify(workspace_id, VerificationInput(command=["python", "--version"]))
+        service.verify(workspace_id, VerificationInput(command=[sys.executable, "--version"]))
     approve_pending(service, pending.value)
-    record = service.verify(workspace_id, VerificationInput(command=["python", "--version"]))
+    record = service.verify(workspace_id, VerificationInput(command=[sys.executable, "--version"]))
     assert record.returncode == 0
     plan = service.prepare_commit(workspace_id, "feat:工作区测试")
     with pytest.raises(ApprovalPending) as pending:
@@ -239,7 +240,7 @@ def test_verification_stales_after_external_change(service: WorkspaceService) ->
     workspace_id = open_direct(service)
     edit(service, workspace_id, "agent.txt", b"accepted")
     service.accept(workspace_id, ["agent.txt"])
-    request = VerificationInput(command=["python", "--version"])
+    request = VerificationInput(command=[sys.executable, "--version"])
     with pytest.raises(ApprovalPending) as pending:
         service.verify(workspace_id, request)
     approve_pending(service, pending.value)

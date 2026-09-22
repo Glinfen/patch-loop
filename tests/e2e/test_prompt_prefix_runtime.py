@@ -287,9 +287,9 @@ def test_balanced_runtime_delays_soft_compression_without_exceeding_hard_budget(
                 tools,
                 policy=policy,
             )
-            estimated = ContextEngine.estimate_messages(
-                messages
-            ) + ContextEngine.estimate_tools(tools)
+            estimated = ContextEngine.estimate_messages(messages) + ContextEngine.estimate_tools(
+                tools
+            )
             limit = (
                 request_budget.input_limit
                 if messages[-1].content.startswith("PATCHLOOP_EPOCH_COMPRESSION_V1")
@@ -309,14 +309,11 @@ def test_balanced_runtime_delays_soft_compression_without_exceeding_hard_budget(
         return compressions, ordinary, runtime
 
     baseline, _, _ = run("baseline_v1", tmp_path / "baseline")
-    balanced, balanced_ordinary, balanced_runtime = run(
-        "balanced_v1", tmp_path / "balanced"
-    )
+    balanced, balanced_ordinary, balanced_runtime = run("balanced_v1", tmp_path / "balanced")
 
     assert len(balanced) < len(baseline)
     assert all(
-        "PATCHLOOP_EPOCH_COMPRESSION_BALANCED_V1" in messages[-1].content
-        for messages in balanced
+        "PATCHLOOP_EPOCH_COMPRESSION_BALANCED_V1" in messages[-1].content for messages in balanced
     )
     policy = balanced_runtime._prompt_cache.optimization_policy
     assert policy is not None
@@ -327,8 +324,7 @@ def test_balanced_runtime_delays_soft_compression_without_exceeding_hard_budget(
     ]
     assert any(
         event.data["action"] == "continue"
-        and int(event.data["candidate_input_tokens"])
-        > int(event.data["ordinary_limit"]) * 0.8
+        and int(event.data["candidate_input_tokens"]) > int(event.data["ordinary_limit"]) * 0.8
         for event in decision_events
     )
     assert all(event.data["mandatory_rebase_tokens"] is not None for event in decision_events)

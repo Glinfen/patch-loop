@@ -56,8 +56,7 @@ class PriceSnapshot(BaseModel):
             write_tokens = cache_write_tokens or 0
             if write_tokens > cache_miss_tokens:
                 return (
-                    input_tokens * self.input_per_million
-                    + output_tokens * self.output_per_million
+                    input_tokens * self.input_per_million + output_tokens * self.output_per_million
                 ) / 1_000_000
             write_price = (
                 self.input_per_million

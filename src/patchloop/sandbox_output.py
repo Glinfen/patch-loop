@@ -149,9 +149,9 @@ def collect_process_output(
                 reader.join(0.2)
             raise OutputCollectionError("process output pipes did not reach EOF after cleanup")
         if reader_errors:
-            raise OutputCollectionError(
-                "could not read managed process output"
-            ) from reader_errors[0]
+            raise OutputCollectionError("could not read managed process output") from reader_errors[
+                0
+            ]
         if termination_error is not None:
             raise termination_error
         if pending_error is not None:

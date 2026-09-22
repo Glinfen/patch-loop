@@ -101,9 +101,7 @@ def test_default_command_is_read_only_preflight(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("failure", ["missing", "source_drift", "evidence_drift"])
-def test_failed_readiness_stops_before_credentials_or_tasks(
-    tmp_path, monkeypatch, capsys, failure
-):
+def test_failed_readiness_stops_before_credentials_or_tasks(tmp_path, monkeypatch, capsys, failure):
     readiness = _readiness(tmp_path)
     if failure == "missing":
         readiness = tmp_path / "missing.json"
@@ -184,9 +182,7 @@ def _config(tmp_path: Path, readiness: Path) -> runner.RunnerConfig:
 
 def test_unknown_usage_stops_batch_and_saves_partial_report(tmp_path):
     readiness_path = _readiness(tmp_path)
-    readiness = AopReadinessReport.model_validate_json(
-        readiness_path.read_text(encoding="utf-8")
-    )
+    readiness = AopReadinessReport.model_validate_json(readiness_path.read_text(encoding="utf-8"))
     config = _config(tmp_path, readiness_path)
     calls: list[str] = []
 
@@ -221,9 +217,7 @@ def test_unknown_usage_stops_batch_and_saves_partial_report(tmp_path):
 
 def test_true_task_state_not_exit_code_stops_batch(tmp_path):
     readiness_path = _readiness(tmp_path)
-    readiness = AopReadinessReport.model_validate_json(
-        readiness_path.read_text(encoding="utf-8")
-    )
+    readiness = AopReadinessReport.model_validate_json(readiness_path.read_text(encoding="utf-8"))
     config = _config(tmp_path, readiness_path)
 
     def execute(config, spec, budget, scenario, env, work):

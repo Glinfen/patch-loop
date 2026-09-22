@@ -27,6 +27,12 @@ from patchloop.sandbox_output import (
     OutputCollectionTimeout,
     collect_process_output,
 )
+from patchloop.sandbox_storage import (
+    WorkspaceCapacityError,
+    WorkspaceCapacityEvidence,
+    same_workspace_capacity,
+    verify_workspace_capacity,
+)
 
 if TYPE_CHECKING:
     from patchloop.domain import TaskExecutionConfig
@@ -714,9 +720,7 @@ class _ManagedSandboxBase:
                     raise SandboxCleanupError(
                         f"command cleanup and outcome persistence failed: {identity.id}"
                     ) from finish_exc
-                raise SandboxCleanupError(
-                    f"managed command cleanup failed: {identity.id}"
-                ) from exc
+                raise SandboxCleanupError(f"managed command cleanup failed: {identity.id}") from exc
             self._finish(identity, ManagedCommandStatus.TERMINATED, reason)
 
     def _communicate(
@@ -736,9 +740,7 @@ class _ManagedSandboxBase:
                 max_output_chars=max_output_chars,
                 deadline=monotonic() + timeout_seconds,
                 interruption_probe=(
-                    self._interruption_probe
-                    if interruption_probe is None
-                    else interruption_probe
+                    self._interruption_probe if interruption_probe is None else interruption_probe
                 ),
                 terminate=lambda reason: self._terminate_and_finish(process, identity, reason),
                 readers_started=readers_started,
@@ -805,9 +807,7 @@ class LocalProcessSandbox(_ManagedSandboxBase):
                 process.wait(timeout=5)
                 raise
         identity = self._register(process, backend=self.name)
-        captured = self._communicate(
-            process, identity, timeout_seconds, max_output_chars
-        )
+        captured = self._communicate(process, identity, timeout_seconds, max_output_chars)
         output = (captured.stdout_tail + captured.stderr_tail)[-max_output_chars:]
         return SandboxResult(
             exit_code=process.returncode,
@@ -926,6 +926,7 @@ class DockerSandbox(_ManagedSandboxBase):
         ]
         self._resolved_image_id: str | None = None
         self._preflight_cache: set[tuple[object, ...]] = set()
+        self._workspace_capacity_evidence: WorkspaceCapacityEvidence | None = None
 
     def bind_execution(
         self,
@@ -943,11 +944,13 @@ class DockerSandbox(_ManagedSandboxBase):
         )
         self._resolved_image_id = None
         self._preflight_cache.clear()
+        self._workspace_capacity_evidence = None
 
     def unbind_execution(self) -> None:
         super().unbind_execution()
         self._resolved_image_id = None
         self._preflight_cache.clear()
+        self._workspace_capacity_evidence = None
 
     def _effective_user(self) -> str | None:
         if self.config.user is not None:
@@ -1066,11 +1069,16 @@ class DockerSandbox(_ManagedSandboxBase):
         timeout_seconds: float,
         max_output_chars: int,
     ) -> SandboxResult:
-        if self.config.workspace_limit_mb is not None:
-            raise SandboxError("workspace_capacity_not_implemented")
         repository = repository.resolve(strict=True)
+        capacity = self._verify_workspace_capacity(repository)
         image = self._resolve_image_id()
         self._ensure_preflight(repository, image)
+        if capacity is not None:
+            confirmed = self._verify_workspace_capacity(repository)
+            if confirmed is None or not same_workspace_capacity(capacity, confirmed):
+                raise SandboxError(
+                    "workspace_capacity_unverified: mount identity changed after preflight"
+                )
         return self._execute_managed(
             command,
             repository,
@@ -1079,6 +1087,22 @@ class DockerSandbox(_ManagedSandboxBase):
             purpose="workload",
             image=image,
         )
+
+    def _verify_workspace_capacity(self, repository: Path) -> WorkspaceCapacityEvidence | None:
+        limit_mb = self.config.workspace_limit_mb
+        if limit_mb is None:
+            self._workspace_capacity_evidence = None
+            return None
+        try:
+            evidence = verify_workspace_capacity(
+                repository,
+                limit_bytes=limit_mb * 1024 * 1024,
+                inode_limit=self.config.workspace_inode_limit,
+            )
+        except WorkspaceCapacityError as exc:
+            raise SandboxError(f"workspace_capacity_unverified: {exc}") from exc
+        self._workspace_capacity_evidence = evidence
+        return evidence
 
     def _resolve_image_id(self) -> str:
         if self._resolved_image_id is not None:
@@ -1437,9 +1461,7 @@ class DockerSandbox(_ManagedSandboxBase):
         path = handle.control_dir / "ready.json"
         while monotonic() < deadline:
             if path.exists():
-                ready = _SupervisorReady.model_validate_json(
-                    self._read_control_file(path)
-                )
+                ready = _SupervisorReady.model_validate_json(self._read_control_file(path))
                 if (
                     ready.protocol_version != 1
                     or ready.command_id != command_id
@@ -1529,10 +1551,13 @@ class DockerSandbox(_ManagedSandboxBase):
             outcome = self._read_outcome(handle, identity)
             if not outcome.cleanup_confirmed:
                 raise SandboxCleanupError(outcome.diagnostic or "supervisor cleanup failed")
-        elif _inspect_docker_container(
-            identity.container_id or identity.container_name or "",
-            docker_host=identity.docker_host,
-        ) is not None:
+        elif (
+            _inspect_docker_container(
+                identity.container_id or identity.container_name or "",
+                docker_host=identity.docker_host,
+            )
+            is not None
+        ):
             _remove_verified_container(identity)
 
 

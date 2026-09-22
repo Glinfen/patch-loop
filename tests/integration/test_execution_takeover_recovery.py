@@ -281,9 +281,7 @@ def test_late_finish_cannot_regress_a_terminal_managed_command(tmp_path: Path) -
     task = store.prepare_task_execution(
         Task(id="task-1", goal="Preserve terminal outcome", repository=str(repository))
     )
-    lease = _acquire(
-        _manager(store, _Clock(), "execution-1"), task, repository, "worker-1"
-    )
+    lease = _acquire(_manager(store, _Clock(), "execution-1"), task, repository, "worker-1")
     running = ManagedCommandIdentity(
         id="command-1",
         execution_id=lease.execution.id,

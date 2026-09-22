@@ -210,6 +210,7 @@ class AppendOnlyPromptState(BaseModel):
     compression_request_id: str | None = None
     deferred_compression_fingerprint: str | None = None
 
+
 class PrefixBudget(BaseModel):
     input_limit: int
     ordinary_limit: int
